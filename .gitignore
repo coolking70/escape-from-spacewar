@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.tmp-test/
+*.local
+.DS_Store
+
+# AI 助手本地记忆（非项目源码）
+.workbuddy/
+
+# 构建产物
+static/index.html
+*.zip

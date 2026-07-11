@@ -1,0 +1,82 @@
+// 舰船"存活 / 在场 / 可锁定 / 可战斗 / 在模拟中"语义的单一事实来源。
+//
+// 背景：core-v4 之前 `alive` 同时被用来表达多种含义（未被摧毁 / 仍在场 / 仍可行动 /
+// 仍可作目标）。V0.5.2 起明确拆分语义，并规定：
+//   alive = 核心未摧毁 且 尚未 escaped
+//     —— 即 alive 只表示"结构完整且未脱离战场"。destroyed 与 escaped 都令 alive=false。
+// 其余行为一律由 combatState 或下列辅助函数判定，避免歧义。
+//
+// 注意：当前（V0.5.2）以下判断在值上重合（都等价于 not destroyed && not escaped），
+// 但分别命名以支撑后续扩展与测试，且全部为纯函数、不读渲染/真实时间。
+
+import { Ship, CombatState } from './battleTypes';
+import { isCombatCapable as _isCombatCapable } from './combatState';
+
+/** 结构完整：核心未摧毁、未 escaped。
+ *  = 既有 `alive` 字段的权威定义。destroyed / escaped 都为 false。 */
+export function isStructurallyAlive(ship: Ship): boolean {
+  return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
+}
+
+/** 仍在战场上（可被渲染/物理处理）：与结构完整一致。
+ *  escaped 已脱离战场、destroyed 已爆毁，均不在场。 */
+export function isPresentOnBattlefield(ship: Ship): boolean {
+  return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
+}
+
+/** 仍可作目标（可被敌方锁定开火）：在场且非 destroyed / escaped。
+ *  注意 disabled 仍可被攻击（瘫痪≠离场），escaped 不可被攻击。 */
+export function isTargetable(ship: Ship): boolean {
+  const cs = ship.combatState;
+  return cs !== 'destroyed' && cs !== 'escaped';
+}
+
+/** 仍在模拟循环中参与推进（未爆毁、未脱离）。 */
+export function isActiveInSimulation(ship: Ship): boolean {
+  return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
+}
+
+/** 是否仍有战斗能力（用于结束判定）：normal/damaged/critical/retreating 视为可战斗；
+ *  disabled/escaped/destroyed 不计。权威实现见 combatState.ts（与 v3 共用）。 */
+export const isCombatCapable = _isCombatCapable;
+
+/** 已摧毁：无论 alive 字段如何，仅由 combatState 判定。 */
+export function isDestroyed(ship: Ship): boolean {
+  return ship.combatState === 'destroyed';
+}
+
+/** 已脱离战场（成功撤离）：纯 combatState 判定，不涉及 alive。 */
+export function isEscaped(ship: Ship): boolean {
+  return ship.combatState === 'escaped';
+}
+
+/** 已瘫痪（引擎/武器/传感器全失能）：纯 combatState 判定。 */
+export function isDisabled(ship: Ship): boolean {
+  return ship.combatState === 'disabled';
+}
+
+/** 正在撤退（已启动撤退但尚未抵达边界）：纯 combatState 判定。 */
+export function isRetreating(ship: Ship): boolean {
+  return ship.combatState === 'retreating';
+}
+
+/** 给定战斗状态，返回其优先级数值（越大越"高级"，用于比较/排序）。 */
+export function combatStatePriority(cs: CombatState): number {
+  switch (cs) {
+    case 'destroyed':
+      return 7;
+    case 'escaped':
+      return 6;
+    case 'disabled':
+      return 5;
+    case 'retreating':
+      return 4;
+    case 'critical':
+      return 3;
+    case 'damaged':
+      return 2;
+    case 'normal':
+    default:
+      return 1;
+  }
+}
