@@ -136,6 +136,7 @@ export class SetupPanel {
           <button class="btn" id="analysisBtn">战前分析</button>
           <button class="btn" id="fleetBtn">舰队库</button>
           <button class="btn" id="balanceBtn">平衡实验室</button>
+          <span class="sep-dot"></span>
           <button class="btn" id="importToggle">导入记录</button>
         </div>
 

@@ -488,7 +488,12 @@ export class BattleHud {
         <div><span>MVP 伤害</span><b>${formatMvp(s.mvpDamage)}</b></div>
         <div><span>MVP 击毁</span><b>${formatMvp(s.mvpKills)}</b></div>
       </div>
-      <div class="stat-note">在场=未脱战且未损毁（含失能）；可战斗=排除脱战/失能/损毁；作战价值=仍在场且具战斗力(normal/damaged/critical/retreating=100%)；判定价值含脱战(100%)、失能(50%)、损毁(0%)，用于超时/点数裁决。价值守恒：损毁+失能+脱战+作战 = 初始成本。</div>
+      <div class="stat-note-wrap">
+        <details class="stat-note-details">
+          <summary>价值口径说明（点击展开）</summary>
+          <div class="stat-note">在场=未脱战且未损毁（含失能）；可战斗=排除脱战/失能/损毁；作战价值=仍在场且具战斗力(normal/damaged/critical/retreating=100%)；判定价值含脱战(100%)、失能(50%)、损毁(0%)，用于超时/点数裁决。价值守恒：损毁+失能+脱战+作战 = 初始成本。</div>
+        </details>
+      </div>
       <div class="stat-cfg">
         <div>舰队A：${fleetText('A')} · 阵型:${replay.teamA.formation} · 战术:${replay.teamA.doctrine}</div>
         <div>舰队B：${fleetText('B')} · 阵型:${replay.teamB.formation} · 战术:${replay.teamB.doctrine}</div>
