@@ -7,7 +7,7 @@ import type {
   OrganizationValue,
   ResearchResources
 } from './organizationTypes';
-import { createResearchState, hasInstalledTechnology } from './technologySystem';
+import { createResearchState, hasInstalledTechnology, TECHNOLOGY_IDS } from './technologySystem';
 
 export const ORGANIZATION_ARCHETYPES: OrganizationArchetype[] = ['expedition', 'military', 'commerce', 'exile'];
 export const GOVERNMENT_TYPES: GovernmentType[] = [
@@ -93,6 +93,15 @@ export function ensureOrganization(value: unknown, seed: number): CampaignOrgani
     government: raw?.government,
     values: raw?.values
   });
+  const unlocked = Array.isArray(raw?.research?.unlocked)
+    ? [...new Set(raw.research.unlocked.filter((id) => TECHNOLOGY_IDS.includes(id)))]
+    : [...generated.research.unlocked];
+  for (const id of generated.research.unlocked) {
+    if (!unlocked.includes(id)) unlocked.push(id);
+  }
+  const installed = Array.isArray(raw?.research?.installed)
+    ? [...new Set(raw.research.installed.filter((id) => TECHNOLOGY_IDS.includes(id) && unlocked.includes(id)))]
+    : [...generated.research.installed];
   const organization: CampaignOrganization = {
     ...generated,
     ...raw,
@@ -114,8 +123,8 @@ export function ensureOrganization(value: unknown, seed: number): CampaignOrgani
         tactical: Math.max(0, Math.floor(raw?.research?.resources?.tactical ?? generated.research.resources.tactical)),
         social: Math.max(0, Math.floor(raw?.research?.resources?.social ?? generated.research.resources.social))
       },
-      unlocked: Array.isArray(raw?.research?.unlocked) ? [...new Set(raw!.research!.unlocked)] : generated.research.unlocked,
-      installed: Array.isArray(raw?.research?.installed) ? [...new Set(raw!.research!.installed)] : generated.research.installed,
+      unlocked,
+      installed,
       slots: Number.isInteger(raw?.research?.slots) ? Math.max(1, Math.min(4, raw!.research!.slots)) : generated.research.slots
     }
   };
@@ -140,6 +149,7 @@ export function organizationTreatmentCost(organization: CampaignOrganization): n
 export function organizationEmergencyRefuelCost(organization: CampaignOrganization): number {
   let cost = 2;
   if (organization.archetype === 'exile') cost--;
+  if (organization.government === 'emergencyDirectorate') cost--;
   if (organizationHasValue(organization, 'survival')) cost--;
   return Math.max(1, cost);
 }
@@ -199,9 +209,13 @@ export function organizationResearchGain(
   if (action === 'extract') gain.navigation = 4;
 
   if (organization.archetype === 'military' && action === 'battle') gain.tactical = (gain.tactical ?? 0) + 1;
+  if (organization.government === 'militaryCouncil' && action === 'battle') gain.tactical = (gain.tactical ?? 0) + 1;
   if (organization.government === 'technocracy') {
     const first = Object.keys(gain)[0] as keyof ResearchResources | undefined;
     if (first) gain[first] = (gain[first] ?? 0) + 1;
+  }
+  if (hasInstalledTechnology(organization, 'fieldRepairProtocol') && action === 'repair') {
+    gain.engineering = (gain.engineering ?? 0) + 1;
   }
   if (organizationHasValue(organization, 'knowledge') && (action === 'scan' || action === 'signal')) {
     const key = action === 'scan' ? 'navigation' : 'social';
