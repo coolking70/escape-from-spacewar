@@ -1,6 +1,6 @@
 import type { CampaignCommander } from '../campaignTypes';
 import type { CommanderConditionId, CommanderInjuryId } from './commanderTypes';
-import { ensureCommanderProfile } from './commanderSystem';
+import { ensureCommanderProfile, type CompleteCampaignCommander } from './commanderSystem';
 
 export const COMMANDER_CONDITION_LABEL: Record<CommanderConditionId, string> = {
   fatigued: '疲劳',
@@ -53,7 +53,11 @@ export function commanderEvadeModifier(commander: CampaignCommander, seed: numbe
   return value;
 }
 
-export function tickCommanderConditions(commander: CampaignCommander, seed: number, turns = 1): CampaignCommander {
+export function tickCommanderConditions(
+  commander: CampaignCommander,
+  seed: number,
+  turns = 1
+): CompleteCampaignCommander {
   const next = ensureCommanderProfile(commander, seed);
   next.conditions = next.conditions
     .map((condition) => ({ ...condition, remainingTurns: Math.max(0, condition.remainingTurns - Math.max(0, turns)) }))
@@ -67,7 +71,7 @@ export function addCommanderCondition(
   id: CommanderConditionId,
   severity: 1 | 2 | 3,
   remainingTurns: number
-): CampaignCommander {
+): CompleteCampaignCommander {
   const next = ensureCommanderProfile(commander, seed);
   const existing = next.conditions.find((condition) => condition.id === id);
   if (existing) {
@@ -86,9 +90,9 @@ export function addCommanderInjury(
   severity: 1 | 2 | 3,
   turn: number,
   cause: string
-): CampaignCommander {
+): CompleteCampaignCommander {
   const next = ensureCommanderProfile(commander, seed);
-  const existing = next.injuries.find((injury) => injury.id === id && injury.id !== 'fatal');
+  const existing = next.injuries.find((injury) => injury.id === id);
   if (existing) {
     existing.severity = Math.max(existing.severity, severity) as 1 | 2 | 3;
     existing.cause = cause;
@@ -104,7 +108,7 @@ export function applyBattleCommanderConsequences(
   turn: number,
   shipsLost: number,
   victory: boolean
-): CampaignCommander {
+): CompleteCampaignCommander {
   let next = ensureCommanderProfile(commander, seed);
   if (!victory) next = addCommanderCondition(next, seed, 'shaken', shipsLost >= 2 ? 2 : 1, 5);
   if (shipsLost > 0) next = addCommanderCondition(next, seed, 'fatigued', shipsLost >= 2 ? 2 : 1, 4);
@@ -115,7 +119,7 @@ export function applyBattleCommanderConsequences(
 }
 
 export interface CommanderTreatmentResult {
-  commander: CampaignCommander;
+  commander: CompleteCampaignCommander;
   text: string;
 }
 
