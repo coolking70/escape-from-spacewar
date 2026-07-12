@@ -9,6 +9,7 @@ export interface PersistentShip {
   disabled: boolean;
   escaped: boolean;
   towed: boolean;
+  deployed?: boolean;
 }
 
 export interface PersistentFleet {
@@ -20,30 +21,9 @@ export interface PersistentFleet {
 export function createStarterFleet(): PersistentFleet {
   return {
     ships: [
-      {
-        campaignShipId: 'cs-0',
-        shipClass: 'Fighter',
-        variant: 'standard',
-        disabled: false,
-        escaped: false,
-        towed: false
-      },
-      {
-        campaignShipId: 'cs-1',
-        shipClass: 'Fighter',
-        variant: 'interceptor',
-        disabled: false,
-        escaped: false,
-        towed: false
-      },
-      {
-        campaignShipId: 'cs-2',
-        shipClass: 'Frigate',
-        variant: 'standard',
-        disabled: false,
-        escaped: false,
-        towed: false
-      }
+      { campaignShipId: 'cs-0', shipClass: 'Fighter', variant: 'standard', disabled: false, escaped: false, towed: false, deployed: true },
+      { campaignShipId: 'cs-1', shipClass: 'Fighter', variant: 'interceptor', disabled: false, escaped: false, towed: false, deployed: true },
+      { campaignShipId: 'cs-2', shipClass: 'Frigate', variant: 'standard', disabled: false, escaped: false, towed: false, deployed: true }
     ],
     formation: 'line',
     doctrine: 'balanced'
@@ -51,7 +31,7 @@ export function createStarterFleet(): PersistentFleet {
 }
 
 export function activeShips(fleet: PersistentFleet): PersistentShip[] {
-  return fleet.ships.filter((ship) => !ship.disabled);
+  return fleet.ships.filter((ship) => !ship.disabled && ship.deployed !== false);
 }
 
 export function disabledShips(fleet: PersistentFleet): PersistentShip[] {
