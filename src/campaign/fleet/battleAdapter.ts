@@ -5,7 +5,7 @@ import { RULESET_V4, SIM_VERSION_V5 } from '../../sim/battleConfig';
 import { assertValidFleet } from '../../sim/fleetValidator';
 import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
-import { campaignFleetEntryCost, campaignShipCost } from './campaignPower';
+import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost } from './campaignPower';
 
 export interface CampaignBattleBinding { campaignShipId: string; battleShipId: number; }
 export interface CampaignBattleContext { origin: 'campaign'; replay: ReplayConfig; state: BattleState; rng: PRNG; bindings: CampaignBattleBinding[]; battleSeed: number; }
@@ -19,12 +19,7 @@ function encounterRatio(sectorIndex: number, threatLevel: number, gateGuard: boo
   return Math.min(gateGuard ? 1.45 : 1.08, normal + (gateGuard ? 0.22 : 0));
 }
 
-export function enemyBudgetFor(
-  sectorIndex: number,
-  threatLevel: number,
-  gateGuard = false,
-  playerPower = 220
-): number {
+export function enemyBudgetFor(sectorIndex: number, threatLevel: number, gateGuard = false, playerPower = 155): number {
   return Math.round(Math.max(50, playerPower) * encounterRatio(sectorIndex, threatLevel, gateGuard));
 }
 
@@ -43,9 +38,7 @@ function candidatePool(sectorIndex: number, threatLevel: number, gateGuard: bool
     pool.push({ shipClass: 'Frigate', variant: 'artillery', count: 1 });
     pool.push({ shipClass: 'Frigate', variant: 'support', count: 1 });
   }
-  if (threatLevel >= 4 || sectorIndex >= 3 || gateGuard) {
-    pool.push({ shipClass: 'Cruiser', variant: 'standard', count: 1 });
-  }
+  if (threatLevel >= 4 || sectorIndex >= 3 || gateGuard) pool.push({ shipClass: 'Cruiser', variant: 'standard', count: 1 });
   if (sectorIndex >= 3 || gateGuard) {
     pool.push({ shipClass: 'Cruiser', variant: 'carrier', count: 1 });
     pool.push({ shipClass: 'Cruiser', variant: 'fortress', count: 1 });
@@ -53,32 +46,22 @@ function candidatePool(sectorIndex: number, threatLevel: number, gateGuard: bool
   return pool;
 }
 
-export function enemyFleetFor(
-  seed: number,
-  sectorIndex: number,
-  threatLevel: number,
-  gateGuard = false,
-  playerPower = 220
-): FleetEntry[] {
+export function enemyFleetFor(seed: number, sectorIndex: number, threatLevel: number, gateGuard = false, playerPower = 155): FleetEntry[] {
   const target = enemyBudgetFor(sectorIndex, threatLevel, gateGuard, playerPower);
   const maxPower = Math.max(50, playerPower) * (gateGuard ? 1.5 : threatLevel >= 4 ? 1.25 : 1.15);
   const pool = candidatePool(sectorIndex, threatLevel, gateGuard);
   const result = new Map<string, FleetEntry>();
   let total = 0;
-
   for (let slot = 0; slot < 20 && total < target; slot++) {
-    const choices = pool
-      .map((entry) => ({
-        entry,
-        cost: campaignShipCost(entry.shipClass, entry.variant),
-        tie: hash32(seed, sectorIndex, threatLevel, slot, entry.shipClass, entry.variant)
-      }))
-      .filter(({ cost }) => total + cost <= maxPower + 0.001)
-      .sort((a, b) => {
-        const aGap = Math.abs(target - (total + a.cost));
-        const bGap = Math.abs(target - (total + b.cost));
-        return aGap - bGap || a.tie - b.tie;
-      });
+    const choices = pool.map((entry) => ({
+      entry,
+      cost: campaignShipCost(entry.shipClass, entry.variant),
+      tie: hash32(seed, sectorIndex, threatLevel, slot, entry.shipClass, entry.variant)
+    })).filter(({ cost }) => total + cost <= maxPower + 0.001).sort((a, b) => {
+      const aGap = Math.abs(target - (total + a.cost));
+      const bGap = Math.abs(target - (total + b.cost));
+      return aGap - bGap || a.tie - b.tie;
+    });
     const picked = choices[0];
     if (!picked) break;
     const key = `${picked.entry.shipClass}:${picked.entry.variant}`;
@@ -87,14 +70,21 @@ export function enemyFleetFor(
     else result.set(key, { ...picked.entry });
     total += picked.cost;
   }
-
   if (!result.size) result.set('Fighter:standard', { shipClass: 'Fighter', variant: 'standard', count: 1 });
   const fleet = [...result.values()];
   assertValidFleet(fleet);
-  if (campaignFleetEntryCost(fleet) > maxPower + 0.001 && playerPower >= 50) {
-    throw new Error('敌军生成超过战役战力上限。');
-  }
   return fleet;
+}
+
+function capEnemyToFleet(enemy: FleetEntry[], playerPower: number): FleetEntry[] {
+  const cap = Math.max(50, playerPower) * 1.25;
+  const next = enemy.map((entry) => ({ ...entry }));
+  while (campaignFleetEntryCost(next) > cap && next.some((entry) => entry.count > 0)) {
+    const removable = next.filter((entry) => entry.count > 0).sort((a, b) => campaignShipCost(b.shipClass, b.variant) - campaignShipCost(a.shipClass, a.variant))[0];
+    removable.count--;
+  }
+  const filtered = next.filter((entry) => entry.count > 0);
+  return filtered.length ? filtered : [{ shipClass: 'Fighter', variant: 'standard', count: 1 }];
 }
 
 export function campaignBattleReplay(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): ReplayConfig {
@@ -107,9 +97,9 @@ function sameHull(a: PersistentShip, battle: BattleState['ships'][number]): bool
   return a.shipClass === battle.type && a.variant === battle.variant;
 }
 
-/** 创建唯一的战役战斗上下文，并将持久组件 HP 写入对应的 core-v4 舰船。 */
 export function prepareCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): CampaignBattleContext {
-  const replay = campaignBattleReplay(fleet, enemy, seed);
+  const balancedEnemy = capEnemyToFleet(enemy, campaignFleetPower(fleet));
+  const replay = campaignBattleReplay(fleet, balancedEnemy, seed);
   const rng = createPRNG(seed);
   const state = createInitialState(replay, rng);
   const remaining = [...activeShips(fleet)].sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
