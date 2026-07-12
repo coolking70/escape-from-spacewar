@@ -75,7 +75,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs the frozen V0.6 regression suite, V0.7 persistence/extraction tests, and the dedicated V0.7.1 playability suite.
+`npm run test:campaign` runs the frozen V0.6 regression suite, V0.7 persistence/extraction tests, the V0.7.1 playability suite, and the V0.8 commander suite while V0.8 is under development.
 
 ## Remaining V0.7.1 review items
 
@@ -83,9 +83,25 @@ npm run build:static
 - Encounter power is an advisory heuristic and must not be presented as a guaranteed win probability.
 - Recovered and rescued hulls use intentionally simplified low-integrity rules; a full ship market remains out of scope.
 
-## Next milestone after V0.7.1
+## V0.8 commander career system
 
-V0.8 should focus on commander creation, attributes, traits, domain experience, injuries, negative conditions, recruitment, and death rules without changing frozen core-v4 battle defaults.
+### V0.8-A foundation completed on development branch
+
+- Deterministic commander profiles provide command, tactics, logistics, and resolve attributes.
+- Every new commander receives two unique deterministic traits.
+- Domain experience is split into combat, exploration, logistics, and survival.
+- Negative conditions and injury records have stable saveable data contracts.
+- Legacy V0.6/V0.7 commander records are normalized when loaded or saved without changing Campaign Code `0.2` yet.
+- The campaign HUD shows commander level, attributes, and traits.
+- Explicit domain-experience progression and fatal-injury helpers are covered by a dedicated V0.8 test suite.
+
+### V0.8-B next implementation slice
+
+- Add a commander creation screen with name and controlled starting choices.
+- Wire exploration, battle, repair, retreat, and extraction events into domain experience.
+- Apply injuries and negative conditions to campaign decisions rather than only storing them.
+- Add deterministic recruitment and a reserve commander roster while retaining one active player fleet.
+- Define active-commander replacement rules after death or incapacitation.
 
 ## Still out of scope
 
