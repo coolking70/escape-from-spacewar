@@ -1,0 +1,210 @@
+/* V0.8.1 playtest polish: compact commander panels and mobile touch layout. */
+
+.commander-event {
+  overflow: hidden;
+}
+
+.commander-event .commander-row + .btn {
+  width: 100%;
+  margin: 0 0 12px;
+}
+
+.commander-card #sp-treat-commander {
+  margin-top: 4px;
+}
+
+.commander-row {
+  overflow-wrap: anywhere;
+}
+
+.commander-row small {
+  display: block;
+}
+
+.campaign-card,
+.commander-row,
+.campaign-actions,
+.campaign-log {
+  min-width: 0;
+}
+
+@media (max-width: 700px) {
+  .campaign-menu,
+  .campaign-screen {
+    width: 100vw;
+    max-height: 100dvh;
+    margin: 0;
+    padding: 12px 10px calc(18px + env(safe-area-inset-bottom));
+    border-radius: 0;
+  }
+
+  .campaign-menu {
+    max-width: none;
+  }
+
+  .commander-create {
+    margin: 8px 0;
+    padding: 10px;
+  }
+
+  .commander-create input,
+  .commander-create select {
+    width: 100%;
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .campaign-hud {
+    gap: 5px 8px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .commander-summary {
+    flex-basis: 100%;
+    padding-top: 4px;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .sector-region-legend {
+    flex-wrap: nowrap;
+    gap: 5px;
+    overflow-x: auto;
+    padding-bottom: 3px;
+    scrollbar-width: none;
+  }
+
+  .sector-region-legend::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sector-region-legend span {
+    flex: 0 0 auto;
+  }
+
+  .sector-map {
+    height: min(44dvh, 360px);
+    min-height: 250px;
+  }
+
+  .sector-node {
+    width: 34px;
+    height: 34px;
+    margin: -17px 0 0 -17px;
+    font-size: 16px;
+    touch-action: manipulation;
+  }
+
+  .campaign-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 0;
+  }
+
+  .campaign-actions > b,
+  .campaign-actions > span,
+  .campaign-actions > small,
+  .campaign-actions > .campaign-card,
+  .campaign-actions > .encounter-risk {
+    grid-column: 1 / -1;
+  }
+
+  .campaign-actions > .btn,
+  .encounter-actions .btn,
+  .commander-event .btn,
+  .commander-card #sp-treat-commander {
+    min-height: 44px;
+    padding: 9px 10px;
+    white-space: normal;
+    line-height: 1.25;
+    touch-action: manipulation;
+  }
+
+  .campaign-card {
+    padding: 11px;
+  }
+
+  .campaign-card h3 {
+    margin-top: 0;
+  }
+
+  .commander-row {
+    gap: 2px;
+    margin: 6px 0;
+    padding: 8px 9px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .commander-row b {
+    font-size: 14px;
+  }
+
+  .commander-row small {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .commander-event .commander-row + .btn {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+
+  .deployment-list label {
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .campaign-log {
+    max-height: 150px;
+    overflow: auto;
+    font-size: 12px;
+  }
+
+  .campaign-result-overlay {
+    padding: 8px;
+  }
+
+  .campaign-result {
+    max-height: calc(100dvh - 16px);
+    padding: 16px;
+  }
+}
+
+@media (max-width: 420px) {
+  .sector-map {
+    height: 42dvh;
+    min-height: 230px;
+  }
+
+  .campaign-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .campaign-actions > * {
+    grid-column: 1;
+  }
+
+  .campaign-actions > b,
+  .campaign-actions > span,
+  .campaign-actions > small,
+  .campaign-actions > .campaign-card,
+  .campaign-actions > .encounter-risk {
+    grid-column: 1;
+  }
+
+  .encounter-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .encounter-actions .btn {
+    width: 100%;
+  }
+}
