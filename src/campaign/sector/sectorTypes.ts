@@ -1,11 +1,16 @@
 export type SectorNodeType = 'start' | 'empty' | 'resource' | 'battle' | 'hazard' | 'signal' | 'gate';
 export type NodeVisibility = 'hidden' | 'detected' | 'scanned' | 'visited';
+export type SectorRegion = 'safeRoute' | 'salvageBelt' | 'militaryZone' | 'nebula' | 'gateApproach';
+export type SectorFeature = 'rescue';
 
 export interface SectorNode {
   id: string;
   type: SectorNodeType;
   x: number;
   y: number;
+  depth: number;
+  region: SectorRegion;
+  feature?: SectorFeature;
   neighbors: string[];
   visibility: NodeVisibility;
   processed: boolean;
