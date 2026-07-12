@@ -1,9 +1,9 @@
-import { CampaignCargo, CargoItemType } from './cargo/cargoTypes';
-import { DeploymentSelection } from './deployment/deploymentSystem';
-import { ExtractionMode, ExtractionRisk } from './extraction/extractionSystem';
-import { PersistentFleet } from './fleet/persistentFleet';
-import { PendingSalvage, SalvageOptionId } from './salvage/salvageTypes';
-import { SectorState } from './sector/sectorTypes';
+import type { CampaignCargo, CargoItemType } from './cargo/cargoTypes';
+import type { DeploymentSelection } from './deployment/deploymentSystem';
+import type { ExtractionMode, ExtractionRisk } from './extraction/extractionSystem';
+import type { PersistentFleet } from './fleet/persistentFleet';
+import type { PendingSalvage, SalvageOptionId } from './salvage/salvageTypes';
+import type { SectorState } from './sector/sectorTypes';
 
 export interface CampaignCommander {
   id: string;
