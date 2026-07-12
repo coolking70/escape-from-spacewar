@@ -102,6 +102,7 @@ export type CampaignAction =
   | { type: 'resolveRecruitment'; candidateId?: string }
   | { type: 'appointCommander'; commanderId: string }
   | { type: 'treatCommander' }
+  | { type: 'emergencyRefuel' }
   | { type: 'useCargo'; itemType: CargoItemType }
   | { type: 'jettisonCargo'; itemType: CargoItemType; quantity?: number }
   | { type: 'fieldRepair'; campaignShipId: string }
