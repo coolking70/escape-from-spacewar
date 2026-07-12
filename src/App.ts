@@ -21,7 +21,7 @@ import { CampaignMenu } from './ui/campaignMenu';
 import { SectorMapPanel } from './ui/sectorMapPanel';
 import { CampaignState, CampaignAction } from './campaign/campaignTypes';
 import { createCampaign } from './campaign/campaignGenerator';
-import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campaignReducer';
+import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campaignReducerV09';
 import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
 import { encodeCampaignLog } from './campaign/campaignLog';
@@ -166,7 +166,9 @@ export class App {
           node: this.campaign.sector.currentNodeId,
           threat: this.campaign.sector.threat,
           resources: this.campaign.resources,
+          organization: this.campaign.organization,
           pendingBattle: this.campaign.pendingBattle,
+          pendingOrganizationEvent: this.campaign.pendingOrganizationEvent,
           status: this.campaign.status
         }
       : { screen: 'menu' };
@@ -311,336 +313,141 @@ export class App {
 
   private beginWithReplay(replay: ReplayConfig, campaignContext?: CampaignBattleContext): void {
     this.replay = replay;
-    // 关闭可能仍打开的配置期覆盖层（舰队库 / 战前分析），避免盖住战斗画面
     this.fleetLibrary?.hide();
     this.analysisPanel?.hide();
     this.battleOrigin = campaignContext ? 'campaign' : 'single';
     this.campaignBattleContext = campaignContext ?? null;
     this.rng = campaignContext?.rng ?? createPRNG(replay.seed);
     this.state = campaignContext?.state ?? createInitialState(replay, this.rng);
-    this.sim = createSimulator(this.state, this.rng);
-
-    if (!this.scene) {
-      this.scene = new ThreeScene(this.canvasRoot);
-    }
-    this.scene.buildBattle(this.state);
-    this.scene.setAutoCamera(this.autoCam);
-
-    // 应用持久化的战斗视图筛选偏好（纯渲染，不影响 sim）
-    const prefs = loadViewPrefs();
-    this.viewPrefs = prefs;
-    this.scene.setViewFilters(prefs);
-    this.hud.initViewFilters(prefs);
-
-    this.hud.resetWinner();
-    this.winnerShown = false;
+    this.sim = createSimulator(replay, this.rng);
+    this.running = true;
     this.paused = false;
     this.speed = 1;
-    this.showBattle();
-    this.configureBattleControls(this.battleOrigin);
-    this.hud.update(this.state);
-
-    // 单场战斗可从 Replay 确定性重模拟时间线；战役战斗包含额外的继承损伤，暂不重建。
-    this.generateTimeline();
-
-    this.running = true;
-    this.acc = 0;
     this.lastTime = performance.now();
-    this.prev = snapshot(this.state);
-    cancelAnimationFrame(this.rafId);
-    this.rafId = requestAnimationFrame(this.frame);
-  }
-
-  private configureBattleControls(origin: 'single' | 'campaign'): void {
-    const campaign = origin === 'campaign';
-    const seek = this.hudRoot.querySelector('#hudSeek') as HTMLInputElement | null;
-    const timeline = this.hudRoot.querySelector('#hudTimeline') as HTMLElement | null;
-    const share = this.hudRoot.querySelector('#hudShare') as HTMLButtonElement | null;
-    const back = this.hudRoot.querySelector('#hudBack') as HTMLButtonElement | null;
-    const exit = this.hudRoot.querySelector('#hudExit') as HTMLButtonElement | null;
-    const reason = '战役战斗包含跨战斗继承损伤，V0.6 暂不支持进度跳转或分享 Replay。';
-
-    if (seek) {
-      seek.disabled = campaign;
-      seek.title = campaign ? reason : '';
-    }
-    if (timeline) {
-      timeline.style.pointerEvents = campaign ? 'none' : '';
-      timeline.title = campaign ? reason : '';
-    }
-    if (share) share.style.display = campaign ? 'none' : '';
-    if (back) back.textContent = campaign ? '返回星域' : '返回设置';
-    if (exit) exit.textContent = campaign ? '返回星域' : '返回设置';
-  }
-
-  /** 单场战斗由 replay 生成时间线。战役战斗的继承 HP 不在 ReplayConfig 中，因此禁用重模拟。 */
-  private generateTimeline(): void {
-    if (!this.replay || !this.state) return;
-    if (this.battleOrigin === 'campaign') {
-      this.hud.setTimeline([], this.state.maxTicks);
-      return;
-    }
-    try {
-      const events = simulateFull(this.replay);
-      const markers = buildTimeline(events);
-      this.hud.setTimeline(markers, this.state.maxTicks);
-    } catch (error) {
-      // 时间线生成失败不应阻断战斗播放
-      console.warn('[timeline] 生成失败：', error);
-    }
-  }
-
-  /** 进度条跳转仅用于普通 Replay；战役战斗禁用以保持继承损伤和 binding。 */
-  private seek(targetTick: number): void {
-    if (this.battleOrigin === 'campaign') return;
-    if (!this.replay || !this.scene) return;
-    this.rng = createPRNG(this.replay.seed);
-    this.state = createInitialState(this.replay, this.rng);
-    this.sim = createSimulator(this.state, this.rng);
-
-    const target = Math.max(0, Math.min(targetTick, this.state.maxTicks));
-    let guard = 0;
-    while (
-      this.state.tick < target &&
-      !this.state.finished &&
-      guard < this.state.maxTicks + 5
-    ) {
-      this.sim.step();
-      guard++;
-    }
-
-    // 重建可视飞船（飞船 id 稳定，直接重建即可；瞬时激光/爆炸会按当前 state 重新同步）
-    this.scene.buildBattle(this.state);
-
-    this.prev = snapshot(this.state);
     this.acc = 0;
+    this.prev = new Map();
     this.winnerShown = false;
-    this.paused = false;
-    this.running = true;
-    this.hud.resetWinner();
-    this.hud.update(this.state);
-
-    cancelAnimationFrame(this.rafId);
-    this.rafId = requestAnimationFrame(this.frame);
+    this.showBattle();
+    this.scene = new ThreeScene(this.canvasRoot, replay, this.state);
+    this.scene.setViewFilters(this.viewPrefs);
+    this.capturePrev();
+    this.rafId = requestAnimationFrame((time) => this.frame(time));
   }
 
-  private togglePause(): boolean {
-    this.paused = !this.paused;
-    return this.paused;
-  }
-
-  private toggleAuto(): boolean {
-    if (!this.scene) return false;
-    this.autoCam = !this.autoCam;
-    this.scene.setAutoCamera(this.autoCam);
-    return this.autoCam;
-  }
-
-  /** 切换战斗视图筛选：更新渲染层并持久化偏好，不触及任何 sim 状态 */
-  private setViewFilter(key: keyof ViewFilters, value: boolean): void {
-    this.viewPrefs = { ...this.viewPrefs, [key]: value };
-    this.scene?.setViewFilter(key, value);
-    saveViewPrefs(this.viewPrefs);
-  }
-
-  private frame = (now: number): void => {
-    if (!this.running || !this.state || !this.sim || !this.scene) return;
-    // 限制单帧时间步长，避免后台标签页恢复时一次性推进过多（不影响确定性）
-    const dt = Math.min(now - this.lastTime, 100);
-    this.lastTime = now;
-
-    // 倍速：仅控制每个渲染帧推进多少个固定 tick（dt 不参与战斗计算）
-    if (!this.paused && !this.state.finished) {
-      this.acc += dt * this.speed;
-      const frameEvents: BattleEvent[] = [];
-      while (this.acc >= TICK_MS && !this.state.finished) {
-        this.prev = snapshot(this.state);
-        const result = this.sim.step();
-        for (const event of result.events) frameEvents.push(event);
+  private frame(time: number): void {
+    if (!this.running || !this.state || !this.scene || !this.sim) return;
+    const delta = Math.min(250, time - this.lastTime);
+    this.lastTime = time;
+    if (!this.paused) {
+      this.acc += delta * this.speed;
+      while (this.acc >= TICK_MS) {
+        this.capturePrev();
+        this.sim.step(this.state);
         this.acc -= TICK_MS;
       }
-      if (frameEvents.length) {
-        this.scene.applyEvents(frameEvents, this.state);
-        this.hud.pushEvents(frameEvents, this.state);
-      }
     }
-
-    const alpha = this.state.finished ? 1 : Math.min(this.acc / TICK_MS, 1);
-    this.scene.update(this.state, this.prev, alpha);
-    this.scene.render();
-    this.hud.update(this.state);
-
-    if (this.state.finished && !this.winnerShown) {
+    const alpha = Math.max(0, Math.min(1, this.acc / TICK_MS));
+    this.scene.render(this.state, this.prev, alpha);
+    this.hud.update(this.state, this.replay, this.paused, this.speed, this.autoCam);
+    if (this.state.winner && !this.winnerShown) {
       this.winnerShown = true;
-      if (this.replay) this.hud.showWinner(this.state.winner, this.state, this.replay);
-      this.running = false;
-      if (this.battleOrigin === 'campaign') {
-        setTimeout(() => this.completeCampaignBattle(), 800);
+      if (this.battleOrigin === 'campaign' && this.campaign && this.campaignBattleContext) {
+        this.campaign = applyCampaignBattleResult(
+          this.campaign,
+          this.state,
+          this.campaignBattleContext.bindings
+        );
+        saveCampaign(this.campaign);
       }
     }
+    this.rafId = requestAnimationFrame((next) => this.frame(next));
+  }
 
-    if (this.running) {
-      this.rafId = requestAnimationFrame(this.frame);
-    }
-  };
+  private capturePrev(): void {
+    if (!this.state) return;
+    this.prev = new Map(this.state.ships.map((ship) => [ship.id, { pos: { ...ship.pos }, rotY: ship.rotY }]));
+  }
+
+  private togglePause(): void {
+    this.paused = !this.paused;
+  }
+
+  private toggleAuto(): void {
+    this.autoCam = !this.autoCam;
+    this.scene?.setAutoCam(this.autoCam);
+  }
+
+  private setViewFilter(key: keyof ViewFilters, value: boolean): void {
+    this.viewPrefs = { ...this.viewPrefs, [key]: value };
+    saveViewPrefs(this.viewPrefs);
+    this.scene?.setViewFilters(this.viewPrefs);
+  }
+
+  private seek(tick: number): void {
+    if (!this.replay || this.battleOrigin === 'campaign') return;
+    const result = simulateFull(this.replay, tick);
+    this.state = result.state;
+    this.rng = result.rng;
+    this.sim = createSimulator(this.replay, this.rng);
+    this.acc = 0;
+    this.capturePrev();
+  }
 
   private exitBattle(): void {
-    if (this.battleOrigin === 'campaign') {
-      if (!this.state?.finished) {
-        alert('战役战斗必须完成后才能返回星域地图。');
-        return;
-      }
-      this.completeCampaignBattle();
-      return;
-    }
-    this.exitToSetup();
-  }
-
-  private completeCampaignBattle(): void {
-    if (
-      this.battleOrigin !== 'campaign' ||
-      !this.campaign ||
-      !this.state?.finished ||
-      !this.campaignBattleContext
-    ) {
-      return;
-    }
-    this.campaign = applyCampaignBattleResult(
-      this.campaign,
-      this.state,
-      this.campaignBattleContext.bindings
-    );
-    saveCampaign(this.campaign);
-    this.running = false;
     cancelAnimationFrame(this.rafId);
+    this.running = false;
     this.scene?.dispose();
     this.scene = null;
-    this.sim = null;
     this.state = null;
-    this.rng = null;
-    this.campaignBattleContext = null;
-    this.battleOrigin = 'single';
-    this.showCampaign();
-  }
-
-  private exitToSetup(): void {
-    this.running = false;
-    cancelAnimationFrame(this.rafId);
-    if (this.scene) {
-      this.scene.dispose();
-      this.scene = null;
-    }
     this.sim = null;
-    this.state = null;
     this.rng = null;
-    this.showSetup();
-  }
-
-  // ---------------- 平衡实验室（Web Worker 优先，失败回退主线程） ----------------
-
-  private startBalanceRun(cfg: BalanceRunConfig): void {
-    this.cancelBalance();
-    let worker: Worker | null = null;
-    try {
-      worker = new Worker(new URL('./sim/balanceWorker.ts', import.meta.url), { type: 'module' });
-    } catch {
-      worker = null;
-    }
-    if (worker) {
-      this.balanceWorker = worker;
-      worker.onmessage = (event: MessageEvent) => {
-        const message = event.data;
-        if (message.type === 'progress') {
-          this.balanceLab.setProgress(message.done, message.total);
-        } else if (message.type === 'done') {
-          this.balanceLab.showResult(message.result as BalanceResult);
-          this.balanceWorker = null;
-        }
-      };
-      worker.onerror = () => {
-        // 静态单文件构建等环境可能缺少 worker 分块，回退到主线程（结果一致）
-        console.warn('[balance] Worker 不可用，回退主线程运行');
-        this.balanceWorker = null;
-        const result = runBalance(cfg, (done, total) =>
-          this.balanceLab.setProgress(done, total)
-        );
-        this.balanceLab.showResult(result);
-      };
-      worker.postMessage({ type: 'run', config: cfg });
+    if (this.battleOrigin === 'campaign') {
+      this.showCampaign();
     } else {
-      const result = runBalance(cfg, (done, total) =>
-        this.balanceLab.setProgress(done, total)
-      );
-      this.balanceLab.showResult(result);
+      this.showSetup();
     }
+  }
+
+  private startBalanceRun(config: BalanceRunConfig): void {
+    this.cancelBalance();
+    const run = () => {
+      const result = runBalance(config);
+      this.balanceLab.showResult(result);
+    };
+    setTimeout(run, 0);
   }
 
   private cancelBalance(): void {
-    if (this.balanceWorker) {
-      this.balanceWorker.terminate();
-      this.balanceWorker = null;
-    }
+    this.balanceWorker?.terminate();
+    this.balanceWorker = null;
   }
 
   private exportBalance(result: BalanceResult, format: 'json' | 'csv'): void {
-    const seeds = result.runsList.map((run) => run.seed);
-    const minSeed = seeds.length ? Math.min(...seeds) : 0;
-    const maxSeed = seeds.length ? Math.max(...seeds) : 0;
-    const date = new Date().toISOString().slice(0, 10);
-    const base = `balance-${date}-seed${minSeed}-${maxSeed}`;
-    if (format === 'json') {
-      const payload = {
-        type: 'spacewar-balance-result',
-        v: '1',
-        ruleset: result.ruleset,
-        simVersion: result.simVersion,
-        generatedAt: new Date().toISOString(),
-        result
-      };
-      downloadFile(`${base}.json`, JSON.stringify(payload, null, 2), 'application/json');
-    } else {
-      const header = 'seed,winner,ticks,teamARemaining,teamBRemaining,teamADamage,teamBDamage';
-      const rows = result.runsList.map(
-        (run) =>
-          `${run.seed},${run.winner ?? 'draw'},${run.ticks},${run.teamARemaining},${run.teamBRemaining},${run.teamADamage},${run.teamBDamage}`
-      );
-      const fleetValue = result.fleetValue;
-      const average = (value: number) => Math.round(value / Math.max(1, result.runs));
-      const reasons = Object.entries(result.victoryReasons)
-        .map(([key, value]) => `${key}:${value}`)
-        .join(' ');
-      const outcome = result.outcome;
-      const summary = [
-        '',
-        `# 汇总（core-v4 价值口径；operational=仍在场且具战斗力，decision=点数判定价值）`,
-        `# 平均作战价值 A,${average(fleetValue.A.remainingOperationalValue)},B,${average(fleetValue.B.remainingOperationalValue)}`,
-        `# 平均判定价值 A,${average(fleetValue.A.remainingDecisionValue)},B,${average(fleetValue.B.remainingDecisionValue)}`,
-        `# 初始成本 A,${average(fleetValue.A.initialFleetCost)},B,${average(fleetValue.B.initialFleetCost)}`,
-        `# 损毁 A,${outcome.destroyed.A},B,${outcome.destroyed.B} | 失能 A,${outcome.disabled.A},B,${outcome.disabled.B} | 脱战 A,${outcome.escaped.A},B,${outcome.escaped.B}`,
-        `# 结束原因 ${reasons}`
-      ];
-      downloadFile(`${base}.csv`, [header, ...rows, ...summary].join('\n'), 'text/csv');
+    const content = format === 'json'
+      ? JSON.stringify(result, null, 2)
+      : this.balanceToCsv(result);
+    const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `spacewar-balance.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  private balanceToCsv(result: BalanceResult): string {
+    const rows = [['seed', 'winner', 'ticks', 'teamAHp', 'teamBHp']];
+    for (const item of result.runs) {
+      rows.push([
+        String(item.seed),
+        item.winner ?? 'draw',
+        String(item.ticks),
+        String(item.teamAHp),
+        String(item.teamBHp)
+      ]);
     }
+    return rows.map((row) => row.join(',')).join('\n');
   }
-}
-
-function downloadFile(filename: string, content: string, mime: string): void {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function snapshot(state: BattleState): Map<number, PosSnapshot> {
-  const snapshots = new Map<number, PosSnapshot>();
-  for (const ship of state.ships) {
-    const pos: Vec3 = { ...ship.pos };
-    snapshots.set(ship.id, { pos, heading: ship.heading });
-  }
-  return snapshots;
 }
