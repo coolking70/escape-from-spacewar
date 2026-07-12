@@ -6,7 +6,7 @@ import { generateSector, isReachable } from './sector/sectorGenerator';
 import { enemyBudgetFor, enemyFleetFor, deriveBattleSeed, prepareCampaignBattle, runCampaignBattle } from './fleet/battleAdapter';
 import { validateFleet } from '../sim/fleetValidator';
 import { clearCampaign, loadCampaign, saveCampaign } from './campaignPersistence';
-import { resourceReward } from './sector/sectorActions';
+import { hazardOutcome, resourceReward, signalOptions, signalTemplate } from './sector/sectorActions';
 import { addThreat } from './sector/threatSystem';
 import { createStarterFleet } from './fleet/persistentFleet';
 import { importBattleResult } from './fleet/battleResultImporter';
@@ -47,6 +47,12 @@ export function runCampaignTests(): SuiteResult {
     }
     {
       const t = new Case('迷雾与终局拒绝行动'); const s = createCampaign(33); const graph = visibleSectorGraph(s.sector); t.true_(graph.edges.every(([a, b]) => s.sector.nodes.find((n) => n.id === a)!.visibility !== 'hidden' && s.sector.nodes.find((n) => n.id === b)!.visibility !== 'hidden'), '隐藏节点和边不会出现在可见图'); const ended = { ...s, status: 'victory' as const }; t.eq(applyCampaignAction(ended, { type: 'wait' }).turn, ended.turn, '胜利后行动被拒绝'); t.true_(enemyBudgetFor(3, 0) > enemyBudgetFor(2, 0), '高星域预算递增'); t.true_(enemyBudgetFor(2, 4) >= enemyBudgetFor(2, 0), '威胁不降低预算'); t.true_(enemyBudgetFor(2, 1, true) > enemyBudgetFor(2, 1), '星门守卫强于普通战斗'); add(t);
+    }
+    {
+      const t = new Case('信号与危险模板完整且确定'); const names = new Set<string>(); const hazards = new Set<string>(); for (let seed = 0; seed < 300 && (names.size < 5 || hazards.size < 3); seed++) { const s = createCampaign(seed); const node = s.sector.nodes.find((n) => n.type === 'signal')!.id; const signal = signalTemplate(s, node); names.add(signal); t.eq(signalOptions(s, node).length, 2, `${signal} 有两个选项`); t.eq(JSON.stringify(signalOptions(s, node)), JSON.stringify(signalOptions(s, node)), '信号选项确定'); const hazard = hazardOutcome(s, node); hazards.add(hazard.name); t.eq(JSON.stringify(hazard), JSON.stringify(hazardOutcome(s, node)), `${hazard.name} 结算确定`); } t.eq(names.size, 5, '五个信号模板均可生成'); t.eq(hazards.size, 3, '三类 hazard 均可生成'); add(t);
+    }
+    {
+      const t = new Case('深层损坏 Campaign Code 被拒绝'); const valid = createCampaign(66); const duplicate = JSON.parse(JSON.stringify(valid)); duplicate.fleet.ships.push({ ...duplicate.fleet.ships[0] }); const badEdge = JSON.parse(JSON.stringify(valid)); badEdge.sector.nodes[0].neighbors.push('missing-node'); const code = (state: unknown) => encodeCampaign(state as any); let duplicateRejected = false, edgeRejected = false; try { code(duplicate); } catch { duplicateRejected = true; } try { code(badEdge); } catch { edgeRejected = true; } t.true_(duplicateRejected, '重复 campaignShipId 被拒绝'); t.true_(edgeRejected, '非法节点连线被拒绝'); add(t);
     }
   });
 }
