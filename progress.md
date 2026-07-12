@@ -4,132 +4,99 @@
 
 - `spacewar-core-v4` remains frozen.
 - Replay format remains `v0.5` with ruleset `spacewar-core-v4`.
-- V0.6 sector Roguelike vertical slice is frozen.
-- V0.7 campaign save format remains `0.2`; older `0.1` and earlier `0.2` states migrate in place.
-- V0.7.1 playability and readability fixes are merged into `main`.
-- V0.8 commander creation, career, health, recruitment, and succession are merged into `main`.
+- V0.6 through V0.8.1 campaign milestones are frozen on `main`.
+- V0.9 upgrades Campaign Code from `0.2` to `0.3` while retaining `0.1` and `0.2` migration.
+- Campaign Log format is `1.1`.
 - GitHub Actions uses Node.js 24.
 
-## V0.7 completed scope
+## Frozen campaign foundation
 
-- Capacity-limited weighted cargo, salvage, field repair, towing, dismantling, and abandonment.
-- Persistent ship identity, component HP, disabled/towing state, cargo, and history.
-- Pre-battle deployment with stable `campaignShipId ↔ battleShipId` bindings.
-- Extraction preparation, normal/emergency jumps, jettison, deterministic jump damage, and sector summaries.
-- Terminal campaign result flow and structured campaign log export.
+### V0.7 and V0.7.1
 
-## V0.7.1 playability pass
+- Weighted cargo, salvage, field repair, towing, dismantling, abandonment, deployment, extraction and sector summaries.
+- Persistent ship identity and component damage across battles and sectors.
+- Hull-aware encounter scaling, visible risk, deterministic evasion, manual and automatic retreat.
+- Fleet recovery through rescued and disabled hulls.
+- Seven-layer structured sector map and battle/map readability improvements.
 
-### A. Difficulty and encounter survival
+### V0.8 and V0.8.1
 
-- Campaign power uses hull-aware standard costs: Fighter 50, Frigate 150, Cruiser 360.
-- Persistent ship power is reduced by component damage and disabled status.
-- Normal encounters scale to the currently deployed operational fleet instead of a fixed sector-only budget.
-- The pre-battle panel shows player power, estimated enemy power, ratio, and danger class.
-- Deterministic evasion exposes both the calculated chance and stable result.
-- A pending encounter can be abandoned before battle by spending fuel and returning to its origin node.
-- Campaign battles expose a manual full-fleet retreat command.
-- Automatic retreat checks run after fixed simulation ticks rather than render frames.
-- Retreat preserves component damage, grants no salvage, and leaves the encounter unresolved.
+- Commander creation, attributes, deterministic traits and four career domains.
+- Health conditions, injuries, treatment and campaign-level effects.
+- Deterministic recruitment, three-person reserve roster and succession.
+- Recruitment cadence, treatment cost, trauma thresholds and narrow-screen UI completed through playtest closeout.
 
-### B. Fleet recovery economy
+## V0.9 organization and modular technology
 
-- Disabled enemy ships can occasionally appear as a post-battle recovery choice.
-- A recovered hull joins at low component integrity in disabled/towed state.
-- Rescue signals provide a damaged friendly Fighter as an early recovery path.
-- Sectors generated for a fleet with one or fewer operational ships guarantee a recovery opportunity.
-- Field repair can reactivate disabled ships once core, engine, and weapon systems are operational.
+### A. Organization identity
 
-### C. Structured sector map and readability
+- Four archetypes: expedition, military, commerce and exile.
+- Five governments: military council, captains assembly, corporate board, technocracy and emergency directorate.
+- Two distinct values selected from order, freedom, survival, expansion, knowledge, profit and unity.
+- Stable organization id and default values derived from campaign seed and creation choices.
+- Organization stability plus civilian, military and frontier reputation.
 
-- Sectors use seven left-to-right route layers, multiple forks, regional themes, and deterministic shortcuts.
-- The first sector guarantees early resources, a rescue signal, and no forced battle nodes in its first two layers.
-- Nodes, connectors, traveled routes, battle ships, and the space background have stronger visual separation.
+### B. Government and archetype effects
 
-## V0.8 commander career system
+- Expedition organizations reduce scan pressure and begin with deep sensors.
+- Military organizations and military councils improve tactical research.
+- Commerce organizations and corporate boards improve material gathering.
+- Exile organizations reduce treatment and emergency logistics costs.
+- Technocracy improves action-derived research.
+- Emergency directorate further reduces emergency refuel cost.
+- Values unlock organization-event options and modify research, logistics or survival decisions.
 
-### Creation and profile
+### C. Research and modular technology
 
-- New campaigns provide commander name and starting-focus controls.
-- Starting focuses are balanced, tactician, quartermaster, scout, and survivor.
-- Commanders have command, tactics, logistics, and resolve attributes.
-- Every commander receives two unique deterministic traits; a focused profile guarantees one related trait.
-- Profiles are deterministic for the same campaign seed, commander id, and creation choices.
+Research resources:
 
-### Career progression
+- navigation
+- engineering
+- tactical
+- social
 
-- Domain experience is split into combat, exploration, logistics, and survival.
-- Exploration, signals, gathering, battle results, repair, evasion, hazards, and extraction contribute to relevant domains.
-- Experience is reconstructed from persisted campaign history, making save synchronization idempotent.
-- Total experience raises commander level at stable thresholds.
+Research is earned from scanning, gathering, signals, battle, salvage, repair, treatment and extraction.
 
-### Health and campaign effects
+Technology modules:
 
-- Fatigue, shaken, wounded, and scarred conditions have severity and duration.
-- Wounds, burns, fractures, trauma, and fatal injuries are persistable records.
-- Fatigue and logistical aptitude affect turn-based supply consumption.
-- Attributes, traits, conditions, and injuries affect deterministic pre-battle evasion chance.
-- Battle losses, failed evasion, hazards, and emergency extraction can create negative conditions or trauma.
-- Treatment consumes one turn and two additional supplies.
-- A severity-three nonfatal injury incapacitates the active commander.
+- jump calibration
+- modular cargo
+- field repair protocol
+- deep sensor array
+- retreat coordination
+- trauma care
 
-### Recruitment and succession
+Each organization begins with one archetype technology installed and has two technology slots. Technology must be unlocked with research resources before installation. Installed modules affect campaign calculations only.
 
-- Eligible signal resolutions can produce two deterministic recruitment candidates.
-- Recruitment costs supplies and adds one candidate to a reserve roster capped at three.
-- Recruitment offers and reserve rosters are blocking decisions and persist in Campaign Code.
-- A dead or incapacitated active commander triggers a succession choice when an available reserve exists.
-- An available reserve can be appointed as active commander; a living incapacitated predecessor moves into reserve.
-- With no usable successor, commander death ends the campaign; an incapacitated living commander may still be treated.
-- Total fleet destruction records a fatal commander injury with cause `舰队全歼`.
+### D. Campaign integration
 
-### Save compatibility and validation
+- Organization creation is part of the new-campaign menu.
+- Organization identity, stability and government appear in the campaign HUD.
+- A full organization and technology card supports unlock, install and uninstall actions.
+- Modular cargo adjusts live cargo capacity and cannot be removed while the resulting capacity would be exceeded.
+- Deep sensors affect scan threat and evasion.
+- Jump calibration affects extraction fuel.
+- Repair and trauma technologies affect field operations.
+- Retreat coordination affects evasion and post-battle stability.
+- Structured Campaign Log exports include organization, research and technology state.
 
-- Campaign Code remains `0.2` during this additive milestone.
-- V0.6/V0.7 and earlier V0.8-compatible saves receive complete commander profiles, empty reserve rosters, and succession defaults.
-- Additive migrations are written back even when the numeric save version does not change.
-- Deep validation covers attributes, traits, domains, conditions, injuries, unique commander ids, roster size, recruitment candidates, and valid succession states.
+### E. Organization events
 
-### UI
+- Entering a new sector creates one deterministic organization event.
+- Events currently cover rescue allocation, route security and relic disposition.
+- Options can require organization values.
+- Effects can modify stability, reputation, research, supplies, fuel, materials and threat.
+- A pending organization event blocks normal sector actions until resolved.
+- Stability reaching zero ends the campaign in defeat.
 
-- The campaign menu includes commander creation controls.
-- The campaign HUD and commander card show level, attributes, traits, domain experience, conditions, and injuries.
-- Recruitment, treatment, reserve roster, and successor appointment are playable through the sector screen.
+## Save migration and validation
 
-## V0.8.1 playtest closeout
-
-### Recruitment balance
-
-- A sector can produce at most one commander recruitment offer.
-- The first reserve commander remains guaranteed on the first eligible signal.
-- With one reserve commander, later offers use a 1-in-4 deterministic roll.
-- With two reserve commanders, later offers use a 1-in-8 deterministic roll.
-- Recruitment supply cost scales from 2 to 3 to 4 as the reserve roster fills.
-- A full three-person reserve roster disables further offers.
-
-### Health and treatment balance
-
-- Fatigue and shaken conditions are capped at three turns; wounded is capped at four turns.
-- One treatment clears the most serious temporary non-permanent condition.
-- Injuries still require staged severity reduction and remain more expensive over time.
-- Losing two ships causes severity-two trauma instead of immediate incapacitation.
-- Losing three ships still causes severity-three trauma and triggers succession pressure.
-- Temporary conditions naturally expire through normal campaign turns.
-
-### Narrow-screen campaign UI
-
-- Campaign panels use `100dvh` and safe-area bottom padding.
-- Commander creation controls use full-width 44px touch targets.
-- The sector map is shorter on phones so actions and commander panels remain reachable.
-- Campaign, recruitment, deployment, treatment, and succession actions use touch-sized controls.
-- Very narrow screens switch campaign actions to a single-column layout.
-- Logs and region legends remain scrollable without expanding the page indefinitely.
-
-### V0.8.1 verification
-
-- Dedicated tests cover recruitment cadence and cost, condition caps, treatment behavior, trauma thresholds, natural recovery, and a complete three-sector campaign smoke flow.
-- The three-sector flow includes recruitment, treatment, normal extraction, reserve persistence, victory, Campaign Code round-trip, and deep validation.
-- V0.6, V0.7, V0.7.1, V0.8, core-v4, determinism, stress, and static build regressions remain in the standard matrix.
+- Campaign Code version is `0.3`.
+- `0.1` and `0.2` saves receive a deterministic default expedition organization.
+- Migration adds organization identity, reputation, research, technology slots and event defaults.
+- Invalid or duplicate technology ids are normalized during migration.
+- Deep validation covers organization identity, two unique values, stability, reputation, research resources, technology unlock/install relationships and pending organization events.
+- Additive migration is written back to the existing local-storage key.
 
 ## Verification matrix
 
@@ -143,16 +110,33 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs frozen V0.6 regressions, V0.7 persistence/extraction tests, V0.7.1 playability tests, V0.8 commander tests, and the V0.8.1 playtest closeout suite.
+`npm run test:campaign` runs V0.6, V0.7, V0.7.1, V0.8, V0.8.1 and V0.9 suites.
 
-## Next milestone after V0.8.1
+The V0.9 suite covers:
 
-V0.9 should focus on organizations, government/faction identity, and a modular technology framework without adding multiple player fleets or changing frozen core-v4 battle defaults.
+- deterministic organization creation and archetype starting modules
+- `0.2 → 0.3` migration
+- Campaign Code round-trip and invalid organization rejection
+- research gains and organization modifiers
+- technology unlock, installation, removal and cargo safety
+- deterministic value-gated organization events
+- event action blocking
+- cross-sector event creation
+- jump fuel technology
+- treatment cost and organization-collapse defeat
+- a complete three-sector V0.9 smoke flow
 
-## Still out of scope
+## V0.9 boundary
 
-- Multiple player fleets and bases.
-- Full faction diplomacy and markets.
-- Succession politics beyond the local active/reserve commander handoff.
-- Random equipment affixes or a complete equipment system.
-- New core-v4 ship classes, variants, or default replay balance changes.
+V0.9 deliberately does not add:
+
+- multiple player fleets or bases
+- external faction diplomacy
+- market prices or trade routes
+- internal political factions or voting simulations
+- a large branching technology tree
+- new core-v4 ship classes, variants or default battle balance
+
+## Next milestone candidate
+
+After V0.9 playtest acceptance, the next milestone should deepen one of the existing strategic systems rather than widen all of them at once. The recommended path is a V0.9.1 balance and usability pass followed by a focused V1.0 vertical campaign release plan.
