@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -16,106 +16,6 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Apply mobility softlock fix
-        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/v0.8-commanders'
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          def replace(path: str, old: str, new: str) -> None:
-              file = Path(path)
-              text = file.read_text()
-              if new in text:
-                  return
-              if old not in text:
-                  raise SystemExit(f'expected patch anchor missing: {path}')
-              file.write_text(text.replace(old, new, 1))
-
-          # Campaign action contract (idempotent because this line may already exist).
-          types = Path('src/campaign/campaignTypes.ts')
-          text = types.read_text()
-          if "| { type: 'emergencyRefuel' }" not in text:
-              text = text.replace(
-                  "  | { type: 'treatCommander' }\n",
-                  "  | { type: 'treatCommander' }\n  | { type: 'emergencyRefuel' }\n",
-                  1
-              )
-              types.write_text(text)
-
-          # Reducer availability and recovery action.
-          replace(
-              'src/campaign/campaignReducer.ts',
-              "  enterGate: boolean;\n  wait: boolean;\n",
-              "  enterGate: boolean;\n  emergencyRefuel: boolean;\n  wait: boolean;\n"
-          )
-          replace(
-              'src/campaign/campaignReducer.ts',
-              "function emptyAvailability(): CampaignActionAvailability {\n  return { move: false, scan: false, gather: false, resolveSignal: false, resolveSalvage: false, enterGate: false, wait: false };\n}",
-              "function emptyAvailability(): CampaignActionAvailability {\n  return {\n    move: false,\n    scan: false,\n    gather: false,\n    resolveSignal: false,\n    resolveSalvage: false,\n    enterGate: false,\n    emergencyRefuel: false,\n    wait: false\n  };\n}"
-          )
-          replace(
-              'src/campaign/campaignReducer.ts',
-              "  const neighbors = current.neighbors.map((id) => state.sector.nodes.find((node) => node.id === id)).filter(Boolean);\n  return {\n    move: state.resources.fuel >= movementFuelCost(state.fleet) && neighbors.length > 0,\n    scan: neighbors.some((node) => node?.visibility === 'detected'),\n    gather: current.type === 'resource' && !current.gathered,\n    resolveSignal: current.type === 'signal' && !current.signalResolved,\n    resolveSalvage: false,\n    enterGate: current.type === 'gate',\n    wait: state.resources.supplies > 0\n  };\n",
-              "  const neighbors = current.neighbors.map((id) => state.sector.nodes.find((node) => node.id === id)).filter(Boolean);\n  const fuelCost = movementFuelCost(state.fleet);\n  const hasRoute = neighbors.length > 0;\n  return {\n    move: state.resources.fuel >= fuelCost && hasRoute,\n    scan: neighbors.some((node) => node?.visibility === 'detected'),\n    gather: current.type === 'resource' && !current.gathered,\n    resolveSignal: current.type === 'signal' && !current.signalResolved,\n    resolveSalvage: false,\n    enterGate: current.type === 'gate',\n    emergencyRefuel: hasRoute && state.resources.fuel < fuelCost && state.resources.supplies >= 2,\n    wait: state.resources.supplies > 0\n  };\n"
-          )
-          replace(
-              'src/campaign/campaignReducer.ts',
-              "  if (action.type === 'fieldRepair') return repairShip(state, action.campaignShipId);\n  if (action.type === 'towShip' || action.type === 'dismantleShip' || action.type === 'abandonShip') return handleDisabledShip(state, action);\n",
-              "  if (action.type === 'fieldRepair') return repairShip(state, action.campaignShipId);\n  if (action.type === 'towShip' || action.type === 'dismantleShip' || action.type === 'abandonShip') return handleDisabledShip(state, action);\n  if (action.type === 'emergencyRefuel') {\n    const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);\n    const fuelCost = movementFuelCost(state.fleet);\n    if (!current || current.neighbors.length === 0) return fail(state, '当前位置没有可继续航行的路线。');\n    if (state.resources.fuel >= fuelCost) return fail(state, '当前燃料已经足够完成下一次移动。');\n    if (state.resources.supplies < 2) return fail(state, '应急燃料调配至少需要 2 点补给。');\n    const next = finishTurn(state, '执行应急燃料调配。', 1);\n    next.resources.supplies = Math.max(0, next.resources.supplies - 1);\n    next.resources.fuel = Math.max(next.resources.fuel, fuelCost);\n    next.history.push({\n      turn: next.turn,\n      text: `应急调配完成：燃料恢复至 ${next.resources.fuel}，足够执行一次移动。`\n    });\n    return evaluateCampaignStatus(next);\n  }\n"
-          )
-
-          # UI diagnostics and recovery controls.
-          replace(
-              'src/ui/sectorMapPanel.ts',
-              "import { buildEncounterPreview } from '../campaign/fleet/encounterControl';\n",
-              "import { buildEncounterPreview } from '../campaign/fleet/encounterControl';\nimport { movementFuelCost } from '../campaign/fleet/persistentFleet';\n"
-          )
-          replace(
-              'src/ui/sectorMapPanel.ts',
-              "    const graph = visibleSectorGraph(state.sector);\n    const shown = new Set(graph.nodeIds);\n",
-              "    const moveCost = movementFuelCost(state.fleet);\n    const fuelShortage = current.neighbors.length > 0 && state.resources.fuel < moveCost;\n    const graph = visibleSectorGraph(state.sector);\n    const shown = new Set(graph.nodeIds);\n"
-          )
-          replace(
-              'src/ui/sectorMapPanel.ts',
-              "      const title = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${node.type}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;\n      return `<button title=\"${title}\" class=\"sector-node region-${node.region} ${node.visibility} ${node.id === current.id ? 'current' : ''}\" style=\"left:${node.x}%;top:${node.y}%\" data-id=\"${node.id}\" ${!available.move || !current.neighbors.includes(node.id) ? 'disabled' : ''}><span>${label}</span></button>`;\n",
-              "      const adjacent = current.neighbors.includes(node.id);\n      const baseTitle = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${node.type}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;\n      const blockedTitle = adjacent && !available.move\n        ? fuelShortage\n          ? ` · 移动受阻：当前燃料 ${state.resources.fuel}，需要 ${moveCost}`\n          : ' · 当前有待处理事件或指挥官无法行动'\n        : '';\n      return `<button title=\"${baseTitle}${blockedTitle}\" class=\"sector-node region-${node.region} ${node.visibility} ${node.id === current.id ? 'current' : ''}\" style=\"left:${node.x}%;top:${node.y}%\" data-id=\"${node.id}\" ${!available.move || !adjacent ? 'disabled' : ''}><span>${label}</span></button>`;\n"
-          )
-          replace(
-              'src/ui/sectorMapPanel.ts',
-              "    const actions = state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `<button class=\"btn\" id=\"sp-scan\" ${disabled(available.scan)}>扫描</button><button class=\"btn\" id=\"sp-gather\" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class=\"btn\" id=\"sp-signal-a\">${signal[0]}</button><button class=\"btn\" id=\"sp-signal-b\">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class=\"btn\" id=\"sp-wait\" ${disabled(available.wait)}>等待</button>`;\n",
-              "    const fuelCellCount = cargoQuantity(state.cargo, 'fuelCell');\n    const towedCount = state.fleet.ships.filter((ship) => ship.disabled && ship.towed).length;\n    const mobilityNotice = fuelShortage\n      ? `<div class=\"encounter-risk dangerous\"><b>移动受阻：燃料不足</b><span>当前燃料 ${state.resources.fuel}，舰队移动需要 ${moveCost}。</span>${fuelCellCount > 0 ? '<span>货舱中有燃料电池，可立即使用。</span><button class=\"btn small\" data-use-cargo=\"fuelCell\">使用燃料电池</button>' : ''}${towedCount > 0 ? `<span>正在拖曳 ${towedCount} 艘失能舰；停止拖曳可降低移动消耗。</span>` : ''}${available.emergencyRefuel ? '<button class=\"btn small danger\" id=\"sp-emergency-refuel\">应急燃料调配（1 回合 / 至少 2 补给）</button>' : '<span>补给不足，无法执行应急燃料调配。</span>'}<small>等待不会恢复燃料。</small></div>`\n      : '';\n    const actions = state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `${mobilityNotice}<button class=\"btn\" id=\"sp-scan\" ${disabled(available.scan)}>扫描</button><button class=\"btn\" id=\"sp-gather\" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class=\"btn\" id=\"sp-signal-a\">${signal[0]}</button><button class=\"btn\" id=\"sp-signal-b\">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class=\"btn\" id=\"sp-wait\" ${disabled(available.wait)}>${fuelShortage ? '等待（不会恢复燃料）' : '等待'}</button>`;\n"
-          )
-          replace(
-              'src/ui/sectorMapPanel.ts',
-              "    click('#sp-wait', { type: 'wait' });\n",
-              "    click('#sp-wait', { type: 'wait' });\n    click('#sp-emergency-refuel', { type: 'emergencyRefuel' });\n"
-          )
-
-          # Regression test based on the reported seed and node.
-          replace(
-              'src/campaign/v08Tests.ts',
-              "import { applyCampaignAction, evaluateCampaignStatus } from './campaignReducer';\n",
-              "import { applyCampaignAction, evaluateCampaignStatus, getAvailableCampaignActions } from './campaignReducer';\n"
-          )
-          replace(
-              'src/campaign/v08Tests.ts',
-              "import { buildEncounterPreview } from './fleet/encounterControl';\n",
-              "import { buildEncounterPreview } from './fleet/encounterControl';\nimport { movementFuelCost } from './fleet/persistentFleet';\n"
-          )
-          replace(
-              'src/campaign/v08Tests.ts',
-              "    {\n      const test = new Case('指挥官死亡会终止战役');\n",
-              "    {\n      const test = new Case('燃料耗尽后可通过应急调配解除节点软锁');\n      let state = createCampaign(1446551889);\n      state.turn = 12;\n      state.sector.currentNodeId = 's1-n12';\n      const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;\n      current.visibility = 'visited';\n      for (const neighborId of current.neighbors) {\n        const neighbor = state.sector.nodes.find((node) => node.id === neighborId)!;\n        if (neighbor.visibility === 'hidden') neighbor.visibility = 'detected';\n      }\n      state.resources.fuel = 0;\n      state.resources.supplies = 8;\n      state = applyCampaignAction(state, { type: 'scan' });\n      const blocked = getAvailableCampaignActions(state);\n      test.true_(!blocked.move, '燃料不足时相邻节点不可移动');\n      test.true_(blocked.emergencyRefuel, '软锁状态提供应急燃料调配');\n      const cost = movementFuelCost(state.fleet);\n      const supplies = state.resources.supplies;\n      state = applyCampaignAction(state, { type: 'emergencyRefuel' });\n      test.true_(state.resources.fuel >= cost, '应急调配恢复至少一次移动所需燃料');\n      test.true_(state.resources.supplies < supplies, '应急调配消耗补给');\n      test.true_(getAvailableCampaignActions(state).move, '调配后相邻节点重新可点击');\n      add(test);\n    }\n\n    {\n      const test = new Case('指挥官死亡会终止战役');\n"
-          )
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/campaign/campaignReducer.ts src/campaign/campaignTypes.ts src/ui/sectorMapPanel.ts src/campaign/v08Tests.ts
-          if ! git diff --cached --quiet; then
-            git commit -m "fix: recover from fuel-starved campaign softlocks"
-            git push origin HEAD:agent/v0.8-commanders
-          fi
       - run: npm ci
       - run: npm run build
       - run: npm test
