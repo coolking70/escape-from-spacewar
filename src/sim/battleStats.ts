@@ -164,7 +164,7 @@ function buildVariantStats(state: BattleState, team: Team): VariantStat[] {
   const out: VariantStat[] = [];
   for (const [k, deployed] of deployedMap) {
     const [cls, variant] = k.split(':') as [ShipClass, ShipVariant];
-    const cost = VARIANTS[variant]?.cost ?? VARIANTS.standard.cost;
+    const cost = getVariantDef(variant).cost;
     const dv = agg.get(k) ?? { d: 0, k: 0 };
     const lost = losses[k] ?? 0;
     const groupCost = cost * Math.max(1, deployed);

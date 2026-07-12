@@ -8,6 +8,7 @@
 // 所有函数的 localStorage 访问都被 try/catch 包裹；非浏览器环境（如测试）安全降级。
 
 import { FleetPreset, FLEET_PRESET_SCHEMA, newFleetId } from './fleetPreset';
+import { assertValidFleet, parseFleet } from './fleetValidator';
 
 const STORAGE_KEY = 'spacewar:fleetPresets';
 
@@ -26,31 +27,18 @@ function hasStorage(): boolean {
   }
 }
 
-/** 把一个未知对象校验为合法的 FleetPreset（不合法项会被丢弃） */
+/** 把一个未知对象校验为合法的 FleetPreset；非法配置不会被修复或默认化。 */
 function sanitize(raw: unknown): FleetPreset | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
-  const fleet = Array.isArray(o.fleet) ? o.fleet : null;
-  if (!fleet) return null;
+  if (!Array.isArray(o.fleet)) return null;
   const name = typeof o.name === 'string' && o.name ? o.name : '未命名舰队';
-  let fleetArr: FleetPreset['fleet'] = [];
+  let fleetArr: FleetPreset['fleet'];
   try {
-    // 复用 fleetPreset.normalizeFleet 的语义（此处内联以避免循环导入带来的体积问题）
-    fleetArr = (fleet as unknown[])
-      .map((it) => {
-        const i = (it ?? {}) as Record<string, unknown>;
-        const cls = i.shipClass;
-        if (cls !== 'Fighter' && cls !== 'Frigate' && cls !== 'Cruiser') return null;
-        const count = Math.max(0, Math.floor(Number(i.count)));
-        if (count <= 0) return null;
-        const variant = typeof i.variant === 'string' ? i.variant : 'standard';
-        return { shipClass: cls as FleetPreset['fleet'][number]['shipClass'], variant: variant as any, count };
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
+    fleetArr = parseFleet(o.fleet);
   } catch {
     return null;
   }
-  if (fleetArr.length === 0) return null;
   const formation = (['line', 'wedge', 'wall', 'swarm', 'random'] as const).includes(
     o.formation as any
   )
@@ -129,6 +117,11 @@ function persist(presets: FleetPreset[]): string | null {
 
 /** 保存（新增或更新：按 id 合并）。返回 null 表示成功，字符串为错误提示。 */
 export function savePreset(preset: FleetPreset): string | null {
+  try {
+    assertValidFleet(preset.fleet);
+  } catch (e) {
+    return (e as Error).message;
+  }
   const { presets } = loadPresets();
   const idx = presets.findIndex((p) => p.id === preset.id);
   const next: FleetPreset = {

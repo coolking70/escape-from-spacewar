@@ -1,4 +1,4 @@
-// 初始配置面板（V0.4）：舰队构筑（点数预算 + 改型）、阵型、战术、随机种子、开始战斗、导入录像。
+// 初始配置面板：舰队构筑、阵型、战术、随机种子、开始战斗与导入录像。
 // 只负责收集输入并回调，绝不参与战斗逻辑。
 
 import {
@@ -18,6 +18,7 @@ import {
   fleetCost,
   SHIP_CN
 } from '../sim/shipVariants';
+import { assertValidFleet } from '../sim/fleetValidator';
 
 export interface SetupCallbacks {
   onStart: (teamA: TeamConfig, teamB: TeamConfig, seed: number, budget: BudgetConfig) => void;
@@ -215,7 +216,9 @@ export class SetupPanel {
         if (!preset) return;
         const teamSel = this.root.querySelector('#presetTeam') as HTMLSelectElement | null;
         const team = (teamSel ? teamSel.value : 'a') as 'a' | 'b';
-        this.fleets[team] = preset.build();
+        const fleet = preset.build();
+        assertValidFleet(fleet);
+        this.fleets[team] = fleet;
         this.renderFleetColumn(team);
         this.refreshBudget();
       });
@@ -323,7 +326,7 @@ export class SetupPanel {
           `<option value="${v}" ${v === e.variant ? 'selected' : ''}>${VARIANT_CN[v]}</option>`
       )
       .join('');
-    const cost = VARIANTS[e.variant]?.cost ?? VARIANTS.standard.cost;
+    const cost = VARIANTS[e.variant].cost;
     const sub = cost * Math.max(0, Math.floor(e.count || 0));
     return `
       <div class="fleet-entry" data-idx="${idx}">
@@ -342,7 +345,7 @@ export class SetupPanel {
     const row = container.querySelector(`[data-idx="${idx}"]`) as HTMLElement;
     if (!row) return;
     const e = this.fleets[team][idx];
-    const cost = VARIANTS[e.variant]?.cost ?? VARIANTS.standard.cost;
+    const cost = VARIANTS[e.variant].cost;
     const sub = cost * Math.max(0, Math.floor(e.count || 0));
     (row.querySelector('.fe-cost') as HTMLElement).textContent = String(cost);
     (row.querySelector('.fe-sub') as HTMLElement).textContent = String(sub);
@@ -401,7 +404,15 @@ export class SetupPanel {
       mode: this.unlimited ? 'unlimited' : 'limited',
       limit: this.limit
     };
-    this.cb.onStart(a, b, seed, budget);
+    try {
+      assertValidFleet(a.fleet);
+      assertValidFleet(b.fleet);
+      this.cb.onStart(a, b, seed, budget);
+    } catch (e) {
+      const hint = this.root.querySelector('#startHint') as HTMLElement;
+      hint.textContent = (e as Error).message;
+      hint.className = 'start-hint bad';
+    }
   }
 
   private readTeam(prefix: 'a' | 'b'): TeamConfig {
@@ -416,6 +427,7 @@ export class SetupPanel {
         count: Math.max(0, Math.floor(e.count || 0))
       }))
       .filter((e) => e.count > 0);
+    assertValidFleet(fleet);
     return { fleet, formation, doctrine };
   }
 
@@ -431,6 +443,7 @@ export class SetupPanel {
     formation: FormationType,
     doctrine: DoctrineType
   ): void {
+    assertValidFleet(fleet);
     this.fleets[prefix] = fleet.map((e) => ({ ...e }));
     (this.root.querySelector('#' + prefix + 'Formation') as HTMLSelectElement).value = formation;
     (this.root.querySelector('#' + prefix + 'Doctrine') as HTMLSelectElement).value = doctrine;

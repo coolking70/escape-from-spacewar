@@ -1,7 +1,6 @@
 // 应用编排：连接配置面板、模拟器、渲染层与 HUD。
 // 关键：模拟用固定 tick 推进（来自真实时间累加器，但每 tick 结果只取决于 seed）；
 //   渲染在 prev/cur 之间插值，仅视觉，不影响结果。
-// V0.3：接入阵型/战术（TeamConfig）、进度条跳转（确定性重模拟）、战斗日志、战后统计。
 
 import { createPRNG, PRNG } from './sim/prng';
 import { createInitialState, createSimulator, SimContext, V4 } from './sim/rulesets';

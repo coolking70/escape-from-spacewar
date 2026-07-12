@@ -9,7 +9,8 @@
 // 输出在 setupPanel 中以两栏对比展示，并明确提示"不代表确定的战斗结果"。
 
 import { TeamConfig, Team, ShipClass, ShipVariant } from './battleTypes';
-import { VARIANTS, SHIP_CN, VARIANT_CN } from './shipVariants';
+import { VARIANTS, SHIP_CN, VARIANT_CN, getVariantDef } from './shipVariants';
+import { assertValidFleet } from './fleetValidator';
 
 export interface TeamAnalysis {
   team: Team;
@@ -68,8 +69,8 @@ function analyzeTeam(team: Team, cfg: TeamConfig): TeamAnalysis {
   for (const e of fleet) {
     const count = Math.max(0, Math.floor(e.count || 0));
     if (count <= 0) continue;
-    const v = VARIANTS[e.variant] ?? VARIANTS.standard;
-    const cost = v.cost ?? 50;
+    const v = getVariantDef(e.variant);
+    const cost = v.cost;
     totalPoints += cost * count;
     byClass[e.shipClass] += count;
     variantCounts.push({ variant: e.variant, count });
@@ -186,6 +187,8 @@ function compare(a: TeamAnalysis, b: TeamAnalysis): string[] {
 
 /** 主入口：分析双方舰队构成（纯静态，不依赖战斗结果） */
 export function analyzePreBattle(teamA: TeamConfig, teamB: TeamConfig): PreBattleAnalysis {
+  assertValidFleet(teamA.fleet);
+  assertValidFleet(teamB.fleet);
   const a = analyzeTeam('A', teamA);
   const b = analyzeTeam('B', teamB);
   return {

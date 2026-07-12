@@ -1,4 +1,4 @@
-// 舰船改型注册表（V0.4）。
+// 舰船改型注册表。
 // 在 Fighter / Frigate / Cruiser 三种基础舰体之上，提供多种改型（loadout）。
 // 每个改型包含：成本、中文文案、属性修正、武器覆盖、支援光环 / 特殊效果。
 // 所有数值均为确定性固定表（与 seed 无关），由 shipFactory.resolveShipDef 解析为具体 ShipDef。
@@ -369,7 +369,7 @@ function cloneComponent(c: ComponentDef): ComponentDef {
     weapon: c.weapon
       ? { ...c.weapon, offset: { ...c.weapon.offset } }
       : undefined,
-    // core-v4 命中模型字段（旧 core-v3 不读取，仅 v4 命中选择使用）
+    // core-v4 命中模型字段。
     hitZones: c.hitZones ? [...c.hitZones] : undefined,
     hitWeight: c.hitWeight,
     exposedWhen: c.exposedWhen ? [...c.exposedWhen] : undefined,
@@ -471,7 +471,7 @@ export function resolveShipDef(
   variant: ShipVariant
 ): { def: ShipDef; mods: VariantMods } {
   const def = cloneShipDef(base);
-  const v = VARIANTS[variant] ?? VARIANTS.standard;
+  const v = getVariantDef(variant);
   const m = v.mods;
 
   def.maxSpeed *= m.maxSpeedMul;
@@ -524,8 +524,7 @@ export function resolveShipDef(
     }
   }
 
-  // core-v4：依据组件类型与本地偏移推导"命中方位 / 命中权重 / 受保护关系"。
-  // 纯函数（与 seed 无关），仅 v4 命中选择使用；旧 core-v3 不读取这些字段。
+  // 依据组件类型与本地偏移推导命中方位、命中权重与受保护关系。
   attachHitZones(def);
 
   return { def, mods: cloneMods(m) };
@@ -554,13 +553,15 @@ export function getShipDef(cls: ShipClass, variant: ShipVariant): { def: ShipDef
 export function fleetCost(fleet: FleetEntry[]): number {
   let sum = 0;
   for (const e of fleet) {
-    const cost = VARIANTS[e.variant]?.cost ?? VARIANTS.standard.cost;
+    const cost = getVariantDef(e.variant).cost;
     sum += cost * Math.max(0, Math.floor(e.count || 0));
   }
   return sum;
 }
 
-/** 取改型定义（未知回退 standard） */
+/** 取改型定义；未知改型必须显式报错。 */
 export function getVariantDef(variant: ShipVariant): VariantDef {
-  return VARIANTS[variant] ?? VARIANTS.standard;
+  const def = VARIANTS[variant];
+  if (!def) throw new Error(`未知改型：${String(variant)}`);
+  return def;
 }

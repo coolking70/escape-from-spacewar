@@ -1,4 +1,4 @@
-// core-v4 模拟器：在 core-v3（BattleSimulator）基础上新增——
+// core-v4 模拟器：
 //   - 方向命中模型（HitZone + 护盾/装甲保护 + 武器/引擎/传感器效率）
 //   - 战斗状态机（normal/damaged/critical/disabled/retreating/escaped/destroyed）
 //   - 确定性撤退系统（retreating → escaped，不触发爆炸）
@@ -102,7 +102,7 @@ const MAX_CHASE: Record<string, number> = {
 };
 const ANCHOR_VARIANTS = new Set(['fortress', 'carrier', 'support']);
 
-// ---------------- v4 初始状态（复用 v3 出生逻辑保证完全一致，仅追加 ruleset + 锚点） ----------------
+// ---------------- v4 初始状态 ----------------
 
 export function createInitialStateV4(
   replay: Parameters<typeof createStateV3>[0],
@@ -128,7 +128,7 @@ export function createInitialStateV4(
     const doc = state.teamDoctrine[s.team];
     s.isAnchor = (doc === 'defensive' || doc === 'screen') && (s.type === 'Cruiser' || ANCHOR_VARIANTS.has(s.variant));
   }
-  // v4 出生布局：限制在各自半场，避免双方舰船在出生即交叉重叠（修复 v3 wedge 大舰队跨中线问题）
+  // 出生布局限制在各自半场，避免双方舰船在出生即交叉重叠。
   applyV4Spawn(state, replay);
   return state;
 }

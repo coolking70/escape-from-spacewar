@@ -17,6 +17,7 @@ import { PRNG } from './prng';
 import { createShip } from './shipFactory';
 import { getShipDef } from './shipVariants';
 import { MAX_TICKS, SPAWN } from './battleConfig';
+import { assertValidFleet } from './fleetValidator';
 
 /** 舰种尺寸权重：越小越靠前/越靠外 */
 function sizeRank(t: ShipClass): number {
@@ -155,6 +156,8 @@ function buildTeam(
 }
 
 export function createInitialState(replay: ReplayConfig, rng: PRNG): BattleState {
+  assertValidFleet(replay.teamA.fleet);
+  assertValidFleet(replay.teamB.fleet);
   const ships: Ship[] = [];
   const nextId = { v: 0 };
   const stats = initStats(replay);

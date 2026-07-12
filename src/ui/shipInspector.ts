@@ -14,7 +14,7 @@
 
 import { BattleState, Ship, ShipComponent, ComponentTypeName, CombatState } from '../sim/battleTypes';
 import { SHIP_RANGE_FACTOR, DOCTRINE_RANGE_FACTOR } from '../sim/battleConfig';
-import { VARIANTS, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
+import { SHIP_CN, VARIANT_CN, getVariantDef } from '../sim/shipVariants';
 
 const COMP_LABEL: Record<ComponentTypeName, string> = {
   core: '核心',
@@ -189,7 +189,7 @@ export class ShipInspector {
     const dmg = st ? Math.round(st.damageDealt) : 0;
     const kills = st ? st.kills : 0;
 
-    const variant = VARIANTS[ship.variant] ?? VARIANTS.standard;
+    const variant = getVariantDef(ship.variant);
 
     // 战斗状态（core-v4）
     const cs = ship.combatState;

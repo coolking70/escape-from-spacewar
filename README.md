@@ -64,7 +64,7 @@ npm run test:stress      # 50v50 压力测试（含 Carrier）
 - 格式：JSON → Base64url
 - 当前版本：`v0.5`
 - 唯一规则集：`spacewar-core-v4`
-- 旧版本（v0.1~v0.4）一律拒绝导入，提示重新生成
+- 仅接受 v0.5 Replay Code
 - Replay Code 与 Fleet Code 类型独立，误粘贴时给出明确提示
 
 ## Fleet Code 机制
@@ -106,7 +106,7 @@ escape-from-spacewar/
 
 - **Replay 版本**：v0.5
 - **战斗规则集**：spacewar-core-v4（方向命中 / 失能 / 撤退）
-- **唯一支持**：不兼容 v0.1~v0.4 历史录像
+- **唯一支持**：Replay v0.5
 
 ## 当前开发状态
 
@@ -117,11 +117,10 @@ escape-from-spacewar/
 
 ## 已知限制
 
-- 不保证 v0.1~v0.4 录像兼容（快速迭代版本）
 - Balance Lab 仅支持 core-v4（无可对比的旧规则集）
 - 舰船 3D 模型为程序化生成（无外部模型导入）
 - 无后端、无账号、无联网功能
 
-## 不保证旧测试版本录像兼容的说明
+## CI
 
-当前为快速开发版，仅支持 v0.5 + spacewar-core-v4。旧版本（v0.1~v0.4）录像导入时会被直接拒绝并提示：**"当前快速开发版已不再兼容历史测试录像，请重新生成录像代码。"**
+GitHub Actions 会在 push 和 pull request 时依次执行 `npm ci`、构建、验收测试、压力测试与静态构建。

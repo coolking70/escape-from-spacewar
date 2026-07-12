@@ -12,6 +12,7 @@ import { getShipPointValue } from './combatState';
 import { BattleState, ReplayConfig, TeamConfig, ShipClass, ShipVariant } from './battleTypes';
 import { SIM_VERSION_V5, RULESET_V4 } from './battleConfig';
 import { getVariantDef } from './shipVariants';
+import { assertValidFleet } from './fleetValidator';
 
 export interface BalanceRunConfig {
   teamA: TeamConfig;
@@ -141,6 +142,8 @@ export function runBalance(
   config: BalanceRunConfig,
   onProgress?: (done: number, total: number) => void
 ): BalanceResult {
+  assertValidFleet(config.teamA.fleet);
+  assertValidFleet(config.teamB.fleet);
   const total = Math.max(1, config.runs);
   const ruleset = config.ruleset ?? RULESET_V4;
   let winsA = 0;

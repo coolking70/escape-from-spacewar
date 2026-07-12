@@ -6,6 +6,7 @@ import { TeamConfig, FormationType, DoctrineType, FleetEntry } from '../sim/batt
 import { BalanceRunConfig, BalanceResult, RunRecord } from '../sim/balanceRunner';
 import { VARIANT_CN, SHIP_CN } from '../sim/shipVariants';
 import { RULESET_OPTIONS } from '../sim/rulesets';
+import { assertValidFleet } from '../sim/fleetValidator';
 
 export interface BalanceLabCallbacks {
   onRun: (cfg: BalanceRunConfig) => void;
@@ -164,7 +165,7 @@ export class BalanceLab {
       (this.root.querySelector('#' + id) as HTMLSelectElement).value || dflt;
     const runs = Number((this.root.querySelector('#blRuns') as HTMLSelectElement).value) || 20;
     const swap = (this.root.querySelector('#blSwap') as HTMLInputElement).checked;
-    return {
+    const config = {
       teamA: { ...teamA, formation: sel('blFormA', teamA.formation) as FormationType, doctrine: sel('blDocA', teamA.doctrine) as DoctrineType },
       teamB: { ...teamB, formation: sel('blFormB', teamB.formation) as FormationType, doctrine: sel('blDocB', teamB.doctrine) as DoctrineType },
       seed: num('blSeed', 1000),
@@ -174,6 +175,9 @@ export class BalanceLab {
       swapSides: swap,
       ruleset: sel('blRuleset', 'spacewar-core-v4')
     };
+    assertValidFleet(config.teamA.fleet);
+    assertValidFleet(config.teamB.fleet);
+    return config;
   }
 
   private run(): void {

@@ -6,7 +6,6 @@
 //
 // 组件下标与 sim/shipFactory.ts 中 ShipDef.components 的数组顺序一一对应，
 // 这样渲染层可以根据 ship.components[i].hp 更新对应 Mesh 的损伤颜色。
-// V0.2：增强三种舰船的几何辨识度，并标记引擎尾焰(glow)供 threeScene 做损坏表现。
 
 import * as THREE from 'three';
 import { ShipDef, ShipTypeName, ShipClass, ShipVariant, Team } from '../sim/battleTypes';
@@ -823,7 +822,7 @@ export function buildShipVisual(
  * @param team            阵营（'A' 冷色蓝 / 'B' 暖色红）
  * @param componentHpRatios 可选的组件 HP 比例映射（组件下标字符串 → 0~1）。
  *                          未提供时所有组件为满 HP 状态。兼容旧调用。
- * @param variant         改型（V0.4）。缺省为 'standard'，兼容旧调用。
+ * @param variant         改型。
  */
 export function createShipMesh(
   shipType: ShipTypeName,

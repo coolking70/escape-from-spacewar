@@ -1,6 +1,5 @@
 // 战斗 HUD：显示双方剩余、tick、seed、版本；结束显示胜者与战后统计；
 // 提供暂停/继续、1x/2x/4x 倍速、自动镜头开关、可折叠战斗日志、进度条跳转。
-// V0.3 新增：进度条 + 跳转播放、战斗日志面板、战后统计面板。
 
 import { BattleState, BattleEvent, Team, ReplayConfig } from '../sim/battleTypes';
 import { SIM_VERSION } from '../sim/battleConfig';

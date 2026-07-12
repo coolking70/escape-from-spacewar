@@ -1,9 +1,6 @@
 // 规则集分发（core-v4 唯一正式规则）。
 //
-// V0.6 起统一为 spacewar-core-v4，停止维护 core-v1/v2/v3 与 v0.1~v0.4 录像。
-//  - 所有 replay 仅保证 v0.5 可正常导入导出；
-//  - 旧版本 replay 导入时直接报错提示"当前快速开发版已不再兼容历史测试录像，请重新生成录像代码"；
-//  - 未知 ruleset 抛错，绝不静默回退到最新版。
+// spacewar-core-v4 是唯一规则集；Replay 仅支持 v0.5，未知规则集直接报错。
 // 所有规则共用同一套确定性 PRNG 与固定 tick，相同 (config, ruleset, seed) 必得相同结果；
 // 分发只依据 replay.ruleset（解码时已正确映射），绝不读取渲染/UI 状态。
 

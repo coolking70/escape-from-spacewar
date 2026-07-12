@@ -1,6 +1,5 @@
 // Three.js 场景：创建渲染器、灯光、星空背景，并把 BattleState 映射为可视飞船。
 // 渲染层只"展示"当前 tick 的结果，可在 prev/cur 之间插值（不影响战斗结果）。
-// V0.2：处理引擎尾焰损坏表现、死亡残骸保留、视觉事件路由、自动镜头焦点计算。
 
 import * as THREE from 'three';
 import { BattleState, Ship, BattleEvent, Vec3 } from '../sim/battleTypes';

@@ -390,7 +390,7 @@ export function createShip(
     effectiveRange: def.baseRange,
     accuracy: 0.9,
     droneNextTick: mods.droneStrike ? mods.droneStrike.intervalTicks : 0,
-    // ---- core-v4 战斗状态机默认值（旧 core-v3 不读取） ----
+    // ---- core-v4 战斗状态机默认值 ----
     combatState: 'normal',
     mobilityDisabled: false,
     weaponsDisabled: false,

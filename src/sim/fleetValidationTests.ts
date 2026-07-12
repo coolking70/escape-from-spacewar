@@ -8,6 +8,7 @@ import {
   assertValidFleetEntry,
   assertValidFleet,
   normalizeFleet,
+  parseFleet,
   MAX_FLEET_SHIPS
 } from './fleetValidator';
 import { FleetEntry } from './battleTypes';
@@ -147,6 +148,18 @@ export function runFleetValidationTests() {
       let threw = false;
       try { normalizeFleet([{ shipClass: 'Frigate', variant: 'carrier', count: 1 }]); } catch { threw = true; }
       c.true_(threw, '应抛错');
+      add(c);
+    }
+
+    // 12. 外部输入严格解析：不转换字符串数量，也不回退非法改型
+    {
+      const c = new Case('parseFleet 严格拒绝外部非法输入');
+      let badVariant = false;
+      let stringCount = false;
+      try { parseFleet([{ shipClass: 'Frigate', variant: 'carrier', count: 1 }]); } catch { badVariant = true; }
+      try { parseFleet([{ shipClass: 'Fighter', variant: 'standard', count: '1' }]); } catch { stringCount = true; }
+      c.true_(badVariant, '非法改型组合应抛错');
+      c.true_(stringCount, '字符串数量应抛错，不自动转换');
       add(c);
     }
   });

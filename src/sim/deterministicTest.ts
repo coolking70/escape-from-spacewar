@@ -1,6 +1,5 @@
 // 确定性自检：仅针对 sim 层（不比较任何渲染/镜头/特效对象）。
-// V0.6：统一 core-v4（spacewar-core-v4），仅保证 v0.5 录像导入导出；
-//   旧版本（v0.1~v0.4）一律拒绝并提示重新生成。覆盖 fleet+variant+budget 往返、
+// 仅支持 core-v4（spacewar-core-v4）与 v0.5 录像。覆盖 fleet+variant+budget 往返、
 //   同 seed 复现、倍速一致、跳转(seek)一致、多 doctrine 组合、改型确定性、
 //   舰队码往返、舰队码vs录像码区分、replay 无 UI 状态、时间线确定性、平衡单局 vs sim、
 //   swap 不改配置、克隆隔离、50 舰、Carrier/Scout/Support/Escort 共存、稳定排序。
@@ -166,50 +165,27 @@ export function runDeterministicTest(): string {
   };
   const pass = (msg: string) => out.push('  ✓ ' + msg);
 
-  // ---------- 1. 旧格式 replay（v0.2）必须被拒绝并提示重新生成 ----------
+  // ---------- 1. 非支持 Replay 版本必须被拒绝 ----------
   try {
-    const oldCode = b64url({
-      v: '0.2',
+    const unsupportedCode = b64url({
+      v: 'unsupported',
       seed: 123456,
-      teamA: { Fighter: 3, Frigate: 1, Cruiser: 1 },
-      teamB: { Fighter: 2, Frigate: 2, Cruiser: 0 }
+      teamA: { fleet: [{ shipClass: 'Fighter', variant: 'standard', count: 1 }], formation: 'line', doctrine: 'balanced' },
+      teamB: { fleet: [{ shipClass: 'Fighter', variant: 'standard', count: 1 }], formation: 'line', doctrine: 'balanced' }
     });
     let threw = false;
     let msg = '';
     try {
-      decodeReplay(oldCode);
+      decodeReplay(unsupportedCode);
     } catch (e) {
       threw = true;
       msg = String(e);
     }
-    if (!threw) fail('旧格式(v0.2) 应被拒绝，却成功解码');
-    else if (!msg.includes('当前快速开发版已不再兼容历史测试录像')) fail('旧格式拒绝信息不明确：' + msg);
-    else pass('旧格式(v0.2) 导入被明确拒绝（提示重新生成录像代码）');
+    if (!threw) fail('非支持版本应被拒绝，却成功解码');
+    else if (!msg.includes('不支持的录像版本')) fail('版本拒绝信息不明确：' + msg);
+    else pass('非支持版本被明确拒绝');
   } catch (e) {
-    fail('旧格式测试抛错：' + (e as Error).message);
-  }
-
-  // ---------- 2. 旧格式 replay（v0.3）必须被拒绝并提示重新生成 ----------
-  try {
-    const oldCode = b64url({
-      v: '0.3',
-      seed: 654321,
-      teamA: { ships: { Fighter: 6, Frigate: 2, Cruiser: 1 }, formation: 'wedge', doctrine: 'aggressive' },
-      teamB: { ships: { Fighter: 4, Frigate: 3, Cruiser: 1 }, formation: 'wall', doctrine: 'defensive' }
-    });
-    let threw = false;
-    let msg = '';
-    try {
-      decodeReplay(oldCode);
-    } catch (e) {
-      threw = true;
-      msg = String(e);
-    }
-    if (!threw) fail('旧格式(v0.3) 应被拒绝，却成功解码');
-    else if (!msg.includes('当前快速开发版已不再兼容历史测试录像')) fail('旧格式拒绝信息不明确：' + msg);
-    else pass('旧格式(v0.3) 导入被明确拒绝（提示重新生成录像代码）');
-  } catch (e) {
-    fail('旧格式测试抛错：' + (e as Error).message);
+    fail('版本校验测试抛错：' + (e as Error).message);
   }
 
   // ---------- 3. v0.5 编解码往返：fleet + variant + budget 不丢失 ----------
@@ -313,30 +289,7 @@ export function runDeterministicTest(): string {
     else { ok = false; out.push(`  ✗ doctrine ${da} vs ${db} 不一致：\n    X=${x}\n    Y=${y}`); }
   }
 
-  // ---------- 9. V0.1 最旧格式必须被拒绝并提示重新生成 ----------
-  try {
-    const v1Code = b64url({
-      v: '0.1',
-      seed: 11111,
-      teamA: { Fighter: 3, Frigate: 1, Cruiser: 1 },
-      teamB: { Fighter: 2, Frigate: 2, Cruiser: 0 }
-    });
-    let threw = false;
-    let msg = '';
-    try {
-      decodeReplay(v1Code);
-    } catch (e) {
-      threw = true;
-      msg = String(e);
-    }
-    if (!threw) fail('v0.1 应被拒绝，却成功解码');
-    else if (!msg.includes('当前快速开发版已不再兼容历史测试录像')) fail('v0.1 拒绝信息不明确：' + msg);
-    else pass('v0.1 最旧格式导入被明确拒绝（提示重新生成录像代码）');
-  } catch (e) {
-    fail('v0.1 测试抛错：' + (e as Error).message);
-  }
-
-  // ---------- 10. 舰队方案码 encode/decode 往返（与录像码完全独立） ----------
+  // ---------- 9. 舰队方案码 encode/decode 往返（与录像码完全独立） ----------
   try {
     const preset = makeFleetPreset({
       name: '测试舰队',
@@ -647,9 +600,9 @@ export function runDeterministicTest(): string {
     fail('未知 ruleset 测试抛错：' + (e as Error).message);
   }
 
-  // ---------- 22. 旧版本（v0.2）一律拒绝，无论其声称的 ruleset 是什么 ----------
+  // ---------- 21. 非支持版本不能借由当前规则集绕过校验 ----------
   try {
-    const mismatch = b64url({ v: '0.2', ruleset: 'spacewar-core-v4', seed: 1, teamA: { Fighter: 1 }, teamB: { Fighter: 1 } });
+    const mismatch = b64url({ v: 'unsupported', ruleset: 'spacewar-core-v4', seed: 1, teamA: { fleet: [{ shipClass: 'Fighter', variant: 'standard', count: 1 }], formation: 'line', doctrine: 'balanced' }, teamB: { fleet: [{ shipClass: 'Fighter', variant: 'standard', count: 1 }], formation: 'line', doctrine: 'balanced' } });
     let threw = false;
     let msg = '';
     try {
@@ -658,10 +611,10 @@ export function runDeterministicTest(): string {
       threw = true;
       msg = String(e);
     }
-    if (threw && msg.includes('当前快速开发版已不再兼容历史测试录像')) pass('旧版本(v0.2) 被拒绝并提示重新生成（不兼容历史录像）');
-    else fail('旧版本(v0.2) 应当被拒绝并提示重新生成，实际 threw=' + threw);
+    if (threw && msg.includes('不支持的录像版本')) pass('非支持版本不能绕过版本校验');
+    else fail('非支持版本应当被拒绝，实际 threw=' + threw);
   } catch (e) {
-    fail('旧版本拒绝测试抛错：' + (e as Error).message);
+    fail('版本错配测试抛错：' + (e as Error).message);
   }
 
   // ---------- 23. tick 时间换算与 maxTicks 无关 ----------
@@ -690,7 +643,7 @@ export function runDeterministicTest(): string {
 
   // ---------- 汇总 ----------
   if (ok) {
-    const line = 'Deterministic test passed — 全部用例通过（旧版本 v0.1~v0.4 拒绝、v0.5 编解码往返、舰队码往返、舰队码vs录像码区分、replay无UI状态、同seed、改型、倍速、seek、时间线确定性、平衡单局vs sim、swap不改配置、克隆隔离、50舰、Carrier/Scout/Support/Escort共存、稳定排序）';
+    const line = 'Deterministic test passed — 全部用例通过（v0.5 编解码往返、版本与规则集校验、舰队码往返、舰队码vs录像码区分、replay无UI状态、同seed、改型、倍速、seek、时间线确定性、平衡单局vs sim、swap不改配置、克隆隔离、50舰、Carrier/Scout/Support/Escort共存、稳定排序）';
     console.log('[SpaceWar] ' + line);
     return line;
   }

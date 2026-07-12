@@ -1071,7 +1071,7 @@ input[type="checkbox"] {
   #hud-root .variant-stats { grid-template-columns: 1fr; gap: 10px; }
 }
 
-/* ───── V0.4 舰队构筑 / 预算 ───── */
+/* ───── 舰队构筑 / 预算 ───── */
 .budget-bar {
   display: flex;
   align-items: center;

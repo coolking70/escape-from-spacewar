@@ -8,13 +8,10 @@
 
 import {
   FleetEntry,
-  ShipClass,
-  ShipVariant,
   FormationType,
   DoctrineType
 } from './battleTypes';
-import { VARIANTS_BY_CLASS } from './shipVariants';
-import { validateFleet } from './fleetValidator';
+import { assertValidFleet, parseFleet } from './fleetValidator';
 
 /** 舰队方案 schema 版本 */
 export const FLEET_PRESET_SCHEMA = 1;
@@ -64,21 +61,12 @@ const DOCTRINES: DoctrineType[] = [
   'antiCapital',
   'screen'
 ];
-const CLASSES: ShipClass[] = ['Fighter', 'Frigate', 'Cruiser'];
 
 function asFormation(v: unknown): FormationType {
   return FORMATIONS.includes(v as FormationType) ? (v as FormationType) : 'line';
 }
 function asDoctrine(v: unknown): DoctrineType {
   return DOCTRINES.includes(v as DoctrineType) ? (v as DoctrineType) : 'balanced';
-}
-function asClass(v: unknown): ShipClass | null {
-  return CLASSES.includes(v as ShipClass) ? (v as ShipClass) : null;
-}
-function asVariant(cls: ShipClass, v: unknown): ShipVariant {
-  const allowed = VARIANTS_BY_CLASS[cls];
-  if (typeof v === 'string' && (allowed as string[]).includes(v)) return v as ShipVariant;
-  throw new Error(`非法舰船改型组合：${cls} / ${v}`);
 }
 
 /** 生成本地唯一 ID（基于时间 + 随机，纯本地、不依赖后端） */
@@ -88,17 +76,7 @@ export function newFleetId(): string {
 
 /** 规范化一条 fleet 数组（非法舰种/改型直接抛错，不静默跳过） */
 export function normalizeFleet(raw: unknown): FleetEntry[] {
-  if (!Array.isArray(raw)) return [];
-  const out: FleetEntry[] = [];
-  for (const item of raw) {
-    const o = (item ?? {}) as Record<string, unknown>;
-    const cls = asClass(o.shipClass);
-    if (!cls) throw new Error(`未知舰种：${String(o.shipClass)}`);
-    const variant = asVariant(cls, o.variant);
-    const count = Math.max(0, Math.floor(Number(o.count)));
-    if (count > 0) out.push({ shipClass: cls, variant, count });
-  }
-  return out;
+  return parseFleet(raw);
 }
 
 /** 校验某个对象是否像 battle replay code（用于类型区分提示） */
@@ -116,6 +94,7 @@ function looksLikeReplay(obj: unknown): boolean {
 
 /** 编码为可分享的 fleet code（含 type 标识） */
 export function encodeFleet(preset: FleetPreset): string {
+  assertValidFleet(preset.fleet);
   const json = JSON.stringify({
     type: FLEET_CODE_TYPE,
     v: FLEET_CODE_V,
@@ -148,11 +127,12 @@ export function decodeFleet(code: string): FleetPreset {
   if (looksLikeReplay(obj)) {
     throw new Error('这是一段战斗录像码，不是舰队方案码');
   }
-  const fleet = normalizeFleet(obj.fleet);
-  if (fleet.length === 0) throw new Error('舰队方案码中没有任何有效舰船');
-  // 严格校验舰队组合
-  const vr = validateFleet(fleet);
-  if (!vr.valid) throw new Error(`舰队方案码中存在无效配置：${vr.errors.join('；')}`);
+  let fleet: FleetEntry[];
+  try {
+    fleet = parseFleet(obj.fleet);
+  } catch (e) {
+    throw new Error(`舰队方案码中存在无效配置：${(e as Error).message}`);
+  }
   return {
     schemaVersion: FLEET_PRESET_SCHEMA,
     id: newFleetId(),
@@ -176,6 +156,7 @@ export function makeFleetPreset(opts: {
   id?: string;
   createdAt?: number;
 }): FleetPreset {
+  assertValidFleet(opts.fleet);
   const now = Date.now();
   return {
     schemaVersion: FLEET_PRESET_SCHEMA,

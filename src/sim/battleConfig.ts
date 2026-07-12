@@ -5,11 +5,11 @@ export const SIM_VERSION = '0.5';
 
 /**
  * 规则集标识。replay code 中携带，用于在未来规则变更时区分/兼容旧战斗。
- * 当前唯一正式规则为 spacewar-core-v4；旧版本录像不再兼容，导入时直接报错提示。
+ * 当前唯一正式规则为 spacewar-core-v4，Replay 仅支持 v0.5。
  */
 export const RULESET = 'spacewar-core-v4';
 
-/** 新建战斗默认使用的 replay 版本与规则集（V0.5.1 起为 v0.5 + core-v4） */
+/** 新建战斗默认使用的 Replay 版本与规则集。 */
 export const SIM_VERSION_V5 = '0.5';
 export const RULESET_V4 = 'spacewar-core-v4';
 

@@ -5,7 +5,7 @@ export type Team = 'A' | 'B';
 
 /** 基础舰体类别（三种舰体；改型在此基础上派生） */
 export type ShipClass = 'Fighter' | 'Frigate' | 'Cruiser';
-/** 兼容别名：既有代码使用 ShipTypeName，V0.4 起与 ShipClass 等价 */
+/** 兼容别名：ShipTypeName 与 ShipClass 等价。 */
 export type ShipTypeName = ShipClass;
 
 /** 舰船改型（在基础舰体之上叠加属性/武器/支援差异） */
@@ -35,7 +35,7 @@ export type HitZone = 'front' | 'left' | 'right' | 'rear';
 /** 伤害类型（core-v4 用于装甲抗性与特殊必中标记） */
 export type DamageType = 'laser' | 'cannon' | 'kinetic' | 'heavy' | 'drone' | 'pointDefense';
 
-/** 舰船战斗状态（core-v4；旧 core-v3 只使用 normal/destroyed 隐含语义，不进入该状态机） */
+/** 舰船战斗状态。 */
 export type CombatState =
   | 'normal'
   | 'damaged'
@@ -168,7 +168,7 @@ export interface VariantMods {
   };
 }
 
-/** 单条舰队编队项（V0.4 舰队由若干编队项组成） */
+/** 单条舰队编队项。 */
 export interface FleetEntry {
   shipClass: ShipClass;
   variant: ShipVariant;
@@ -221,7 +221,7 @@ export interface Ship {
   accuracy: number;
   /** 航母无人机打击的下一次触发 tick（无 droneStrike 时为 0） */
   droneNextTick: number;
-  // ---- core-v4 战斗状态机（旧 core-v3 不读取这些字段） ----
+  // ---- core-v4 战斗状态机 ----
   /** 当前战斗状态（normal/damaged/critical/disabled/retreating/escaped/destroyed） */
   combatState: CombatState;
   /** 推进系统是否失效（全部引擎摧毁） */
@@ -531,7 +531,7 @@ export interface BattleStepResult {
   events: BattleEvent[];
 }
 
-/** core-v4 运行时累计（仅 v4 引擎写入；旧 core-v3 恒为 undefined） */
+/** core-v4 运行时累计。 */
 export interface V4Runtime {
   /** 各方位命中次数（用于统计） */
   hitFront: number;
@@ -549,7 +549,7 @@ export interface V4Runtime {
 
 export interface BattleState {
   version: string;
-  /** 规则集标识（core-v3 / core-v4 等）；用于分发到对应模拟引擎，不影响旧 replay 行为 */
+  /** 规则集标识。 */
   ruleset?: string;
   seed: number;
   tick: number;
@@ -574,7 +574,7 @@ export interface BattleState {
   stats: BattleStats;
 }
 
-/** 单一方配置（V0.4）：编队项 + 阵型 + 战术 */
+/** 单一方配置：编队项、阵型与战术。 */
 export interface TeamConfig {
   fleet: FleetEntry[];
   formation: FormationType;

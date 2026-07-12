@@ -1,6 +1,4 @@
-// replay 版本 / ruleset 兼容与校验单元测试（纯 sim，无渲染 / DOM）。
-// core-v4 唯一正式规则：覆盖旧版本(v0.1~v0.4)一律拒绝并提示重新生成、
-// v0.5→core-v4 映射、未知 ruleset 拒绝、v0.5+core-v4 往返一致、受支持集合仅为 core-v4。
+// Replay 版本 / 规则集校验单元测试（纯 sim，无渲染 / DOM）。
 
 import { ReplayConfig, FleetEntry } from './battleTypes';
 import { encodeReplay, decodeReplay, KNOWN_RULESETS, REPLAY_VERSION_RULESET } from './replayCodec';
@@ -34,19 +32,9 @@ export function replayCompatibilityTests(): SuiteResult {
   return runSuite('replayCompatibility', (add) => {
     const c = new Case('version-ruleset-mapping');
 
-    // 旧版本（v0.1~v0.4）一律拒绝并提示重新生成录像代码（不兼容历史测试录像）
-    for (const oldV of ['0.1', '0.2', '0.3', '0.4']) {
-      let threw = false;
-      let msg = '';
-      try {
-        decodeReplay(rawReplay(oldV));
-      } catch (e) {
-        threw = true;
-        msg = String(e);
-      }
-      c.true_(threw, `旧版本(${oldV}) 被拒绝`);
-      c.true_(msg.includes('当前快速开发版已不再兼容历史测试录像'), `旧版本(${oldV}) 提示重新生成录像代码`);
-    }
+    let threwUnsupported = false;
+    try { decodeReplay(rawReplay('unsupported')); } catch { threwUnsupported = true; }
+    c.true_(threwUnsupported, '非 v0.5 的录像版本被拒绝');
 
     // v0.5 默认 → core-v4
     c.eq(decodeReplay(rawReplay('0.5')).ruleset, RULESET_V4, 'v0.5 默认 → core-v4');
@@ -64,17 +52,17 @@ export function replayCompatibilityTests(): SuiteResult {
     c.true_(unknownMsg.includes('不支持的战斗规则版本'), '未知 ruleset 错误信息明确');
     c.true_(unknownMsg.includes('spacewar-core-v99'), '错误信息包含具体未知 ruleset 标识');
 
-    // 旧版本 + 声称 core-v4 仍被拒绝（不兼容历史录像，不做任何转换）
+    // 非支持版本即使携带当前规则集也必须拒绝。
     let threwMismatch = false;
     let mismatchMsg = '';
     try {
-      decodeReplay(rawReplay('0.2', RULESET_V4));
+      decodeReplay(rawReplay('unsupported', RULESET_V4));
     } catch (e) {
       threwMismatch = true;
       mismatchMsg = String(e);
     }
-    c.true_(threwMismatch, '旧版本(v0.2)+core-v4 仍被拒绝');
-    c.true_(mismatchMsg.includes('当前快速开发版已不再兼容历史测试录像'), '旧版本错配提示重新生成');
+    c.true_(threwMismatch, '非 v0.5 版本携带当前规则集仍被拒绝');
+    c.true_(mismatchMsg.includes('不支持的录像版本'), '非支持版本错误信息明确');
 
     // 合法组合 v0.5+core-v4 不拒绝
     c.eq(decodeReplay(rawReplay('0.5', RULESET_V4)).ruleset, RULESET_V4, 'v0.5+core-v4 合法');
