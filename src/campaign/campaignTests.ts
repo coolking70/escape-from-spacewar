@@ -3,13 +3,14 @@ import { createCampaign } from './campaignGenerator';
 import { applyCampaignAction } from './campaignReducer';
 import { decodeCampaign, encodeCampaign } from './campaignCode';
 import { generateSector, isReachable } from './sector/sectorGenerator';
-import { enemyFleetFor, deriveBattleSeed } from './fleet/battleAdapter';
+import { enemyBudgetFor, enemyFleetFor, deriveBattleSeed, prepareCampaignBattle, runCampaignBattle } from './fleet/battleAdapter';
 import { validateFleet } from '../sim/fleetValidator';
 import { clearCampaign, loadCampaign, saveCampaign } from './campaignPersistence';
 import { resourceReward } from './sector/sectorActions';
 import { addThreat } from './sector/threatSystem';
 import { createStarterFleet } from './fleet/persistentFleet';
 import { importBattleResult } from './fleet/battleResultImporter';
+import { visibleSectorGraph } from './sector/sectorVisibility';
 
 function firstNeighbor(state: ReturnType<typeof createCampaign>) { return state.sector.nodes.find((n) => n.id === state.sector.currentNodeId)!.neighbors[0]; }
 export function runCampaignTests(): SuiteResult {
@@ -40,6 +41,12 @@ export function runCampaignTests(): SuiteResult {
         { id: 1, team: 'A', combatState: 'escaped', components: [{ hp: 3 }] },
         { id: 2, team: 'A', combatState: 'disabled', components: [{ hp: 2 }] }
       ] } as any; const next = importBattleResult(fleet, battle, [{ campaignShipId: 'cs-0', battleShipId: 0 }, { campaignShipId: 'cs-1', battleShipId: 1 }, { campaignShipId: 'cs-2', battleShipId: 2 }]); t.eq(next.ships.length, 2, 'destroyed 舰船移除'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-1' && s.escaped), 'escaped 舰船保留'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-2' && s.disabled), 'disabled 舰船保留并标记'); t.true_(next.ships.every((s) => s.campaignShipId.startsWith('cs-')), 'campaignShipId 战斗前后稳定'); add(t);
+    }
+    {
+      const t = new Case('多舰同改型绑定与组件继承'); const fleet = createStarterFleet(); fleet.ships[1] = { ...fleet.ships[1], campaignShipId: 'cs-dup', variant: 'standard', componentHp: [1, 2, 3, 4] }; const enemy = enemyFleetFor(88, 1, 0); const context = prepareCampaignBattle(fleet, enemy, 88); t.eq(context.bindings.length, 3, '所有可参战舰船均有 binding'); t.eq(new Set(context.bindings.map((b) => b.campaignShipId)).size, 3, 'binding 不依赖同改型数组下标'); const bound = context.bindings.find((b) => b.campaignShipId === 'cs-dup')!; const ship = context.state.ships.find((s) => s.id === bound.battleShipId)!; t.eq(ship.components[0].hp, 1, '下一战继承上一战组件损伤'); const result = runCampaignBattle(fleet, enemy, 88); t.true_(result.state.finished, '无头战斗仅用于测试可正常结束'); add(t);
+    }
+    {
+      const t = new Case('迷雾与终局拒绝行动'); const s = createCampaign(33); const graph = visibleSectorGraph(s.sector); t.true_(graph.edges.every(([a, b]) => s.sector.nodes.find((n) => n.id === a)!.visibility !== 'hidden' && s.sector.nodes.find((n) => n.id === b)!.visibility !== 'hidden'), '隐藏节点和边不会出现在可见图'); const ended = { ...s, status: 'victory' as const }; t.eq(applyCampaignAction(ended, { type: 'wait' }).turn, ended.turn, '胜利后行动被拒绝'); t.true_(enemyBudgetFor(3, 0) > enemyBudgetFor(2, 0), '高星域预算递增'); t.true_(enemyBudgetFor(2, 4) >= enemyBudgetFor(2, 0), '威胁不降低预算'); t.true_(enemyBudgetFor(2, 1, true) > enemyBudgetFor(2, 1), '星门守卫强于普通战斗'); add(t);
     }
   });
 }
