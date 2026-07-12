@@ -8,7 +8,7 @@ import {
   evaluateCampaignStatus as evaluateBaseCampaignStatus,
   getAvailableCampaignActions as getBaseAvailableCampaignActions,
   type CampaignActionAvailability
-} from './campaignReducer';
+} from './campaignReducerBase';
 import type { CampaignBattleBinding } from './fleet/battleAdapter';
 import {
   canResolveOrganizationEvent,
