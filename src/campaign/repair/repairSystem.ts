@@ -5,6 +5,7 @@ export interface FieldRepairResult {
   ship: PersistentShip;
   componentIndex: number;
   restoredHp: number;
+  reactivated: boolean;
 }
 
 export function ensurePersistentComponentHp(ship: PersistentShip): number[] {
@@ -19,6 +20,15 @@ export function canFieldRepair(ship: PersistentShip): boolean {
   return ship.componentHp.some(
     (hp, index) => hp > 0 && hp < def.components[index].maxHp
   );
+}
+
+function hasOperationalSystems(ship: PersistentShip): boolean {
+  if (!ship.componentHp) return false;
+  const { def } = getShipDef(ship.shipClass, ship.variant);
+  const alive = (type: 'core' | 'engine' | 'weapon') => def.components.some(
+    (component, index) => component.type === type && (ship.componentHp?.[index] ?? 0) > 0
+  );
+  return alive('core') && alive('engine') && alive('weapon');
 }
 
 export function fieldRepairShip(ship: PersistentShip): FieldRepairResult | null {
@@ -42,9 +52,17 @@ export function fieldRepairShip(ship: PersistentShip): FieldRepairResult | null 
   const amount = Math.max(1, Math.ceil(maxHp * 0.2));
   const before = next.componentHp[componentIndex];
   next.componentHp[componentIndex] = Math.min(maxHp, before + amount);
+  const reactivated = !!next.disabled && hasOperationalSystems(next);
+  if (reactivated) {
+    next.disabled = false;
+    next.towed = false;
+    next.escaped = false;
+    next.deployed = true;
+  }
   return {
     ship: next,
     componentIndex,
-    restoredHp: next.componentHp[componentIndex] - before
+    restoredHp: next.componentHp[componentIndex] - before,
+    reactivated
   };
 }
