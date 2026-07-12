@@ -17,6 +17,14 @@ import { BalanceLab } from './ui/balanceLab';
 import { FleetLibrary } from './ui/fleetLibrary';
 import { PreBattleAnalysisPanel } from './ui/preBattleAnalysis';
 import { runBalance, BalanceRunConfig, BalanceResult } from './sim/balanceRunner';
+import { CampaignMenu } from './ui/campaignMenu';
+import { SectorMapPanel } from './ui/sectorMapPanel';
+import { CampaignState, CampaignAction } from './campaign/campaignTypes';
+import { createCampaign } from './campaign/campaignGenerator';
+import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campaignReducer';
+import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
+import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
+import { deriveBattleSeed, enemyFleetFor, runCampaignBattle } from './campaign/fleet/battleAdapter';
 
 export class App {
   private root: HTMLElement;
@@ -31,6 +39,9 @@ export class App {
   private balanceLab!: BalanceLab;
   private fleetLibrary!: FleetLibrary;
   private analysisPanel!: PreBattleAnalysisPanel;
+  private menu!: CampaignMenu;
+  private sectorMap!: SectorMapPanel;
+  private campaign: CampaignState | null = null;
   private balanceWorker: Worker | null = null;
 
   private scene: ThreeScene | null = null;
@@ -61,6 +72,8 @@ export class App {
     this.root = root;
     root.innerHTML = `
       <div id="setup-root"></div>
+      <div id="menu-root"></div>
+      <div id="campaign-root"></div>
       <div id="battle-root" style="display:none">
         <div id="canvas-root"></div>
         <div id="hud-root"></div>
@@ -75,6 +88,8 @@ export class App {
     this.canvasRoot = root.querySelector('#canvas-root') as HTMLElement;
     this.hudRoot = root.querySelector('#hud-root') as HTMLElement;
     const previewRoot = root.querySelector('#preview-root') as HTMLElement;
+    const menuRoot = root.querySelector('#menu-root') as HTMLElement;
+    const campaignRoot = root.querySelector('#campaign-root') as HTMLElement;
 
     this.setupPanel = new SetupPanel(this.setupRoot, {
       onStart: (a, b, seed, budget) => this.startBattle(a, b, seed, budget),
@@ -113,13 +128,24 @@ export class App {
         getTeamConfigs: () => this.setupPanel.getTeamConfigs()
       }
     );
+    this.menu = new CampaignMenu(menuRoot, {
+      onSingle: () => this.showSetup(), onNew: () => this.startCampaign((Date.now() >>> 0)), onContinue: () => this.continueCampaign(), onImport: (code) => this.importCampaign(code),
+      hasSave: () => { try { return !!loadCampaign(); } catch { return false; } }
+    });
+    this.sectorMap = new SectorMapPanel(campaignRoot, { onAction: (a) => this.campaignAction(a), onBattle: () => this.resolveCampaignBattle(), onExport: () => this.exportCampaign(), onExit: () => this.showMenu() });
   }
 
   start(): void {
-    this.showSetup();
+    this.showMenu();
   }
 
+  campaignDebugState(): unknown { return this.campaign ? { sector: this.campaign.sectorIndex, turn: this.campaign.turn, node: this.campaign.sector.currentNodeId, threat: this.campaign.sector.threat, resources: this.campaign.resources, pendingBattle: this.campaign.pendingBattle, status: this.campaign.status } : { screen: 'menu' }; }
+
+  private showMenu(): void { this.setupRoot.style.display = 'none'; this.battleRoot.style.display = 'none'; (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none'; this.menu.show(); }
+
   private showSetup(): void {
+    this.menu.hide();
+    (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'flex';
     this.battleRoot.style.display = 'none';
     this.setupPanel.show();
@@ -127,11 +153,20 @@ export class App {
   }
 
   private showBattle(): void {
+    this.menu.hide();
     this.setupRoot.style.display = 'none';
     this.battleRoot.style.display = 'block';
     this.setupPanel.hide();
     this.hud.show();
   }
+
+  private startCampaign(seed: number): void { this.campaign = createCampaign(seed); saveCampaign(this.campaign); this.showCampaign(); }
+  private continueCampaign(): void { try { this.campaign = loadCampaign(); if (!this.campaign) throw new Error('没有可继续的战役。'); this.showCampaign(); } catch (e) { alert((e as Error).message); } }
+  private importCampaign(code: string): void { try { this.campaign = decodeCampaign(code); saveCampaign(this.campaign); this.showCampaign(); } catch (e) { alert('战役导入失败：' + (e as Error).message); } }
+  private showCampaign(): void { if (!this.campaign) return; this.menu.hide(); this.setupRoot.style.display = 'none'; this.battleRoot.style.display = 'none'; const root = this.root.querySelector('#campaign-root') as HTMLElement; root.style.display = 'block'; this.sectorMap.render(this.campaign); }
+  private campaignAction(action: CampaignAction): void { if (!this.campaign) return; this.campaign = applyCampaignAction(this.campaign, action); saveCampaign(this.campaign); this.showCampaign(); }
+  private resolveCampaignBattle(): void { if (!this.campaign?.pendingBattle) return; const pending = this.campaign.pendingBattle; const seed = deriveBattleSeed(this.campaign.campaignSeed, this.campaign.sectorIndex, pending.nodeId, pending.battleIndex); const enemy = enemyFleetFor(seed, this.campaign.sectorIndex, this.campaign.sector.threat.level); const result = runCampaignBattle(this.campaign.fleet, enemy, seed); this.campaign = applyCampaignBattleResult(this.campaign, result); saveCampaign(this.campaign); this.showCampaign(); }
+  private exportCampaign(): void { if (!this.campaign) return; const code = encodeCampaign(this.campaign); navigator.clipboard?.writeText(code); prompt('Campaign Code（已尝试复制）', code); }
 
   private startBattle(
     teamA: TeamConfig,

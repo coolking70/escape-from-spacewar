@@ -1,0 +1,2 @@
+import { CampaignState } from '../campaign/campaignTypes';
+export function campaignHud(state: CampaignState): string { return `<div class="campaign-hud"><b>星域 ${state.sectorIndex}/3</b><span>回合 ${state.turn}</span><span>威胁 L${state.sector.threat.level} (${state.sector.threat.value})</span><span>补给 ${state.resources.supplies}</span><span>燃料 ${state.resources.fuel}</span><span>材料 ${state.resources.materials}</span><span>舰船 ${state.fleet.ships.length}</span></div>`; }

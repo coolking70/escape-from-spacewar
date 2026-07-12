@@ -24,6 +24,7 @@ import {
 } from './sim/coreV4ValidationTests';
 import { runBalance, BalanceRunConfig } from './sim/balanceRunner';
 import { ReplayConfig } from './sim/battleTypes';
+import { runCampaignTests } from './campaign/campaignTests';
 
 // 暴露确定性自检 / 黄金录像回归 / 规则单元 / 压力测试 / 验收总入口到全局，便于在浏览器控制台执行：
 //   runDeterministicTest()           // 旧格式兼容 + 同 seed 复现 + 倍速/seek 无关 + 大规模确定性 + 时间换算
@@ -74,7 +75,11 @@ import { ReplayConfig } from './sim/battleTypes';
 (window as unknown as { runBalanceTest: (cfg?: ReplayConfig, count?: number) => string }).runBalanceTest =
   runBalanceTest;
 (window as unknown as { runBalance: (cfg: BalanceRunConfig) => unknown }).runBalance = runBalance;
+(window as unknown as { runCampaignTests: () => unknown }).runCampaignTests = runCampaignTests;
 
 const root = document.getElementById('app');
 if (!root) throw new Error('缺少 #app 容器');
-new App(root).start();
+const app = new App(root);
+app.start();
+(window as unknown as { render_game_to_text: () => string; advanceTime: (ms: number) => void }).render_game_to_text = () => JSON.stringify(app.campaignDebugState());
+(window as unknown as { advanceTime: (ms: number) => void }).advanceTime = () => {};

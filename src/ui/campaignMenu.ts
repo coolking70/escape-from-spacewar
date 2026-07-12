@@ -1,0 +1,5 @@
+export class CampaignMenu {
+  constructor(private root: HTMLElement, private cb: { onSingle: () => void; onNew: () => void; onContinue: () => void; onImport: (code: string) => void; hasSave: () => boolean }) {}
+  show(): void { this.root.innerHTML = `<div class="campaign-menu"><h1>Escape from SpaceWar</h1><p>星域 Roguelike 垂直切片</p><button class="btn primary" id="cm-new">开始新战役</button><button class="btn" id="cm-continue" ${this.cb.hasSave() ? '' : 'disabled'}>继续战役</button><button class="btn" id="cm-single">单场战斗</button><textarea id="cm-import" placeholder="粘贴 Campaign Code"></textarea><button class="btn" id="cm-import-btn">导入战役码</button></div>`; (this.root.querySelector('#cm-new') as HTMLButtonElement).onclick = this.cb.onNew; (this.root.querySelector('#cm-continue') as HTMLButtonElement).onclick = this.cb.onContinue; (this.root.querySelector('#cm-single') as HTMLButtonElement).onclick = this.cb.onSingle; (this.root.querySelector('#cm-import-btn') as HTMLButtonElement).onclick = () => this.cb.onImport((this.root.querySelector('#cm-import') as HTMLTextAreaElement).value); }
+  hide(): void { this.root.innerHTML = ''; }
+}
