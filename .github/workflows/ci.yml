@@ -17,7 +17,17 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Run build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build.log
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: v07-build-log
+          path: build.log
       - run: npm test
       - run: npm run test:campaign
       - run: npm run test:stress
