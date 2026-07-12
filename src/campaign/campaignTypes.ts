@@ -9,6 +9,11 @@ import type {
 import type { DeploymentSelection } from './deployment/deploymentSystem';
 import type { ExtractionMode, ExtractionRisk } from './extraction/extractionSystem';
 import type { PersistentFleet } from './fleet/persistentFleet';
+import type {
+  CampaignOrganization,
+  PendingOrganizationEvent,
+  TechnologyId
+} from './organization/organizationTypes';
 import type { PendingSalvage, SalvageOptionId } from './salvage/salvageTypes';
 import type { SectorState } from './sector/sectorTypes';
 
@@ -18,7 +23,7 @@ export interface CampaignCommander {
   level: number;
   experience: number;
   alive: boolean;
-  /** V0.8 fields are optional at the type boundary so V0.6/V0.7 saves can migrate in place. */
+  /** V0.8 fields remain optional at the type boundary so older saves can migrate in place. */
   attributes?: CommanderAttributes;
   traits?: CommanderTraitId[];
   domainExperience?: CommanderDomainExperience;
@@ -73,7 +78,7 @@ export interface SectorSummary {
 }
 
 export interface CampaignState {
-  version: '0.2';
+  version: '0.3';
   campaignSeed: number;
   sectorIndex: number;
   turn: number;
@@ -82,6 +87,8 @@ export interface CampaignState {
   reserveCommanders?: CampaignCommander[];
   pendingRecruitment?: PendingRecruitment;
   pendingSuccession?: boolean;
+  organization: CampaignOrganization;
+  pendingOrganizationEvent?: PendingOrganizationEvent;
   fleet: PersistentFleet;
   resources: CampaignResources;
   cargo: CampaignCargo;
@@ -102,6 +109,10 @@ export type CampaignAction =
   | { type: 'resolveRecruitment'; candidateId?: string }
   | { type: 'appointCommander'; commanderId: string }
   | { type: 'treatCommander' }
+  | { type: 'resolveOrganizationEvent'; optionId: string }
+  | { type: 'unlockTechnology'; technologyId: TechnologyId }
+  | { type: 'installTechnology'; technologyId: TechnologyId }
+  | { type: 'uninstallTechnology'; technologyId: TechnologyId }
   | { type: 'emergencyRefuel' }
   | { type: 'useCargo'; itemType: CargoItemType }
   | { type: 'jettisonCargo'; itemType: CargoItemType; quantity?: number }
