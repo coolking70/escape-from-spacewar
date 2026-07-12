@@ -20,6 +20,13 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run test:det
-      - run: npm run test:campaign
+      - name: Campaign tests
+        run: npm run test:campaign 2>&1 | tee campaign-test.log
+      - name: Upload campaign diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: campaign-test-log
+          path: campaign-test.log
       - run: npm run test:stress
       - run: npm run build:static
