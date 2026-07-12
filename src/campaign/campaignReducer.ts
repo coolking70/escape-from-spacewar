@@ -40,6 +40,7 @@ export interface CampaignActionAvailability {
   resolveSignal: boolean;
   resolveSalvage: boolean;
   enterGate: boolean;
+  emergencyRefuel: boolean;
   wait: boolean;
 }
 
@@ -116,7 +117,16 @@ function resetDeployment(state: CampaignState): void {
 }
 
 function emptyAvailability(): CampaignActionAvailability {
-  return { move: false, scan: false, gather: false, resolveSignal: false, resolveSalvage: false, enterGate: false, wait: false };
+  return {
+    move: false,
+    scan: false,
+    gather: false,
+    resolveSignal: false,
+    resolveSalvage: false,
+    enterGate: false,
+    emergencyRefuel: false,
+    wait: false
+  };
 }
 
 export function getAvailableCampaignActions(state: CampaignState): CampaignActionAvailability {
@@ -129,13 +139,16 @@ export function getAvailableCampaignActions(state: CampaignState): CampaignActio
   const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);
   if (!current) return none;
   const neighbors = current.neighbors.map((id) => state.sector.nodes.find((node) => node.id === id)).filter(Boolean);
+  const fuelCost = movementFuelCost(state.fleet);
+  const hasRoute = neighbors.length > 0;
   return {
-    move: state.resources.fuel >= movementFuelCost(state.fleet) && neighbors.length > 0,
+    move: state.resources.fuel >= fuelCost && hasRoute,
     scan: neighbors.some((node) => node?.visibility === 'detected'),
     gather: current.type === 'resource' && !current.gathered,
     resolveSignal: current.type === 'signal' && !current.signalResolved,
     resolveSalvage: false,
     enterGate: current.type === 'gate',
+    emergencyRefuel: hasRoute && state.resources.fuel < fuelCost && state.resources.supplies >= 2,
     wait: state.resources.supplies > 0
   };
 }
@@ -416,6 +429,21 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
   if (action.type === 'jettisonCargo') return jettisonCargo(state, action.itemType, action.quantity ?? 1) ?? fail(state, '货舱中没有足够物资可抛弃。');
   if (action.type === 'fieldRepair') return repairShip(state, action.campaignShipId);
   if (action.type === 'towShip' || action.type === 'dismantleShip' || action.type === 'abandonShip') return handleDisabledShip(state, action);
+  if (action.type === 'emergencyRefuel') {
+    const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);
+    const fuelCost = movementFuelCost(state.fleet);
+    if (!current || current.neighbors.length === 0) return fail(state, '当前位置没有可继续航行的路线。');
+    if (state.resources.fuel >= fuelCost) return fail(state, '当前燃料已经足够完成下一次移动。');
+    if (state.resources.supplies < 2) return fail(state, '应急燃料调配至少需要 2 点补给。');
+    const next = finishTurn(state, '执行应急燃料调配。', 1);
+    next.resources.supplies = Math.max(0, next.resources.supplies - 1);
+    next.resources.fuel = Math.max(next.resources.fuel, fuelCost);
+    next.history.push({
+      turn: next.turn,
+      text: `应急调配完成：燃料恢复至 ${next.resources.fuel}，足够执行一次移动。`
+    });
+    return evaluateCampaignStatus(next);
+  }
   if (action.type === 'toggleDeployment' || action.type === 'setRetreatPolicy' || action.type === 'evadeBattle' || action.type === 'withdrawBeforeBattle') {
     return fail(state, '当前没有待配置的战斗。');
   }

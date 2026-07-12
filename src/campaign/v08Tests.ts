@@ -3,7 +3,7 @@ import { CAMPAIGN_STORAGE_KEY } from './campaignConfig';
 import { decodeCampaign, encodeCampaign, validateCampaignState } from './campaignCode';
 import { createCampaign } from './campaignGenerator';
 import { loadCampaign } from './campaignPersistence';
-import { applyCampaignAction, evaluateCampaignStatus } from './campaignReducer';
+import { applyCampaignAction, evaluateCampaignStatus, getAvailableCampaignActions } from './campaignReducer';
 import {
   addCommanderCondition,
   addCommanderInjury,
@@ -20,6 +20,7 @@ import {
   killCommander
 } from './commander/commanderSystem';
 import { buildEncounterPreview } from './fleet/encounterControl';
+import { movementFuelCost } from './fleet/persistentFleet';
 
 export function runV08Tests(): SuiteResult {
   return runSuite('campaign-v0.8', (add) => {
@@ -185,6 +186,32 @@ export function runV08Tests(): SuiteResult {
       const duplicate = JSON.parse(JSON.stringify(state));
       duplicate.reserveCommanders[0].id = duplicate.commander.id;
       test.true_(!validateCampaignState(duplicate), '重复指挥官 ID 被深层校验拒绝');
+      add(test);
+    }
+
+    {
+      const test = new Case('燃料耗尽后可通过应急调配解除节点软锁');
+      let state = createCampaign(1446551889);
+      state.turn = 12;
+      state.sector.currentNodeId = 's1-n12';
+      const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
+      current.visibility = 'visited';
+      for (const neighborId of current.neighbors) {
+        const neighbor = state.sector.nodes.find((node) => node.id === neighborId)!;
+        if (neighbor.visibility === 'hidden') neighbor.visibility = 'detected';
+      }
+      state.resources.fuel = 0;
+      state.resources.supplies = 8;
+      state = applyCampaignAction(state, { type: 'scan' });
+      const blocked = getAvailableCampaignActions(state);
+      test.true_(!blocked.move, '燃料不足时相邻节点不可移动');
+      test.true_(blocked.emergencyRefuel, '软锁状态提供应急燃料调配');
+      const cost = movementFuelCost(state.fleet);
+      const supplies = state.resources.supplies;
+      state = applyCampaignAction(state, { type: 'emergencyRefuel' });
+      test.true_(state.resources.fuel >= cost, '应急调配恢复至少一次移动所需燃料');
+      test.true_(state.resources.supplies < supplies, '应急调配消耗补给');
+      test.true_(getAvailableCampaignActions(state).move, '调配后相邻节点重新可点击');
       add(test);
     }
 

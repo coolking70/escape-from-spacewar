@@ -14,6 +14,7 @@ import { CampaignAction, CampaignCommander, CampaignState, RetreatPolicy } from 
 import { getAvailableCampaignActions } from '../campaign/campaignReducer';
 import { buildExtractionPlan } from '../campaign/extraction/extractionSystem';
 import { buildEncounterPreview } from '../campaign/fleet/encounterControl';
+import { movementFuelCost } from '../campaign/fleet/persistentFleet';
 import { canFieldRepair } from '../campaign/repair/repairSystem';
 import { signalOptions, signalTemplate } from '../campaign/sector/sectorActions';
 import { SectorNodeType, SectorRegion } from '../campaign/sector/sectorTypes';
@@ -64,6 +65,8 @@ export class SectorMapPanel {
     if (state.status === 'active') this.showFullResultLog = false;
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
     const available = getAvailableCampaignActions(state);
+    const moveCost = movementFuelCost(state.fleet);
+    const fuelShortage = current.neighbors.length > 0 && state.resources.fuel < moveCost;
     const graph = visibleSectorGraph(state.sector);
     const shown = new Set(graph.nodeIds);
     const edges = graph.edges.map(([a, b]) => {
@@ -77,8 +80,14 @@ export class SectorMapPanel {
     const nodes = state.sector.nodes.filter((node) => shown.has(node.id)).map((node) => {
       const hiddenGate = node.type === 'gate' && !state.sector.gateKnown;
       const label = node.visibility === 'detected' || hiddenGate ? '?' : NODE_ICON[node.type];
-      const title = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${node.type}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;
-      return `<button title="${title}" class="sector-node region-${node.region} ${node.visibility} ${node.id === current.id ? 'current' : ''}" style="left:${node.x}%;top:${node.y}%" data-id="${node.id}" ${!available.move || !current.neighbors.includes(node.id) ? 'disabled' : ''}><span>${label}</span></button>`;
+      const adjacent = current.neighbors.includes(node.id);
+      const baseTitle = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${node.type}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;
+      const blockedTitle = adjacent && !available.move
+        ? fuelShortage
+          ? ` · 移动受阻：当前燃料 ${state.resources.fuel}，需要 ${moveCost}`
+          : ' · 当前有待处理事件或指挥官无法行动'
+        : '';
+      return `<button title="${baseTitle}${blockedTitle}" class="sector-node region-${node.region} ${node.visibility} ${node.id === current.id ? 'current' : ''}" style="left:${node.x}%;top:${node.y}%" data-id="${node.id}" ${!available.move || !adjacent ? 'disabled' : ''}><span>${label}</span></button>`;
     }).join('');
 
     const disabled = (enabled: boolean) => enabled ? '' : 'disabled';
@@ -105,7 +114,12 @@ export class SectorMapPanel {
       return `<div class="campaign-card"><h3>撤离规划</h3><p>风险：<b>${plan.risk}</b>（${plan.riskScore}） · 跃迁燃料 ${plan.fuelCost} · 安全载荷 ${plan.safeCargoCapacity}/${state.cargo.capacity} · 当前载荷 ${plan.cargoUsed}</p><p>${plan.factors.join('；')}</p><button class="btn" id="sp-prepare" ${state.extractionPrepared ? 'disabled' : ''}>${state.extractionPrepared ? '已完成跃迁准备' : '准备跃迁（1 回合）'}</button><button class="btn primary" id="sp-gate-normal" ${disabled(plan.canNormalExtract)}>普通跃迁</button><button class="btn danger" id="sp-gate-emergency" ${disabled(plan.untowedDisabled === 0 && state.resources.fuel >= plan.fuelCost)}>紧急跃迁（自动抛货 / 可能受损）</button></div>`;
     })() : '';
 
-    const actions = state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `<button class="btn" id="sp-scan" ${disabled(available.scan)}>扫描</button><button class="btn" id="sp-gather" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class="btn" id="sp-signal-a">${signal[0]}</button><button class="btn" id="sp-signal-b">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class="btn" id="sp-wait" ${disabled(available.wait)}>等待</button>`;
+    const fuelCellCount = cargoQuantity(state.cargo, 'fuelCell');
+    const towedCount = state.fleet.ships.filter((ship) => ship.disabled && ship.towed).length;
+    const mobilityNotice = fuelShortage
+      ? `<div class="encounter-risk dangerous"><b>移动受阻：燃料不足</b><span>当前燃料 ${state.resources.fuel}，舰队移动需要 ${moveCost}。</span>${fuelCellCount > 0 ? '<span>货舱中有燃料电池，可立即使用。</span><button class="btn small" data-use-cargo="fuelCell">使用燃料电池</button>' : ''}${towedCount > 0 ? `<span>正在拖曳 ${towedCount} 艘失能舰；停止拖曳可降低移动消耗。</span>` : ''}${available.emergencyRefuel ? '<button class="btn small danger" id="sp-emergency-refuel">应急燃料调配（1 回合 / 至少 2 补给）</button>' : '<span>补给不足，无法执行应急燃料调配。</span>'}<small>等待不会恢复燃料。</small></div>`
+      : '';
+    const actions = state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `${mobilityNotice}<button class="btn" id="sp-scan" ${disabled(available.scan)}>扫描</button><button class="btn" id="sp-gather" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class="btn" id="sp-signal-a">${signal[0]}</button><button class="btn" id="sp-signal-b">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class="btn" id="sp-wait" ${disabled(available.wait)}>${fuelShortage ? '等待（不会恢复燃料）' : '等待'}</button>`;
 
     const cargo = state.cargo.items.length ? state.cargo.items.map((stack) => `<span>${CARGO_ITEM_LABEL[stack.type]}×${stack.quantity}${stack.type === 'supplyCrate' || stack.type === 'fuelCell' ? ` <button class="btn small" data-use-cargo="${stack.type}">使用</button>` : ''} <button class="btn small danger" data-jettison="${stack.type}">抛弃 1</button></span>`).join(' ') : '<span>货舱为空</span>';
     const ships = state.fleet.ships.map((ship) => {
@@ -138,6 +152,7 @@ export class SectorMapPanel {
     click('#sp-gate-normal', { type: 'enterGate', mode: 'normal' });
     click('#sp-gate-emergency', { type: 'enterGate', mode: 'emergency' });
     click('#sp-wait', { type: 'wait' });
+    click('#sp-emergency-refuel', { type: 'emergencyRefuel' });
     click('#sp-recruit-decline', { type: 'resolveRecruitment' });
     click('#sp-treat-commander', { type: 'treatCommander' });
 
