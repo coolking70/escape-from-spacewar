@@ -52,16 +52,36 @@ export function generatePendingSalvage(
         { type: 'fuelCell', quantity: thoroughFuel },
         ...(relic ? [{ type: 'relic' as const, quantity: relic }] : [])
       ]
-    },
-    {
-      id: 'leave',
-      label: '立即离开',
-      description: '放弃战利品，不在残骸区继续暴露。',
-      turns: 0,
-      threat: 0,
-      items: []
     }
   ];
+
+  const recoverable = battle.ships
+    .filter((ship) => ship.team === 'B' && ship.combatState === 'disabled')
+    .sort((a, b) => a.id - b.id)[0];
+  if (recoverable) {
+    options.push({
+      id: 'recover',
+      label: '回收失能敌舰',
+      description: '拖走一艘失能敌舰。它将以低组件完整度加入舰队，需要维修后才能参战。',
+      turns: 3,
+      threat: 4,
+      items: [],
+      recoveredShip: {
+        shipClass: recoverable.type,
+        variant: recoverable.variant,
+        componentRatio: 0.3
+      }
+    });
+  }
+
+  options.push({
+    id: 'leave',
+    label: '立即离开',
+    description: '放弃战利品，不在残骸区继续暴露。',
+    turns: 0,
+    threat: 0,
+    items: []
+  });
 
   return {
     nodeId,
