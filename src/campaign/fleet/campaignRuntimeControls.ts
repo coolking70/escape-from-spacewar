@@ -1,9 +1,15 @@
-import { BattleState, Ship } from '../../sim/battleTypes';
+import { BattleState } from '../../sim/battleTypes';
 import { RetreatPolicy } from '../campaignTypes';
+
+interface RuntimeSimulator {
+  step: () => unknown;
+  __campaignRetreatWrapped?: boolean;
+}
 
 interface AppRuntime {
   battleOrigin: 'single' | 'campaign';
   state: BattleState | null;
+  sim: RuntimeSimulator | null;
   campaign: { pendingBattle?: { retreatPolicy?: RetreatPolicy } } | null;
   campaignBattleContext: { battleSeed: number; bindings: unknown[] } | null;
   hudRoot: HTMLElement;
@@ -60,10 +66,34 @@ function ensureButton(runtime: AppRuntime): HTMLButtonElement | null {
   return button;
 }
 
+function wrapAutomaticRetreat(runtime: AppRuntime): void {
+  const sim = runtime.sim;
+  const context = runtime.campaignBattleContext;
+  if (!sim || !context || sim.__campaignRetreatWrapped) return;
+
+  const originalStep = sim.step.bind(sim);
+  let retreatOrdered = false;
+  sim.step = () => {
+    const result = originalStep();
+    const state = runtime.state;
+    if (
+      !retreatOrdered &&
+      runtime.battleOrigin === 'campaign' &&
+      state &&
+      !state.finished
+    ) {
+      const policy = runtime.campaign?.pendingBattle?.retreatPolicy ?? 'loss50';
+      if (shouldOrderCampaignRetreat(state, policy, context.bindings.length)) {
+        retreatOrdered = orderTeamRetreat(state, `自动撤退策略：${policy}`) > 0;
+      }
+    }
+    return result;
+  };
+  sim.__campaignRetreatWrapped = true;
+}
+
 export function installCampaignRuntimeControls(app: unknown): void {
   const runtime = app as AppRuntime;
-  let activeSeed: number | null = null;
-  let retreatOrdered = false;
 
   const loop = () => {
     const state = runtime.state;
@@ -74,23 +104,10 @@ export function installCampaignRuntimeControls(app: unknown): void {
       button.style.display = campaignBattle && !state?.finished ? '' : 'none';
       button.onclick = () => {
         if (!runtime.state || runtime.battleOrigin !== 'campaign') return;
-        if (orderTeamRetreat(runtime.state) > 0) retreatOrdered = true;
+        orderTeamRetreat(runtime.state);
       };
     }
-
-    if (campaignBattle && state && context) {
-      if (activeSeed !== context.battleSeed) {
-        activeSeed = context.battleSeed;
-        retreatOrdered = false;
-      }
-      const policy = runtime.campaign?.pendingBattle?.retreatPolicy ?? 'loss50';
-      if (!retreatOrdered && shouldOrderCampaignRetreat(state, policy, context.bindings.length)) {
-        if (orderTeamRetreat(state, `自动撤退策略：${policy}`) > 0) retreatOrdered = true;
-      }
-    } else {
-      activeSeed = null;
-      retreatOrdered = false;
-    }
+    if (campaignBattle) wrapAutomaticRetreat(runtime);
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
