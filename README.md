@@ -49,6 +49,7 @@ npm test                 # 完整验收测试（= test:acceptance）
 npm run test:det         # 确定性 + 黄金回放 + 验收测试
 npm run test:acceptance  # 18 套件完整验收
 npm run test:stress      # 50v50 压力测试（含 Carrier）
+npm run test:campaign    # V0.6 星域战役确定性测试
 ```
 
 ## 确定性模拟原则
@@ -114,12 +115,14 @@ escape-from-spacewar/
 - 确定性验证通过（黄金回放 8 例 + 50v50 压力测试）
 - 18 套件验收测试全部通过
 - GitHub Actions CI 已配置
+- V0.6 星域战役切片：探索、迷雾、资源、威胁、事件、hazard、战役战斗与撤离
 
 ## 已知限制
 
 - Balance Lab 仅支持 core-v4（无可对比的旧规则集）
 - 舰船 3D 模型为程序化生成（无外部模型导入）
 - 无后端、无账号、无联网功能
+- 未实现：维修、指挥官成长、多舰队、基地、科技树、市场与组织系统
 
 ## CI
 

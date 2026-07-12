@@ -24,7 +24,7 @@ import { createCampaign } from './campaign/campaignGenerator';
 import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campaignReducer';
 import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
-import { deriveBattleSeed, enemyFleetFor, runCampaignBattle } from './campaign/fleet/battleAdapter';
+import { CampaignBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle } from './campaign/fleet/battleAdapter';
 
 export class App {
   private root: HTMLElement;
@@ -42,6 +42,8 @@ export class App {
   private menu!: CampaignMenu;
   private sectorMap!: SectorMapPanel;
   private campaign: CampaignState | null = null;
+  private battleOrigin: 'single' | 'campaign' = 'single';
+  private campaignBattleContext: CampaignBattleContext | null = null;
   private balanceWorker: Worker | null = null;
 
   private scene: ThreeScene | null = null;
@@ -101,7 +103,7 @@ export class App {
     });
     this.hud = new BattleHud(this.hudRoot, {
       onShare: () => (this.replay ? encodeReplay(this.replay) : ''),
-      onExit: () => this.exitToSetup(),
+      onExit: () => this.exitBattle(),
       onTogglePause: () => this.togglePause(),
       onSpeed: (m) => (this.speed = m),
       onToggleAuto: () => this.toggleAuto(),
@@ -165,7 +167,7 @@ export class App {
   private importCampaign(code: string): void { try { this.campaign = decodeCampaign(code); saveCampaign(this.campaign); this.showCampaign(); } catch (e) { alert('战役导入失败：' + (e as Error).message); } }
   private showCampaign(): void { if (!this.campaign) return; this.menu.hide(); this.setupRoot.style.display = 'none'; this.battleRoot.style.display = 'none'; const root = this.root.querySelector('#campaign-root') as HTMLElement; root.style.display = 'block'; this.sectorMap.render(this.campaign); }
   private campaignAction(action: CampaignAction): void { if (!this.campaign) return; this.campaign = applyCampaignAction(this.campaign, action); saveCampaign(this.campaign); this.showCampaign(); }
-  private resolveCampaignBattle(): void { if (!this.campaign?.pendingBattle) return; const pending = this.campaign.pendingBattle; const seed = deriveBattleSeed(this.campaign.campaignSeed, this.campaign.sectorIndex, pending.nodeId, pending.battleIndex); const enemy = enemyFleetFor(seed, this.campaign.sectorIndex, this.campaign.sector.threat.level); const result = runCampaignBattle(this.campaign.fleet, enemy, seed); this.campaign = applyCampaignBattleResult(this.campaign, result); saveCampaign(this.campaign); this.showCampaign(); }
+  private resolveCampaignBattle(): void { if (!this.campaign?.pendingBattle) return; const pending = this.campaign.pendingBattle; const seed = deriveBattleSeed(this.campaign.campaignSeed, this.campaign.sectorIndex, pending.nodeId, pending.battleIndex); const enemy = enemyFleetFor(seed, this.campaign.sectorIndex, this.campaign.sector.threat.level); const context = prepareCampaignBattle(this.campaign.fleet, enemy, seed); this.beginWithReplay(context.replay, context); }
   private exportCampaign(): void { if (!this.campaign) return; const code = encodeCampaign(this.campaign); navigator.clipboard?.writeText(code); prompt('Campaign Code（已尝试复制）', code); }
 
   private startBattle(
@@ -194,13 +196,15 @@ export class App {
     }
   }
 
-  private beginWithReplay(replay: ReplayConfig): void {
+  private beginWithReplay(replay: ReplayConfig, campaignContext?: CampaignBattleContext): void {
     this.replay = replay;
     // 关闭可能仍打开的配置期覆盖层（舰队库 / 战前分析），避免盖住战斗画面
     this.fleetLibrary?.hide();
     this.analysisPanel?.hide();
-    this.rng = createPRNG(replay.seed);
-    this.state = createInitialState(replay, this.rng);
+    this.battleOrigin = campaignContext ? 'campaign' : 'single';
+    this.campaignBattleContext = campaignContext ?? null;
+    this.rng = campaignContext?.rng ?? createPRNG(replay.seed);
+    this.state = campaignContext?.state ?? createInitialState(replay, this.rng);
     this.sim = createSimulator(this.state, this.rng);
 
     if (!this.scene) {
@@ -327,12 +331,38 @@ export class App {
       this.winnerShown = true;
       if (this.replay) this.hud.showWinner(this.state.winner, this.state, this.replay);
       this.running = false;
+      if (this.battleOrigin === 'campaign') setTimeout(() => this.completeCampaignBattle(), 800);
     }
 
     if (this.running) {
       this.rafId = requestAnimationFrame(this.frame);
     }
   };
+
+  private exitBattle(): void {
+    if (this.battleOrigin === 'campaign') {
+      if (!this.state?.finished) { alert('战役战斗必须完成后才能返回星域地图。'); return; }
+      this.completeCampaignBattle();
+      return;
+    }
+    this.exitToSetup();
+  }
+
+  private completeCampaignBattle(): void {
+    if (this.battleOrigin !== 'campaign' || !this.campaign || !this.state || !this.campaignBattleContext) return;
+    this.campaign = applyCampaignBattleResult(this.campaign, this.state, this.campaignBattleContext.bindings);
+    saveCampaign(this.campaign);
+    this.running = false;
+    cancelAnimationFrame(this.rafId);
+    this.scene?.dispose();
+    this.scene = null;
+    this.sim = null;
+    this.state = null;
+    this.rng = null;
+    this.campaignBattleContext = null;
+    this.battleOrigin = 'single';
+    this.showCampaign();
+  }
 
   private exitToSetup(): void {
     this.running = false;

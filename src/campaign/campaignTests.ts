@@ -39,7 +39,7 @@ export function runCampaignTests(): SuiteResult {
         { id: 0, team: 'A', combatState: 'destroyed', components: [] },
         { id: 1, team: 'A', combatState: 'escaped', components: [{ hp: 3 }] },
         { id: 2, team: 'A', combatState: 'disabled', components: [{ hp: 2 }] }
-      ] } as any; const next = importBattleResult(fleet, battle); t.eq(next.ships.length, 2, 'destroyed 舰船移除'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-1' && s.escaped), 'escaped 舰船保留'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-2' && s.disabled), 'disabled 舰船保留并标记'); t.true_(next.ships.every((s) => s.campaignShipId.startsWith('cs-')), 'campaignShipId 战斗前后稳定'); add(t);
+      ] } as any; const next = importBattleResult(fleet, battle, [{ campaignShipId: 'cs-0', battleShipId: 0 }, { campaignShipId: 'cs-1', battleShipId: 1 }, { campaignShipId: 'cs-2', battleShipId: 2 }]); t.eq(next.ships.length, 2, 'destroyed 舰船移除'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-1' && s.escaped), 'escaped 舰船保留'); t.true_(next.ships.some((s) => s.campaignShipId === 'cs-2' && s.disabled), 'disabled 舰船保留并标记'); t.true_(next.ships.every((s) => s.campaignShipId.startsWith('cs-')), 'campaignShipId 战斗前后稳定'); add(t);
     }
   });
 }

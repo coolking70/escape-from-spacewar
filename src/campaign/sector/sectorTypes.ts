@@ -11,6 +11,7 @@ export interface SectorNode {
   processed: boolean;
   gathered: boolean;
   signalResolved?: boolean;
+  hazardResolved?: boolean;
 }
 
 export interface SectorThreat { value: number; level: 0 | 1 | 2 | 3 | 4 | 5; }
