@@ -79,8 +79,8 @@ export class ThreeScene {
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x05060a);
-    this.scene.fog = new THREE.FogExp2(0x05060a, 0.0016);
+    this.scene.background = new THREE.Color(0x0e121c);
+    this.scene.fog = new THREE.FogExp2(0x121622, 0.0005);
 
     this.camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 3000);
     this.camera.position.set(0, 70, 110);
@@ -138,18 +138,18 @@ export class ThreeScene {
 
   /** 三点照明 + 边缘光，让 MeshStandardMaterial 金属表面有高光与阴影 */
   private setupLights(): void {
-    const ambient = new THREE.AmbientLight(0x3a4458, 0.6);
+    const ambient = new THREE.AmbientLight(0x7a8aa8, 1.6);
     this.scene.add(ambient);
 
-    const key = new THREE.DirectionalLight(0xfff0e0, 0.9);
+    const key = new THREE.DirectionalLight(0xfff0e0, 1.7);
     key.position.set(60, 100, 50);
     this.scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0x8899ff, 0.4);
+    const fill = new THREE.DirectionalLight(0x8899ff, 1.0);
     fill.position.set(-50, 40, -60);
     this.scene.add(fill);
 
-    const rim = new THREE.DirectionalLight(0xffaa88, 0.25);
+    const rim = new THREE.DirectionalLight(0xffaa88, 0.7);
     rim.position.set(0, -40, 80);
     this.scene.add(rim);
   }

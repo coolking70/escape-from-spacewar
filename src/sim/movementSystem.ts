@@ -49,6 +49,8 @@ const SEP_W = 0.9;
 const COH_W = 0.18;
 const ANCHOR_W = 0.5;
 const LAT_W = 0.32;
+/** 带内朝向目标力：防止孤舰纯切向绕圈导致前向弧武器永远无法开火 */
+const FACE_W = 0.18;
 
 /** 合成转向：返回期望方向与速度系数。保证确定性（仅依赖输入，无随机）。 */
 export function computeSteering(ctx: SteerContext): SteerResult {
@@ -96,6 +98,8 @@ export function computeSteering(ctx: SteerContext): SteerResult {
     speedFactor = 1;
   } else if (inBand) {
     // 理想距离带：基本停步，仅做横向 + 分离微调，显著降低抖动
+    // 加入弱朝向目标力，避免孤舰纯切向绕圈导致前向弧武器永远无法开火
+    forces.push({ x: toT.x * FACE_W, y: 0, z: toT.z * FACE_W });
     speedFactor = 0.3;
   }
 
@@ -130,9 +134,9 @@ export function desiredBand(ship: Ship, doc: DoctrineType): number {
     if (c.def.weapon && !c.destroyed) maxR = Math.max(maxR, c.def.weapon.range);
   }
   if (maxR === 0) maxR = ship.effectiveRange;
-  const tf = ship.type === 'Cruiser' ? 0.98 : ship.type === 'Frigate' ? 0.9 : 0.82;
+  const tf = ship.type === 'Cruiser' ? 0.82 : ship.type === 'Frigate' ? 0.85 : 0.80;
   const df =
-    doc === 'aggressive' ? 0.78 : doc === 'defensive' ? 1.18 : doc === 'kite' ? 1.12 : doc === 'focusFire' ? 0.95 : doc === 'antiCapital' ? 1.0 : doc === 'screen' ? 0.9 : 1.0;
+    doc === 'aggressive' ? 0.72 : doc === 'defensive' ? 1.05 : doc === 'kite' ? 1.0 : doc === 'focusFire' ? 0.90 : doc === 'antiCapital' ? 0.95 : doc === 'screen' ? 0.85 : 1.0;
   return maxR * tf * df;
 }
 

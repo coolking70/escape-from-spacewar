@@ -39,7 +39,7 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
-#app { width: 100vw; height: 100vh; position: relative; }
+#app { width: 100vw; height: 100vh; height: 100dvh; position: relative; }
 
 /* ───── Campaign vertical slice ───── */
 #menu-root, #campaign-root { position:absolute; inset:0; z-index:12; }
@@ -376,14 +376,14 @@ input[type="checkbox"] {
 #hud-root .hud-bar .team-b { color: var(--accent-b); }
 #hud-root .hud-actions {
   position: absolute;
-  bottom: 14px; right: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom)); right: 14px;
   display: flex;
   gap: 10px;
   pointer-events: auto;
 }
 #hud-root .hud-controls {
   position: absolute;
-  bottom: 14px; left: 14px;
+  bottom: calc(14px + env(safe-area-inset-bottom)); left: 14px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -436,7 +436,7 @@ input[type="checkbox"] {
 
 #hud-root .share-box {
   position: absolute;
-  bottom: 64px; right: 14px;
+  bottom: calc(64px + env(safe-area-inset-bottom)); right: 14px;
   width: min(420px, 80vw);
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -645,7 +645,7 @@ input[type="checkbox"] {
 /* ───── 进度条 + 跳转 ───── */
 #hud-root .hud-progress {
   position: absolute;
-  bottom: 62px;
+  bottom: calc(62px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   width: min(640px, 72vw);
@@ -781,13 +781,13 @@ input[type="checkbox"] {
 #hud-root .hud-view {
   position: absolute;
   right: 12px;
-  bottom: 12px;
+  bottom: calc(56px + env(safe-area-inset-bottom));
   pointer-events: auto;
 }
 #hud-root .hud-view-panel {
   position: absolute;
   right: 0;
-  bottom: 42px;
+  bottom: calc(42px + env(safe-area-inset-bottom));
   width: 150px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -1566,7 +1566,7 @@ input[type="checkbox"] {
 
   /* HUD controls: 缩小按钮 */
   #hud-root .hud-controls {
-    bottom: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
     left: 8px;
     gap: 6px;
   }
@@ -1583,7 +1583,7 @@ input[type="checkbox"] {
 
   /* HUD actions (right side) */
   #hud-root .hud-actions {
-    bottom: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
     right: 8px;
     gap: 6px;
   }
@@ -1608,7 +1608,7 @@ input[type="checkbox"] {
 
   /* Share box */
   #hud-root .share-box {
-    bottom: 50px;
+    bottom: calc(50px + env(safe-area-inset-bottom));
     right: 8px;
     width: 92vw;
   }
