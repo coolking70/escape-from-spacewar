@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           git show origin/main:src/App.ts > src/App.ts
-          cp src/campaign/campaignReducer.ts src/campaign/campaignReducerBase.ts
+          git show origin/main:src/campaign/campaignReducer.ts > src/campaign/campaignReducerBase.ts
           cat > src/campaign/campaignReducer.ts <<'EOF'
           export {
             applyCampaignAction,
