@@ -20,7 +20,6 @@ export function generatePendingSalvage(
   const ownDestroyed = Math.max(0, ownShipsBefore - ownShipsAfter);
   const score = Math.max(1, enemyDestroyed * 3 + enemyDisabled * 2 + sectorIndex);
   const seed = hash32(campaignSeed, sectorIndex, nodeId, battleIndex, 'salvage');
-
   const quickParts = Math.max(1, Math.floor(score / 4));
   const quickFuel = seed % 3 === 0 ? 1 : 0;
   const thoroughParts = quickParts + 1 + (seed % 3);
@@ -58,7 +57,7 @@ export function generatePendingSalvage(
   const recoverable = battle.ships
     .filter((ship) => ship.team === 'B' && ship.combatState === 'disabled')
     .sort((a, b) => a.id - b.id)[0];
-  if (recoverable) {
+  if (recoverable && (seed & 1) === 1) {
     options.push({
       id: 'recover',
       label: '回收失能敌舰',
@@ -83,10 +82,5 @@ export function generatePendingSalvage(
     items: []
   });
 
-  return {
-    nodeId,
-    battleIndex,
-    summary: { enemyDestroyed, enemyDisabled, ownDestroyed },
-    options
-  };
+  return { nodeId, battleIndex, summary: { enemyDestroyed, enemyDisabled, ownDestroyed }, options };
 }
