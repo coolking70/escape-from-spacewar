@@ -86,18 +86,20 @@ function normalizeBudget(raw: unknown): BudgetConfig {
   return { mode: 'legacy', limit: DEFAULT_BUDGET_LIMIT };
 }
 
-function fleetTotal(fleet: FleetEntry[]): number {
-  return fleet.reduce((s, e) => s + Math.max(0, Math.floor(e.count || 0)), 0);
-}
-
 export function encodeReplay(cfg: ReplayConfig): string {
+  if (cfg.v !== '0.5') {
+    throw new Error(`当前仅支持 Replay v0.5 / ${RULESET_V4}，无法编码版本：${String(cfg.v)}`);
+  }
+  const ruleset = cfg.ruleset ?? RULESET_V4;
+  if (ruleset !== RULESET_V4) {
+    throw new Error(`当前仅支持 Replay v0.5 / ${RULESET_V4}，无法编码规则集：${String(ruleset)}`);
+  }
   assertValidFleet(cfg.teamA.fleet);
   assertValidFleet(cfg.teamB.fleet);
   const budget = cfg.budget ?? { mode: 'legacy', limit: DEFAULT_BUDGET_LIMIT };
   const json = JSON.stringify({
-    v: cfg.v,
-    // 编码固定使用 v0.5 + core-v4
-    ruleset: cfg.ruleset ?? RULESET_V4,
+    v: '0.5',
+    ruleset: RULESET_V4,
     seed: cfg.seed >>> 0,
     budget,
     teamA: {

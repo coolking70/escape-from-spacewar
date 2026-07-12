@@ -18,7 +18,7 @@ import {
   fleetCost,
   SHIP_CN
 } from '../sim/shipVariants';
-import { assertValidFleet } from '../sim/fleetValidator';
+import { assertValidFleet, validateFleet } from '../sim/fleetValidator';
 
 export interface SetupCallbacks {
   onStart: (teamA: TeamConfig, teamB: TeamConfig, seed: number, budget: BudgetConfig) => void;
@@ -91,6 +91,48 @@ export const PRESETS: { name: string; build: () => FleetEntry[] }[] = [
     ]
   }
 ];
+
+/** 稳定的新增编队项顺序；每一项都是唯一的合法舰种/改型组合。 */
+const FLEET_ENTRY_ORDER: ReadonlyArray<Pick<FleetEntry, 'shipClass' | 'variant'>> = [
+  ...VARIANTS_BY_CLASS.Fighter.map((variant) => ({ shipClass: 'Fighter' as const, variant })),
+  ...VARIANTS_BY_CLASS.Frigate.map((variant) => ({ shipClass: 'Frigate' as const, variant })),
+  ...VARIANTS_BY_CLASS.Cruiser.map((variant) => ({ shipClass: 'Cruiser' as const, variant }))
+];
+
+/** 返回当前舰队中首个未使用的合法组合；12 种均已使用时返回 null。 */
+export function findFirstUnusedFleetEntry(fleet: FleetEntry[]): FleetEntry | null {
+  const used = new Set(fleet.map((entry) => `${entry.shipClass}:${entry.variant}`));
+  const next = FLEET_ENTRY_ORDER.find((entry) => !used.has(`${entry.shipClass}:${entry.variant}`));
+  return next ? { ...next, count: 1 } : null;
+}
+
+/** 供界面与测试共用的开始战斗可用性判定。 */
+export function getSetupStartState(
+  fleetA: FleetEntry[],
+  fleetB: FleetEntry[],
+  unlimited: boolean,
+  limit: number
+): { canStart: boolean; message: string; error?: 'invalid' | 'budget' } {
+  const a = validateFleet(fleetA);
+  const b = validateFleet(fleetB);
+  if (!a.valid || !b.valid) {
+    const details = [
+      !a.valid ? `舰队 A：${a.errors.join('；')}` : '',
+      !b.valid ? `舰队 B：${b.errors.join('；')}` : ''
+    ].filter(Boolean).join('；');
+    return { canStart: false, message: `配置无效：${details}`, error: 'invalid' };
+  }
+
+  const usedA = fleetCost(fleetA);
+  const usedB = fleetCost(fleetB);
+  const overA = !unlimited && usedA > limit;
+  const overB = !unlimited && usedB > limit;
+  if (overA || overB) {
+    const who = overA && overB ? '双方' : overA ? '舰队 A' : '舰队 B';
+    return { canStart: false, message: `${who}超出预算，无法开始战斗（开启无限预算可测试）。`, error: 'budget' };
+  }
+  return { canStart: true, message: unlimited ? '无限预算模式：可开始。' : '配置有效，可开始战斗。' };
+}
 
 export class SetupPanel {
   private root: HTMLElement;
@@ -268,7 +310,14 @@ export class SetupPanel {
 
     // 增删按钮
     (this.root.querySelector('#add-' + team) as HTMLButtonElement).onclick = () => {
-      this.fleets[team].push({ shipClass: 'Fighter', variant: 'standard', count: 1 });
+      const entry = findFirstUnusedFleetEntry(this.fleets[team]);
+      if (!entry) {
+        const hint = this.root.querySelector('#startHint') as HTMLElement;
+        hint.textContent = '全部 12 种合法舰种/改型组合均已添加，无法继续添加。';
+        hint.className = 'start-hint bad';
+        return;
+      }
+      this.fleets[team].push(entry);
       this.renderFleetColumn(team);
       this.refreshBudget();
     };
@@ -365,26 +414,12 @@ export class SetupPanel {
     infoA?.classList.toggle('over', overA);
     infoB?.classList.toggle('over', overB);
 
-    const totalA = this.fleets.a.reduce((s, e) => s + Math.max(0, Math.floor(e.count || 0)), 0);
-    const totalB = this.fleets.b.reduce((s, e) => s + Math.max(0, Math.floor(e.count || 0)), 0);
-    const empty = totalA === 0 || totalB === 0;
-
     const startBtn = this.root.querySelector('#startBtn') as HTMLButtonElement;
     const hint = this.root.querySelector('#startHint') as HTMLElement;
-    if (empty) {
-      startBtn.disabled = true;
-      hint.textContent = '双方舰队都不能为空。';
-      hint.className = 'start-hint bad';
-    } else if (overA || overB) {
-      startBtn.disabled = true;
-      const who = overA && overB ? '双方' : overA ? '舰队 A' : '舰队 B';
-      hint.textContent = `${who}超出预算，无法开始战斗（开启无限预算可测试）。`;
-      hint.className = 'start-hint bad';
-    } else {
-      startBtn.disabled = false;
-      hint.textContent = this.unlimited ? '无限预算模式：可开始。' : '配置有效，可开始战斗。';
-      hint.className = 'start-hint ok';
-    }
+    const state = getSetupStartState(this.fleets.a, this.fleets.b, this.unlimited, this.limit);
+    startBtn.disabled = !state.canStart;
+    hint.textContent = state.message;
+    hint.className = state.canStart ? 'start-hint ok' : 'start-hint bad';
   }
 
   private budgetText(used: number): string {

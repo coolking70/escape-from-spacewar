@@ -83,6 +83,17 @@ export function replayCompatibilityTests(): SuiteResult {
     c.eq(dec.v, SIM_VERSION_V5, 'encode/decode 往返 version 一致');
     c.eq(dec.teamA.fleet.length, 1, 'encode/decode 往返 fleet 保持');
 
+    // encodeReplay 必须闭合到唯一受支持的版本和规则集。
+    let threwVersion = false;
+    let threwRuleset = false;
+    try { encodeReplay({ ...cfg, v: 'unsupported' }); } catch (e) { threwVersion = String(e).includes('当前仅支持 Replay v0.5'); }
+    try { encodeReplay({ ...cfg, ruleset: 'spacewar-core-v99' }); } catch (e) { threwRuleset = String(e).includes('当前仅支持 Replay v0.5'); }
+    c.true_(threwVersion, '非 v0.5 编码直接失败');
+    c.true_(threwRuleset, '非 core-v4 编码直接失败');
+    const encoded = decodeReplay(encodeReplay(cfg));
+    c.eq(encoded.v, '0.5', '任意合法编码均可解码为 v0.5');
+    c.eq(encoded.ruleset, RULESET_V4, '任意合法编码均可解码为 core-v4');
+
     // 受支持集合仅 core-v4（唯一正式规则）
     c.eq(KNOWN_RULESETS.length, 1, '受支持 ruleset 仅 1 个（core-v4）');
     c.true_((KNOWN_RULESETS as string[]).includes(RULESET_V4), 'KNOWN_RULESETS 含 core-v4');

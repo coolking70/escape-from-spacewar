@@ -27,6 +27,7 @@ import {
   combatStateValidationTests
 } from './coreV4ValidationTests';
 import { runFleetValidationTests } from './fleetValidationTests';
+import { setupPanelTests } from '../ui/setupPanelTests';
 import { SuiteResult } from './testHarness';
 
 export interface AcceptanceSuiteResult {
@@ -132,6 +133,9 @@ export function runAcceptanceTests(): AcceptanceResult {
 
   // 18. 舰队校验（非法组合拒绝、count 校验、normalizeFleet 合并）
   suites.push(wrapSuite('fleetValidation', runFleetValidationTests));
+
+  // 19. 配置面板（新增编队项不重复、开始按钮与统一舰队校验一致）
+  suites.push(wrapSuite('setupPanel', setupPanelTests));
 
   const allPassed = suites.every((s) => s.passed);
   const totalMs = suites.reduce((s, x) => s + x.durationMs, 0);
