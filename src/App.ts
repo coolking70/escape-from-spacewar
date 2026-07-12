@@ -102,7 +102,8 @@ export class App {
       onOpenAnalysis: () => this.analysisPanel.show()
     });
     this.hud = new BattleHud(this.hudRoot, {
-      onShare: () => (this.replay ? encodeReplay(this.replay) : ''),
+      onShare: () =>
+        this.battleOrigin === 'campaign' ? '' : this.replay ? encodeReplay(this.replay) : '',
       onExit: () => this.exitBattle(),
       onTogglePause: () => this.togglePause(),
       onSpeed: (m) => (this.speed = m),
@@ -131,19 +132,50 @@ export class App {
       }
     );
     this.menu = new CampaignMenu(menuRoot, {
-      onSingle: () => this.showSetup(), onNew: () => this.startCampaign((Date.now() >>> 0)), onContinue: () => this.continueCampaign(), onImport: (code) => this.importCampaign(code),
-      hasSave: () => { try { return !!loadCampaign(); } catch { return false; } }
+      onSingle: () => this.showSetup(),
+      onNew: () => this.startCampaign(Date.now() >>> 0),
+      onContinue: () => this.continueCampaign(),
+      onImport: (code) => this.importCampaign(code),
+      hasSave: () => {
+        try {
+          return !!loadCampaign();
+        } catch {
+          return false;
+        }
+      }
     });
-    this.sectorMap = new SectorMapPanel(campaignRoot, { onAction: (a) => this.campaignAction(a), onBattle: () => this.resolveCampaignBattle(), onExport: () => this.exportCampaign(), onExit: () => this.showMenu() });
+    this.sectorMap = new SectorMapPanel(campaignRoot, {
+      onAction: (action) => this.campaignAction(action),
+      onBattle: () => this.resolveCampaignBattle(),
+      onExport: () => this.exportCampaign(),
+      onExit: () => this.showMenu()
+    });
   }
 
   start(): void {
     this.showMenu();
   }
 
-  campaignDebugState(): unknown { return this.campaign ? { sector: this.campaign.sectorIndex, turn: this.campaign.turn, node: this.campaign.sector.currentNodeId, threat: this.campaign.sector.threat, resources: this.campaign.resources, pendingBattle: this.campaign.pendingBattle, status: this.campaign.status } : { screen: 'menu' }; }
+  campaignDebugState(): unknown {
+    return this.campaign
+      ? {
+          sector: this.campaign.sectorIndex,
+          turn: this.campaign.turn,
+          node: this.campaign.sector.currentNodeId,
+          threat: this.campaign.sector.threat,
+          resources: this.campaign.resources,
+          pendingBattle: this.campaign.pendingBattle,
+          status: this.campaign.status
+        }
+      : { screen: 'menu' };
+  }
 
-  private showMenu(): void { this.setupRoot.style.display = 'none'; this.battleRoot.style.display = 'none'; (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none'; this.menu.show(); }
+  private showMenu(): void {
+    this.setupRoot.style.display = 'none';
+    this.battleRoot.style.display = 'none';
+    (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    this.menu.show();
+  }
 
   private showSetup(): void {
     this.menu.hide();
@@ -162,13 +194,74 @@ export class App {
     this.hud.show();
   }
 
-  private startCampaign(seed: number): void { this.campaign = createCampaign(seed); saveCampaign(this.campaign); this.showCampaign(); }
-  private continueCampaign(): void { try { this.campaign = loadCampaign(); if (!this.campaign) throw new Error('没有可继续的战役。'); this.showCampaign(); } catch (e) { alert((e as Error).message); } }
-  private importCampaign(code: string): void { try { this.campaign = decodeCampaign(code); saveCampaign(this.campaign); this.showCampaign(); } catch (e) { alert('战役导入失败：' + (e as Error).message); } }
-  private showCampaign(): void { if (!this.campaign) return; this.menu.hide(); this.setupRoot.style.display = 'none'; this.battleRoot.style.display = 'none'; const root = this.root.querySelector('#campaign-root') as HTMLElement; root.style.display = 'block'; this.sectorMap.render(this.campaign); }
-  private campaignAction(action: CampaignAction): void { if (!this.campaign) return; this.campaign = applyCampaignAction(this.campaign, action); saveCampaign(this.campaign); this.showCampaign(); }
-  private resolveCampaignBattle(): void { if (!this.campaign?.pendingBattle) return; const pending = this.campaign.pendingBattle; const seed = deriveBattleSeed(this.campaign.campaignSeed, this.campaign.sectorIndex, pending.nodeId, pending.battleIndex); const enemy = enemyFleetFor(seed, this.campaign.sectorIndex, this.campaign.sector.threat.level, pending.reason === '星门守卫'); const context = prepareCampaignBattle(this.campaign.fleet, enemy, seed); this.beginWithReplay(context.replay, context); }
-  private exportCampaign(): void { if (!this.campaign) return; const code = encodeCampaign(this.campaign); navigator.clipboard?.writeText(code); prompt('Campaign Code（已尝试复制）', code); }
+  private startCampaign(seed: number): void {
+    this.campaign = createCampaign(seed);
+    saveCampaign(this.campaign);
+    this.showCampaign();
+  }
+
+  private continueCampaign(): void {
+    try {
+      this.campaign = loadCampaign();
+      if (!this.campaign) throw new Error('没有可继续的战役。');
+      this.showCampaign();
+    } catch (error) {
+      alert((error as Error).message);
+    }
+  }
+
+  private importCampaign(code: string): void {
+    try {
+      this.campaign = decodeCampaign(code);
+      saveCampaign(this.campaign);
+      this.showCampaign();
+    } catch (error) {
+      alert('战役导入失败：' + (error as Error).message);
+    }
+  }
+
+  private showCampaign(): void {
+    if (!this.campaign) return;
+    this.menu.hide();
+    this.setupRoot.style.display = 'none';
+    this.battleRoot.style.display = 'none';
+    const root = this.root.querySelector('#campaign-root') as HTMLElement;
+    root.style.display = 'block';
+    this.sectorMap.render(this.campaign);
+  }
+
+  private campaignAction(action: CampaignAction): void {
+    if (!this.campaign) return;
+    this.campaign = applyCampaignAction(this.campaign, action);
+    saveCampaign(this.campaign);
+    this.showCampaign();
+  }
+
+  private resolveCampaignBattle(): void {
+    if (!this.campaign?.pendingBattle) return;
+    const pending = this.campaign.pendingBattle;
+    const seed = deriveBattleSeed(
+      this.campaign.campaignSeed,
+      this.campaign.sectorIndex,
+      pending.nodeId,
+      pending.battleIndex
+    );
+    const enemy = enemyFleetFor(
+      seed,
+      this.campaign.sectorIndex,
+      this.campaign.sector.threat.level,
+      pending.reason === '星门守卫'
+    );
+    const context = prepareCampaignBattle(this.campaign.fleet, enemy, seed);
+    this.beginWithReplay(context.replay, context);
+  }
+
+  private exportCampaign(): void {
+    if (!this.campaign) return;
+    const code = encodeCampaign(this.campaign);
+    navigator.clipboard?.writeText(code);
+    prompt('Campaign Code（已尝试复制）', code);
+  }
 
   private startBattle(
     teamA: TeamConfig,
@@ -191,8 +284,8 @@ export class App {
     try {
       const replay = decodeReplay(code);
       this.beginWithReplay(replay);
-    } catch (e) {
-      alert('录像导入失败：' + (e as Error).message);
+    } catch (error) {
+      alert('录像导入失败：' + (error as Error).message);
     }
   }
 
@@ -224,9 +317,10 @@ export class App {
     this.paused = false;
     this.speed = 1;
     this.showBattle();
+    this.configureBattleControls(this.battleOrigin);
     this.hud.update(this.state);
 
-    // 通过确定性重模拟生成完整战斗时间线（不渲染、不影响结果）。
+    // 单场战斗可从 Replay 确定性重模拟时间线；战役战斗包含额外的继承损伤，暂不重建。
     this.generateTimeline();
 
     this.running = true;
@@ -237,31 +331,60 @@ export class App {
     this.rafId = requestAnimationFrame(this.frame);
   }
 
-  /** 无渲染地完整模拟当前 replay，聚合出关键事件时间线并交给 HUD 渲染。
-   *  纯读取 replay 配置，不修改任何运行中的 BattleState / sim，故不影响战斗结果。 */
+  private configureBattleControls(origin: 'single' | 'campaign'): void {
+    const campaign = origin === 'campaign';
+    const seek = this.hudRoot.querySelector('#hudSeek') as HTMLInputElement | null;
+    const timeline = this.hudRoot.querySelector('#hudTimeline') as HTMLElement | null;
+    const share = this.hudRoot.querySelector('#hudShare') as HTMLButtonElement | null;
+    const back = this.hudRoot.querySelector('#hudBack') as HTMLButtonElement | null;
+    const exit = this.hudRoot.querySelector('#hudExit') as HTMLButtonElement | null;
+    const reason = '战役战斗包含跨战斗继承损伤，V0.6 暂不支持进度跳转或分享 Replay。';
+
+    if (seek) {
+      seek.disabled = campaign;
+      seek.title = campaign ? reason : '';
+    }
+    if (timeline) {
+      timeline.style.pointerEvents = campaign ? 'none' : '';
+      timeline.title = campaign ? reason : '';
+    }
+    if (share) share.style.display = campaign ? 'none' : '';
+    if (back) back.textContent = campaign ? '返回星域' : '返回设置';
+    if (exit) exit.textContent = campaign ? '返回星域' : '返回设置';
+  }
+
+  /** 单场战斗由 replay 生成时间线。战役战斗的继承 HP 不在 ReplayConfig 中，因此禁用重模拟。 */
   private generateTimeline(): void {
     if (!this.replay || !this.state) return;
+    if (this.battleOrigin === 'campaign') {
+      this.hud.setTimeline([], this.state.maxTicks);
+      return;
+    }
     try {
       const events = simulateFull(this.replay);
       const markers = buildTimeline(events);
       this.hud.setTimeline(markers, this.state.maxTicks);
-    } catch (e) {
+    } catch (error) {
       // 时间线生成失败不应阻断战斗播放
-      console.warn('[timeline] 生成失败：', e);
+      console.warn('[timeline] 生成失败：', error);
     }
   }
 
-  /** 进度条跳转：从初始配置 + 相同 seed 确定性重模拟到目标 tick，然后继续播放。
-   *  不改变最终战斗结果——因为推进逻辑只依赖 seed，与是否中途跳转无关。 */
+  /** 进度条跳转仅用于普通 Replay；战役战斗禁用以保持继承损伤和 binding。 */
   private seek(targetTick: number): void {
+    if (this.battleOrigin === 'campaign') return;
     if (!this.replay || !this.scene) return;
     this.rng = createPRNG(this.replay.seed);
     this.state = createInitialState(this.replay, this.rng);
     this.sim = createSimulator(this.state, this.rng);
 
-    const t = Math.max(0, Math.min(targetTick, this.state.maxTicks));
+    const target = Math.max(0, Math.min(targetTick, this.state.maxTicks));
     let guard = 0;
-    while (this.state.tick < t && !this.state.finished && guard < this.state.maxTicks + 5) {
+    while (
+      this.state.tick < target &&
+      !this.state.finished &&
+      guard < this.state.maxTicks + 5
+    ) {
       this.sim.step();
       guard++;
     }
@@ -312,8 +435,8 @@ export class App {
       const frameEvents: BattleEvent[] = [];
       while (this.acc >= TICK_MS && !this.state.finished) {
         this.prev = snapshot(this.state);
-        const res = this.sim.step();
-        for (const e of res.events) frameEvents.push(e);
+        const result = this.sim.step();
+        for (const event of result.events) frameEvents.push(event);
         this.acc -= TICK_MS;
       }
       if (frameEvents.length) {
@@ -331,7 +454,9 @@ export class App {
       this.winnerShown = true;
       if (this.replay) this.hud.showWinner(this.state.winner, this.state, this.replay);
       this.running = false;
-      if (this.battleOrigin === 'campaign') setTimeout(() => this.completeCampaignBattle(), 800);
+      if (this.battleOrigin === 'campaign') {
+        setTimeout(() => this.completeCampaignBattle(), 800);
+      }
     }
 
     if (this.running) {
@@ -341,7 +466,10 @@ export class App {
 
   private exitBattle(): void {
     if (this.battleOrigin === 'campaign') {
-      if (!this.state?.finished) { alert('战役战斗必须完成后才能返回星域地图。'); return; }
+      if (!this.state?.finished) {
+        alert('战役战斗必须完成后才能返回星域地图。');
+        return;
+      }
       this.completeCampaignBattle();
       return;
     }
@@ -349,8 +477,19 @@ export class App {
   }
 
   private completeCampaignBattle(): void {
-    if (this.battleOrigin !== 'campaign' || !this.campaign || !this.state || !this.campaignBattleContext) return;
-    this.campaign = applyCampaignBattleResult(this.campaign, this.state, this.campaignBattleContext.bindings);
+    if (
+      this.battleOrigin !== 'campaign' ||
+      !this.campaign ||
+      !this.state?.finished ||
+      !this.campaignBattleContext
+    ) {
+      return;
+    }
+    this.campaign = applyCampaignBattleResult(
+      this.campaign,
+      this.state,
+      this.campaignBattleContext.bindings
+    );
     saveCampaign(this.campaign);
     this.running = false;
     cancelAnimationFrame(this.rafId);
@@ -389,12 +528,12 @@ export class App {
     }
     if (worker) {
       this.balanceWorker = worker;
-      worker.onmessage = (e: MessageEvent) => {
-        const msg = e.data;
-        if (msg.type === 'progress') {
-          this.balanceLab.setProgress(msg.done, msg.total);
-        } else if (msg.type === 'done') {
-          this.balanceLab.showResult(msg.result as BalanceResult);
+      worker.onmessage = (event: MessageEvent) => {
+        const message = event.data;
+        if (message.type === 'progress') {
+          this.balanceLab.setProgress(message.done, message.total);
+        } else if (message.type === 'done') {
+          this.balanceLab.showResult(message.result as BalanceResult);
           this.balanceWorker = null;
         }
       };
@@ -402,12 +541,16 @@ export class App {
         // 静态单文件构建等环境可能缺少 worker 分块，回退到主线程（结果一致）
         console.warn('[balance] Worker 不可用，回退主线程运行');
         this.balanceWorker = null;
-        const result = runBalance(cfg, (d, t) => this.balanceLab.setProgress(d, t));
+        const result = runBalance(cfg, (done, total) =>
+          this.balanceLab.setProgress(done, total)
+        );
         this.balanceLab.showResult(result);
       };
       worker.postMessage({ type: 'run', config: cfg });
     } else {
-      const result = runBalance(cfg, (d, t) => this.balanceLab.setProgress(d, t));
+      const result = runBalance(cfg, (done, total) =>
+        this.balanceLab.setProgress(done, total)
+      );
       this.balanceLab.showResult(result);
     }
   }
@@ -420,7 +563,7 @@ export class App {
   }
 
   private exportBalance(result: BalanceResult, format: 'json' | 'csv'): void {
-    const seeds = result.runsList.map((r) => r.seed);
+    const seeds = result.runsList.map((run) => run.seed);
     const minSeed = seeds.length ? Math.min(...seeds) : 0;
     const maxSeed = seeds.length ? Math.max(...seeds) : 0;
     const date = new Date().toISOString().slice(0, 10);
@@ -438,22 +581,22 @@ export class App {
     } else {
       const header = 'seed,winner,ticks,teamARemaining,teamBRemaining,teamADamage,teamBDamage';
       const rows = result.runsList.map(
-        (r) =>
-          `${r.seed},${r.winner ?? 'draw'},${r.ticks},${r.teamARemaining},${r.teamBRemaining},${r.teamADamage},${r.teamBDamage}`
+        (run) =>
+          `${run.seed},${run.winner ?? 'draw'},${run.ticks},${run.teamARemaining},${run.teamBRemaining},${run.teamADamage},${run.teamBDamage}`
       );
-      const fv = result.fleetValue;
-      const avg = (x: number) => Math.round(x / Math.max(1, result.runs));
+      const fleetValue = result.fleetValue;
+      const average = (value: number) => Math.round(value / Math.max(1, result.runs));
       const reasons = Object.entries(result.victoryReasons)
-        .map(([k, v]) => `${k}:${v}`)
+        .map(([key, value]) => `${key}:${value}`)
         .join(' ');
-      const o = result.outcome;
+      const outcome = result.outcome;
       const summary = [
         '',
         `# 汇总（core-v4 价值口径；operational=仍在场且具战斗力，decision=点数判定价值）`,
-        `# 平均作战价值 A,${avg(fv.A.remainingOperationalValue)},B,${avg(fv.B.remainingOperationalValue)}`,
-        `# 平均判定价值 A,${avg(fv.A.remainingDecisionValue)},B,${avg(fv.B.remainingDecisionValue)}`,
-        `# 初始成本 A,${avg(fv.A.initialFleetCost)},B,${avg(fv.B.initialFleetCost)}`,
-        `# 损毁 A,${o.destroyed.A},B,${o.destroyed.B} | 失能 A,${o.disabled.A},B,${o.disabled.B} | 脱战 A,${o.escaped.A},B,${o.escaped.B}`,
+        `# 平均作战价值 A,${average(fleetValue.A.remainingOperationalValue)},B,${average(fleetValue.B.remainingOperationalValue)}`,
+        `# 平均判定价值 A,${average(fleetValue.A.remainingDecisionValue)},B,${average(fleetValue.B.remainingDecisionValue)}`,
+        `# 初始成本 A,${average(fleetValue.A.initialFleetCost)},B,${average(fleetValue.B.initialFleetCost)}`,
+        `# 损毁 A,${outcome.destroyed.A},B,${outcome.destroyed.B} | 失能 A,${outcome.disabled.A},B,${outcome.disabled.B} | 脱战 A,${outcome.escaped.A},B,${outcome.escaped.B}`,
         `# 结束原因 ${reasons}`
       ];
       downloadFile(`${base}.csv`, [header, ...rows, ...summary].join('\n'), 'text/csv');
@@ -464,20 +607,20 @@ export class App {
 function downloadFile(filename: string, content: string, mime: string): void {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function snapshot(state: BattleState): Map<number, PosSnapshot> {
-  const m = new Map<number, PosSnapshot>();
-  for (const s of state.ships) {
-    const pos: Vec3 = { ...s.pos };
-    m.set(s.id, { pos, heading: s.heading });
+  const snapshots = new Map<number, PosSnapshot>();
+  for (const ship of state.ships) {
+    const pos: Vec3 = { ...ship.pos };
+    snapshots.set(ship.id, { pos, heading: ship.heading });
   }
-  return m;
+  return snapshots;
 }
