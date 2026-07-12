@@ -6,6 +6,7 @@
 - Replay format remains `v0.5` with ruleset `spacewar-core-v4`.
 - V0.6 sector Roguelike vertical slice is frozen.
 - V0.7 campaign save format remains `0.2`; older `0.1` and earlier `0.2` states migrate in place.
+- V0.7.1 playability and readability fixes are merged into `main`.
 - GitHub Actions uses Node.js 24.
 
 ## V0.7 completed scope
@@ -20,17 +21,15 @@
 
 ### A. Difficulty and encounter survival
 
-- Campaign power now uses hull-aware standard costs: Fighter 50, Frigate 150, Cruiser 360.
+- Campaign power uses hull-aware standard costs: Fighter 50, Frigate 150, Cruiser 360.
 - Persistent ship power is reduced by component damage and disabled status.
 - Normal encounters scale to the currently deployed operational fleet instead of a fixed sector-only budget.
 - The pre-battle panel shows player power, estimated enemy power, ratio, and danger class.
 - Deterministic evasion exposes both the calculated chance and stable result.
 - A pending encounter can be abandoned before battle by spending fuel and returning to its origin node.
 - Campaign battles expose a manual full-fleet retreat command.
-- Automatic retreat policies include never, 25% losses, 50% losses, last ship, and critical flagship damage.
 - Automatic retreat checks run after fixed simulation ticks rather than render frames.
 - Retreat preserves component damage, grants no salvage, and leaves the encounter unresolved.
-- First-sector patrol battles do not trigger in the protected early layers.
 
 ### B. Fleet recovery economy
 
@@ -40,28 +39,61 @@
 - Sectors generated for a fleet with one or fewer operational ships guarantee a recovery opportunity.
 - Field repair can reactivate disabled ships once core, engine, and weapon systems are operational.
 
-### C. Structured sector map
+### C. Structured sector map and readability
 
-- Sectors use seven left-to-right route layers rather than a numbered snake chain.
-- Every sector contains multiple route forks, local cluster links, and a deterministic shortcut.
-- Regions are themed as safe routes, salvage belts, military zones, nebulae, and gate approaches.
-- Region themes influence node-type distribution.
-- The first sector guarantees an early resource node, a rescue signal, and no battle nodes in the first two route layers.
-- The UI distinguishes node types, regions, connectors, and traveled routes.
+- Sectors use seven left-to-right route layers, multiple forks, regional themes, and deterministic shortcuts.
+- The first sector guarantees early resources, a rescue signal, and no forced battle nodes in its first two layers.
+- Nodes, connectors, traveled routes, battle ships, and the space background have stronger visual separation.
 
-### D. Battle and map readability
+## V0.8 commander career system
 
-- The battle canvas uses a brighter, more saturated, higher-contrast presentation preset.
-- The battle container adds subtle blue/red spatial background separation.
-- Sector nodes use icons, stronger borders, region colors, tooltips, and hover/current highlights.
-- The map uses layered stars and colored route lines while preserving fog-of-war visibility rules.
+### Creation and profile
 
-## Save migration and validation
+- New campaigns provide commander name and starting-focus controls.
+- Starting focuses are balanced, tactician, quartermaster, scout, and survivor.
+- Commanders have command, tactics, logistics, and resolve attributes.
+- Every commander receives two unique deterministic traits; a focused profile guarantees one related trait.
+- Profiles are deterministic for the same campaign seed, commander id, and creation choices.
 
-- Existing `0.2` saves receive inferred node `depth` and `region` metadata.
-- Pending battles receive a default retreat policy when absent.
-- Validation covers region/depth, rescue features, encounter origins, retreat policies, and optional recoverable hulls.
-- Sector-summary cargo usage now uses weighted cargo load rather than item count.
+### Career progression
+
+- Domain experience is split into combat, exploration, logistics, and survival.
+- Exploration, signals, gathering, battle results, repair, evasion, hazards, and extraction contribute to relevant domains.
+- Experience is reconstructed from persisted campaign history, making save synchronization idempotent.
+- Total experience raises commander level at stable thresholds.
+
+### Health and campaign effects
+
+- Fatigue, shaken, wounded, and scarred conditions have severity and duration.
+- Wounds, burns, fractures, trauma, and fatal injuries are persistable records.
+- Fatigue and logistical aptitude affect turn-based supply consumption.
+- Attributes, traits, conditions, and injuries affect deterministic pre-battle evasion chance.
+- Battle losses, failed evasion, hazards, and emergency extraction can create negative conditions or trauma.
+- Treatment consumes one turn and two additional supplies, reducing the most serious treatable condition or injury.
+- A severity-three nonfatal injury incapacitates the active commander.
+
+### Recruitment and succession
+
+- Eligible signal resolutions can produce two deterministic recruitment candidates.
+- Recruitment costs supplies and adds one candidate to a reserve roster capped at three.
+- Recruitment offers and reserve rosters are blocking decisions and persist in Campaign Code.
+- A dead or incapacitated active commander triggers a succession choice when an available reserve exists.
+- An available reserve can be appointed as active commander; a living incapacitated predecessor moves into reserve.
+- With no usable successor, commander death ends the campaign; an incapacitated living commander may still be treated.
+- Total fleet destruction records a fatal commander injury with cause `舰队全歼`.
+
+### Save compatibility and validation
+
+- Campaign Code remains `0.2` during this additive milestone.
+- V0.6/V0.7 and earlier V0.8-compatible saves receive complete commander profiles, empty reserve rosters, and succession defaults.
+- Additive migrations are written back even when the numeric save version does not change.
+- Deep validation covers attributes, traits, domains, conditions, injuries, unique commander ids, roster size, recruitment candidates, and valid succession states.
+
+### UI
+
+- The campaign menu includes commander creation controls.
+- The campaign HUD and commander card show level, attributes, traits, domain experience, conditions, and injuries.
+- Recruitment, treatment, reserve roster, and successor appointment are playable through the sector screen.
 
 ## Verification matrix
 
@@ -75,39 +107,23 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs the frozen V0.6 regression suite, V0.7 persistence/extraction tests, the V0.7.1 playability suite, and the V0.8 commander suite while V0.8 is under development.
+`npm run test:campaign` runs frozen V0.6 regressions, V0.7 persistence/extraction tests, V0.7.1 playability tests, and the V0.8 commander suite.
 
-## Remaining V0.7.1 review items
+## Remaining manual review items
 
-- Manual browser testing should confirm the CSS readability preset on both bright and dark displays.
-- Encounter power is an advisory heuristic and must not be presented as a guaranteed win probability.
-- Recovered and rescued hulls use intentionally simplified low-integrity rules; a full ship market remains out of scope.
+- Test commander creation and roster panels on narrow mobile layouts.
+- Confirm that recruitment frequency feels useful without making succession trivial.
+- Review treatment cost and negative-condition durations over a full three-sector campaign.
+- Encounter power remains an advisory heuristic rather than a guaranteed win probability.
 
-## V0.8 commander career system
+## Next milestone after V0.8
 
-### V0.8-A foundation completed on development branch
-
-- Deterministic commander profiles provide command, tactics, logistics, and resolve attributes.
-- Every new commander receives two unique deterministic traits.
-- Domain experience is split into combat, exploration, logistics, and survival.
-- Negative conditions and injury records have stable saveable data contracts.
-- Legacy V0.6/V0.7 commander records are normalized when loaded or saved without changing Campaign Code `0.2` yet.
-- The campaign HUD shows commander level, attributes, and traits.
-- Explicit domain-experience progression and fatal-injury helpers are covered by a dedicated V0.8 test suite.
-
-### V0.8-B next implementation slice
-
-- Add a commander creation screen with name and controlled starting choices.
-- Wire exploration, battle, repair, retreat, and extraction events into domain experience.
-- Apply injuries and negative conditions to campaign decisions rather than only storing them.
-- Add deterministic recruitment and a reserve commander roster while retaining one active player fleet.
-- Define active-commander replacement rules after death or incapacitation.
+V0.9 should focus on organizations, government/faction identity, and a modular technology framework without adding multiple player fleets or changing frozen core-v4 battle defaults.
 
 ## Still out of scope
 
 - Multiple player fleets and bases.
-- Technology trees.
-- Faction organizations, governments, diplomacy, and markets.
-- Succession and legacy politics.
+- Full faction diplomacy and markets.
+- Succession politics beyond the local active/reserve commander handoff.
 - Random equipment affixes or a complete equipment system.
 - New core-v4 ship classes, variants, or default replay balance changes.
