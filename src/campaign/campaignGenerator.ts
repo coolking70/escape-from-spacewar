@@ -4,6 +4,7 @@ import {
   STARTING_RESOURCES
 } from './campaignConfig';
 import { createEmptyCargo } from './cargo/cargoSystem';
+import { createCommander } from './commander/commanderSystem';
 import { CampaignState } from './campaignTypes';
 import { createStarterFleet } from './fleet/persistentFleet';
 import { generateSector } from './sector/sectorGenerator';
@@ -15,18 +16,12 @@ export function createCampaign(seed: number, name = '星域指挥官'): Campaign
     sectorIndex: 1,
     turn: 0,
     status: 'active',
-    commander: {
-      id: `cmd-${seed >>> 0}`,
-      name,
-      level: 1,
-      experience: 0,
-      alive: true
-    },
+    commander: createCommander(seed, name),
     fleet: createStarterFleet(),
     resources: { ...STARTING_RESOURCES },
     cargo: createEmptyCargo(STARTING_CARGO_CAPACITY),
     sector: generateSector(seed, 1),
     extractionPrepared: false,
-    history: [{ turn: 0, text: '战役开始：进入第一星域。' }]
+    history: [{ turn: 0, text: `战役开始：${name.trim() || '星域指挥官'}率领舰队进入第一星域。` }]
   };
 }
