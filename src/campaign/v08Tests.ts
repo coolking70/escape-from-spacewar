@@ -169,7 +169,7 @@ export function runV08Tests(): SuiteResult {
       state = applyCampaignAction(state, { type: 'appointCommander', commanderId: reserve.id });
       test.eq(state.commander.id, reserve.id, '候补成为现任指挥官');
       test.true_(!state.pendingSuccession, '继任完成后恢复行动');
-      test.true_(state.reserveCommanders?.some((commander) => commander.id === formerId), '仍存活的重伤前任进入候补名单');
+      test.true_(!!state.reserveCommanders?.some((commander) => commander.id === formerId), '仍存活的重伤前任进入候补名单');
       add(test);
     }
 
