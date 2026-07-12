@@ -14,6 +14,7 @@ import {
   DoctrineType
 } from './battleTypes';
 import { VARIANTS_BY_CLASS } from './shipVariants';
+import { validateFleet } from './fleetValidator';
 
 /** 舰队方案 schema 版本 */
 export const FLEET_PRESET_SCHEMA = 1;
@@ -77,7 +78,7 @@ function asClass(v: unknown): ShipClass | null {
 function asVariant(cls: ShipClass, v: unknown): ShipVariant {
   const allowed = VARIANTS_BY_CLASS[cls];
   if (typeof v === 'string' && (allowed as string[]).includes(v)) return v as ShipVariant;
-  return 'standard';
+  throw new Error(`非法舰船改型组合：${cls} / ${v}`);
 }
 
 /** 生成本地唯一 ID（基于时间 + 随机，纯本地、不依赖后端） */
@@ -85,14 +86,14 @@ export function newFleetId(): string {
   return 'fp_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36);
 }
 
-/** 规范化一条 fleet 数组（丢弃非法项、count<=0 的项） */
+/** 规范化一条 fleet 数组（非法舰种/改型直接抛错，不静默跳过） */
 export function normalizeFleet(raw: unknown): FleetEntry[] {
   if (!Array.isArray(raw)) return [];
   const out: FleetEntry[] = [];
   for (const item of raw) {
     const o = (item ?? {}) as Record<string, unknown>;
     const cls = asClass(o.shipClass);
-    if (!cls) continue;
+    if (!cls) throw new Error(`未知舰种：${String(o.shipClass)}`);
     const variant = asVariant(cls, o.variant);
     const count = Math.max(0, Math.floor(Number(o.count)));
     if (count > 0) out.push({ shipClass: cls, variant, count });
@@ -149,6 +150,9 @@ export function decodeFleet(code: string): FleetPreset {
   }
   const fleet = normalizeFleet(obj.fleet);
   if (fleet.length === 0) throw new Error('舰队方案码中没有任何有效舰船');
+  // 严格校验舰队组合
+  const vr = validateFleet(fleet);
+  if (!vr.valid) throw new Error(`舰队方案码中存在无效配置：${vr.errors.join('；')}`);
   return {
     schemaVersion: FLEET_PRESET_SCHEMA,
     id: newFleetId(),

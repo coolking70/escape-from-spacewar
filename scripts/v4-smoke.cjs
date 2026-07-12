@@ -89,7 +89,7 @@ console.log(r1.state.finished && f1 === f2 ? 'V4 SMOKE OK' : 'V4 SMOKE FAIL');
 // 失衡场景：验证脱战(escaped)确实可达
 const cfg2 = makeV4Cfg(777,
   fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 4 }, { shipClass: 'Fighter', variant: 'interceptor', count: 8 }]),
-  fleet([{ shipClass: 'Frigate', variant: 'support', count: 3 }, { shipClass: 'Frigate', variant: 'carrier', count: 1 }, { shipClass: 'Fighter', variant: 'scout', count: 2 }]),
+  fleet([{ shipClass: 'Frigate', variant: 'support', count: 3 }, { shipClass: 'Cruiser', variant: 'carrier', count: 1 }, { shipClass: 'Fighter', variant: 'scout', count: 2 }]),
   'aggressive', 'screen');
 {
   const rng = createPRNG(cfg2.seed);
@@ -131,7 +131,7 @@ let escapeCfg = '';
 const scenarios = [
   { a: fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 1 }]), b: fleet([{ shipClass: 'Frigate', variant: 'support', count: 5 }]), ad: 'defensive', bd: 'balanced' },
   { a: fleet([{ shipClass: 'Fighter', variant: 'scout', count: 1 }]), b: fleet([{ shipClass: 'Frigate', variant: 'support', count: 2 }]), ad: 'defensive', bd: 'balanced' },
-  { a: fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 1 }]), b: fleet([{ shipClass: 'Frigate', variant: 'carrier', count: 3 }]), ad: 'defensive', bd: 'balanced' }
+  { a: fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 1 }]), b: fleet([{ shipClass: 'Cruiser', variant: 'carrier', count: 3 }]), ad: 'defensive', bd: 'balanced' }
 ];
 outer:
 for (const sc of scenarios) {

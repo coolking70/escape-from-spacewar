@@ -170,7 +170,7 @@ export class SetupPanel {
           <textarea id="importCode" placeholder="在此粘贴 replay code，然后点击导入并播放"></textarea>
           <div class="actions" style="margin-top:8px">
             <button class="btn accent-a" id="importBtn">导入并播放</button>
-            <div class="hint">导入后将以该录像的 seed 与舰队配置复现同一场战斗（支持 v0.1/v0.2/v0.3/v0.4）。</div>
+            <div class="hint">导入后将以该录像的 seed 与舰队配置复现同一场战斗（仅支持 v0.5 录像）。</div>
           </div>
         </div>
       </div>

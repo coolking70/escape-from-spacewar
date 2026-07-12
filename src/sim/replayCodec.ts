@@ -16,6 +16,7 @@ import {
 } from './battleTypes';
 import { RULESET_V4, DEFAULT_BUDGET_LIMIT } from './battleConfig';
 import { VARIANTS_BY_CLASS, VARIANTS } from './shipVariants';
+import { validateFleet } from './fleetValidator';
 
 /** 受支持的战斗规则集（未知 ruleset 必须报错，不得静默回退到最新版）。 */
 export const KNOWN_RULESETS: string[] = ['spacewar-core-v4'];
@@ -69,7 +70,8 @@ function asClass(v: unknown): ShipClass | null {
 function asVariant(cls: ShipClass, v: unknown): ShipVariant {
   const allowed = VARIANTS_BY_CLASS[cls];
   if (typeof v === 'string' && (allowed as string[]).includes(v)) return v as ShipVariant;
-  return 'standard';
+  // 不再静默回退到 standard，直接报错让用户知晓
+  throw new Error(`非法舰船改型组合：${cls} / ${v}`);
 }
 
 /** 校验并规范化一条 fleet 数组（v0.5 路径，唯一接受的舰队格式） */
@@ -79,7 +81,7 @@ function normalizeFleetArray(raw: unknown): FleetEntry[] {
   for (const item of raw) {
     const o = (item ?? {}) as Record<string, unknown>;
     const cls = asClass(o.shipClass);
-    if (!cls) continue;
+    if (!cls) throw new Error(`未知舰种：${String(o.shipClass)}`);
     const variant = asVariant(cls, o.variant);
     const count = Math.max(0, Math.floor(Number(o.count)));
     if (count > 0) out.push({ shipClass: cls, variant, count });
@@ -168,6 +170,12 @@ export function decodeReplay(code: string): ReplayConfig {
 
   const teamA = normalizeTeam(obj.teamA);
   const teamB = normalizeTeam(obj.teamB);
+
+  // 严格校验双方舰队（不静默回退）
+  const vA = validateFleet(teamA.fleet);
+  if (!vA.valid) throw new Error(`A 方舰队配置无效：${vA.errors.join('；')}`);
+  const vB = validateFleet(teamB.fleet);
+  if (!vB.valid) throw new Error(`B 方舰队配置无效：${vB.errors.join('；')}`);
 
   if (fleetTotal(teamA.fleet) === 0) throw new Error('A 方舰队为空');
   if (fleetTotal(teamB.fleet) === 0) throw new Error('B 方舰队为空');

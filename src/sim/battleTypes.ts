@@ -584,7 +584,7 @@ export interface TeamConfig {
 export interface ReplayConfig {
   /** 模拟版本号，用于复现校验 */
   v: string;
-  /** 规则集标识；旧录像码可能缺失，导入时默认 spacewar-core-v1 */
+  /** 规则集标识；导入时默认 spacewar-core-v4 */
   ruleset?: string;
   seed: number;
   /** 舰队预算（旧录像缺省时按 legacy/unlimited 处理） */

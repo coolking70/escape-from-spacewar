@@ -26,6 +26,7 @@ import {
   targetValidationTests,
   combatStateValidationTests
 } from './coreV4ValidationTests';
+import { runFleetValidationTests } from './fleetValidationTests';
 import { SuiteResult } from './testHarness';
 
 export interface AcceptanceSuiteResult {
@@ -128,6 +129,9 @@ export function runAcceptanceTests(): AcceptanceResult {
 
   // 17. CombatState 语义一致性（helper 与 combatState 一致、escaped 必有 escapedTick、优先级单调）
   suites.push(wrapSuite('combatStateValidation', combatStateValidationTests));
+
+  // 18. 舰队校验（非法组合拒绝、count 校验、normalizeFleet 合并）
+  suites.push(wrapSuite('fleetValidation', runFleetValidationTests));
 
   const allPassed = suites.every((s) => s.passed);
   const totalMs = suites.reduce((s, x) => s + x.durationMs, 0);

@@ -10,3 +10,4 @@ dist/
 # 构建产物
 static/index.html
 *.zip
+playwright-cli.json

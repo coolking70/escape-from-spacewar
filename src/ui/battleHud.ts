@@ -35,9 +35,6 @@ const VICTORY_CN: Record<string, string> = {
 };
 
 const RULESET_SHORT: Record<string, string> = {
-  'spacewar-core-v1': 'core-v1',
-  'spacewar-core-v2': 'core-v2',
-  'spacewar-core-v3': 'core-v3',
   'spacewar-core-v4': 'core-v4'
 };
 

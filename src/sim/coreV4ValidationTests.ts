@@ -147,14 +147,14 @@ const CFG = {
     mkReplay(
       8008,
       fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 3 }, { shipClass: 'Fighter', variant: 'standard', count: 6 }]),
-      fleet([{ shipClass: 'Frigate', variant: 'carrier', count: 3 }, { shipClass: 'Fighter', variant: 'scout', count: 12 }]),
+      fleet([{ shipClass: 'Cruiser', variant: 'carrier', count: 3 }, { shipClass: 'Fighter', variant: 'scout', count: 12 }]),
       'wedge', 'antiCapital', 'swarm', 'kite'
     ),
   largeMixed: () =>
     mkReplay(
       2002,
       fleet([{ shipClass: 'Cruiser', variant: 'standard', count: 2 }, { shipClass: 'Frigate', variant: 'support', count: 3 }, { shipClass: 'Fighter', variant: 'scout', count: 5 }]),
-      fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 2 }, { shipClass: 'Frigate', variant: 'carrier', count: 2 }, { shipClass: 'Fighter', variant: 'interceptor', count: 5 }]),
+      fleet([{ shipClass: 'Cruiser', variant: 'fortress', count: 2 }, { shipClass: 'Cruiser', variant: 'carrier', count: 2 }, { shipClass: 'Fighter', variant: 'interceptor', count: 5 }]),
       'wall', 'defensive', 'line', 'aggressive'
     )
 };

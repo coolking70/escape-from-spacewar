@@ -79,8 +79,8 @@ function makeConfig(seed: number): ReplayConfig {
     teamB: {
       fleet: [
         { shipClass: 'Fighter', variant: 'interceptor', count: 30 },
-        { shipClass: 'Frigate', variant: 'carrier', count: 12 },
-        { shipClass: 'Cruiser', variant: 'standard', count: 8 }
+        { shipClass: 'Frigate', variant: 'artillery', count: 12 },
+        { shipClass: 'Cruiser', variant: 'carrier', count: 8 }
       ],
       formation: 'wedge',
       doctrine: 'aggressive'

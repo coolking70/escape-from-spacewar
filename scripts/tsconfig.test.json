@@ -8,5 +8,5 @@
     "rootDir": "..",
     "types": []
   },
-  "include": ["determinism-test.ts", "../src/sim/**/*.ts"]
+  "include": ["determinism-test.ts", "acceptance-test.ts", "stress-test.ts", "../src/sim/**/*.ts"]
 }
