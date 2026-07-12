@@ -10,6 +10,7 @@ import {
   type CampaignActionAvailability
 } from './campaignReducerBase';
 import type { CampaignBattleBinding } from './fleet/battleAdapter';
+import { movementFuelCost } from './fleet/persistentFleet';
 import {
   canResolveOrganizationEvent,
   generateOrganizationEvent,
@@ -33,6 +34,10 @@ import {
   unlockTechnology,
   uninstallTechnology
 } from './organization/technologySystem';
+
+type TechnologyAction = Extract<CampaignAction, {
+  type: 'unlockTechnology' | 'installTechnology' | 'uninstallTechnology';
+}>;
 
 function cloneOrganizationState(state: CampaignState): CampaignState {
   return {
@@ -77,13 +82,20 @@ function noActions(): CampaignActionAvailability {
   };
 }
 
+function setThreatValue(state: CampaignState, value: number): void {
+  const normalized = Math.max(0, value);
+  state.sector.threat.value = normalized;
+  state.sector.threat.level = Math.min(5, Math.floor(normalized / 5)) as CampaignState['sector']['threat']['level'];
+}
+
 export function getAvailableCampaignActions(state: CampaignState): CampaignActionAvailability {
   if (state.pendingOrganizationEvent) return noActions();
   const available = getBaseAvailableCampaignActions(state);
   if (!available.emergencyRefuel) {
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);
+    const fuelCost = movementFuelCost(state.fleet);
     const hasRoute = (current?.neighbors.length ?? 0) > 0;
-    available.emergencyRefuel = hasRoute && state.resources.fuel === 0 &&
+    available.emergencyRefuel = hasRoute && state.resources.fuel < fuelCost &&
       state.resources.supplies >= organizationEmergencyRefuelCost(state.organization);
   }
   return available;
@@ -104,16 +116,14 @@ function actionSucceeded(before: CampaignState, after: CampaignState, action: Ca
 
 function applyResearchForAction(before: CampaignState, after: CampaignState, action: CampaignAction): void {
   if (!actionSucceeded(before, after, action)) return;
-  const map = {
-    scan: 'scan',
-    gather: 'gather',
-    resolveSignal: 'signal',
-    resolveSalvage: 'salvage',
-    fieldRepair: 'repair',
-    treatCommander: 'treat',
-    enterGate: 'extract'
-  } as const;
-  const researchAction = map[action.type as keyof typeof map];
+  let researchAction: Parameters<typeof organizationResearchGain>[1] | null = null;
+  if (action.type === 'scan') researchAction = 'scan';
+  else if (action.type === 'gather') researchAction = 'gather';
+  else if (action.type === 'resolveSignal') researchAction = 'signal';
+  else if (action.type === 'resolveSalvage') researchAction = 'salvage';
+  else if (action.type === 'fieldRepair') researchAction = 'repair';
+  else if (action.type === 'treatCommander') researchAction = 'treat';
+  else if (action.type === 'enterGate') researchAction = 'extract';
   if (!researchAction) return;
   addResearchResources(after.organization, organizationResearchGain(after.organization, researchAction));
 }
@@ -121,8 +131,7 @@ function applyResearchForAction(before: CampaignState, after: CampaignState, act
 function applyActionModifiers(before: CampaignState, after: CampaignState, action: CampaignAction): void {
   if (!actionSucceeded(before, after, action)) return;
   if (action.type === 'scan') {
-    after.sector.threat.value = Math.max(0, before.sector.threat.value + organizationScanThreat(after.organization));
-    after.sector.threat.level = Math.min(5, Math.floor(after.sector.threat.value / 5));
+    setThreatValue(after, before.sector.threat.value + organizationScanThreat(after.organization));
   }
   if (action.type === 'gather') {
     const bonus = organizationGatherBonus(after.organization);
@@ -137,8 +146,7 @@ function applyActionModifiers(before: CampaignState, after: CampaignState, actio
     }
   }
   if (action.type === 'fieldRepair') {
-    after.sector.threat.value = Math.max(0, before.sector.threat.value + organizationRepairThreat(after.organization));
-    after.sector.threat.level = Math.min(5, Math.floor(after.sector.threat.value / 5));
+    setThreatValue(after, before.sector.threat.value + organizationRepairThreat(after.organization));
   }
   if (action.type === 'enterGate' && after.sectorIndex > before.sectorIndex && after.status === 'active') {
     after.pendingOrganizationEvent = generateOrganizationEvent(after);
@@ -181,8 +189,12 @@ function applyEmergencyRefuel(state: CampaignState): CampaignState {
   return result;
 }
 
+function isTechnologyAction(action: CampaignAction): action is TechnologyAction {
+  return action.type === 'unlockTechnology' || action.type === 'installTechnology' || action.type === 'uninstallTechnology';
+}
+
 function technologyAction(state: CampaignState, action: CampaignAction): CampaignState | null {
-  if (!['unlockTechnology', 'installTechnology', 'uninstallTechnology'].includes(action.type)) return null;
+  if (!isTechnologyAction(action)) return null;
   const next = cloneOrganizationState(state);
   const id = action.technologyId;
   if (action.type === 'unlockTechnology') {
@@ -241,13 +253,13 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
     next.history = [...state.history, { turn: state.turn, text }];
     return evaluateCampaignStatus(next);
   }
-  const technology = technologyAction(state, action);
-  if (technology) return evaluateCampaignStatus(technology);
   if (state.pendingOrganizationEvent) {
     const next = cloneOrganizationState(state);
     next.history = [...state.history, { turn: state.turn, text: '必须先处理当前组织事件。' }];
     return next;
   }
+  const technology = technologyAction(state, action);
+  if (technology) return evaluateCampaignStatus(technology);
   if (action.type === 'treatCommander') {
     const result = applyTreatment(state);
     applyResearchForAction(state, result, action);
