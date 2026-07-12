@@ -5,6 +5,7 @@ import { applyCampaignAction } from './campaignReducer';
 import {
   addCommanderCondition,
   applyBattleCommanderConsequences,
+  commanderSupplyUpkeepModifier,
   isCommanderIncapacitated
 } from './commander/commanderHealth';
 import {
@@ -55,10 +56,11 @@ export function runV081Tests(): SuiteResult {
       test.eq(shaken?.remainingTurns, 3, '动摇持续时间被限制为最多 3 回合');
 
       const supplies = state.resources.supplies;
+      const upkeep = Math.max(0, 1 + commanderSupplyUpkeepModifier(state.commander, state.campaignSeed));
       state = applyCampaignAction(state, { type: 'treatCommander' });
       profile = ensureCommanderProfile(state.commander, state.campaignSeed);
       test.eq(state.turn, 1, '治疗仍消耗一个回合');
-      test.eq(state.resources.supplies, supplies - 3, '治疗支付 2 点医疗补给和 1 点常规回合补给');
+      test.eq(state.resources.supplies, supplies - 2 - upkeep, '治疗支付 2 点医疗补给并应用真实回合维护修正');
       test.true_(!profile.conditions.some((condition) => condition.id === 'shaken'), '一次治疗清除临时动摇状态');
       add(test);
     }
