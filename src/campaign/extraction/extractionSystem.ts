@@ -1,4 +1,4 @@
-import { addCargo, cargoQuantity, cargoUsed, removeCargo } from '../cargo/cargoSystem';
+import { cargoQuantity, cargoUsed, removeCargo } from '../cargo/cargoSystem';
 import { CargoItemType, CargoStack } from '../cargo/cargoTypes';
 import { CampaignState } from '../campaignTypes';
 import { disabledShips, towedShipCount } from '../fleet/persistentFleet';
@@ -30,7 +30,7 @@ export interface ExtractionResolution {
   damagedShipIds: string[];
 }
 
-function damageRatio(state: CampaignState): number {
+function damagedShipCount(state: CampaignState): number {
   let damaged = 0;
   for (const ship of state.fleet.ships) {
     if (!ship.componentHp) continue;
@@ -50,12 +50,12 @@ function riskName(score: number): ExtractionRisk {
 export function buildExtractionPlan(state: CampaignState): ExtractionPlan {
   const untowedDisabled = disabledShips(state.fleet).filter((ship) => !ship.towed).length;
   const towedDisabled = towedShipCount(state.fleet);
-  const damagedShips = damageRatio(state);
+  const damagedShips = damagedShipCount(state);
   const safeCargoCapacity = Math.max(0, state.cargo.capacity - towedDisabled * 3 - damagedShips);
   const used = cargoUsed(state.cargo);
   const overload = Math.max(0, used - safeCargoCapacity);
   const prepared = !!state.extractionPrepared;
-  const fuelCost = 2 + towedDisabled;
+  const fuelCost = 1 + towedDisabled;
   const riskScore = Math.max(
     0,
     state.sector.threat.level + towedDisabled * 2 + damagedShips + overload * 2 + untowedDisabled * 5 - (prepared ? 2 : 0)
@@ -130,11 +130,14 @@ function applyEmergencyDamage(state: CampaignState, events: number): { state: Ca
   };
   const candidates = next.fleet.ships.filter((ship) => !ship.disabled);
   const damaged: string[] = [];
-  for (let i = 0; i < events && candidates.length; i++) {
-    const ship = candidates[hash32(state.campaignSeed, state.sectorIndex, state.turn, i, 'jump-damage') % candidates.length];
+  for (let index = 0; index < events && candidates.length; index++) {
+    const ship = candidates[
+      hash32(state.campaignSeed, state.sectorIndex, state.turn, index, 'jump-damage') % candidates.length
+    ];
     const def = getShipDef(ship.shipClass, ship.variant).def;
     if (!ship.componentHp) ship.componentHp = def.components.map((component) => component.maxHp);
-    const componentIndex = hash32(state.campaignSeed, ship.campaignShipId, i, 'jump-component') % ship.componentHp.length;
+    const componentIndex =
+      hash32(state.campaignSeed, ship.campaignShipId, index, 'jump-component') % ship.componentHp.length;
     ship.componentHp[componentIndex] = Math.max(1, ship.componentHp[componentIndex] - 1);
     damaged.push(ship.campaignShipId);
   }
@@ -155,7 +158,9 @@ export function resolveExtraction(
     cargo: { ...state.cargo, items: state.cargo.items.map((item) => ({ ...item })) },
     history: [...state.history]
   };
-  const jettison = mode === 'emergency' ? autoJettison(next, plan.overload) : { state: next, stacks: [] };
+  const jettison = mode === 'emergency'
+    ? autoJettison(next, plan.overload)
+    : { state: next, stacks: [] };
   next = jettison.state;
   const damage = mode === 'emergency'
     ? applyEmergencyDamage(next, plan.emergencyDamageEvents)
