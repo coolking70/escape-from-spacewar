@@ -17,6 +17,18 @@ export const COMMANDER_INJURY_LABEL: Record<CommanderInjuryId, string> = {
   fatal: '致命伤'
 };
 
+export const COMMANDER_CONDITION_DURATION_CAP: Record<Exclude<CommanderConditionId, 'scarred'>, number> = {
+  fatigued: 3,
+  shaken: 3,
+  wounded: 4
+};
+
+function cappedConditionDuration(id: CommanderConditionId, remainingTurns: number): number {
+  const turns = Math.max(1, Math.floor(remainingTurns));
+  if (id === 'scarred') return turns;
+  return Math.min(turns, COMMANDER_CONDITION_DURATION_CAP[id]);
+}
+
 export function isCommanderIncapacitated(commander: CampaignCommander, seed: number): boolean {
   const profile = ensureCommanderProfile(commander, seed);
   return profile.alive && profile.injuries.some((injury) => injury.id !== 'fatal' && injury.severity >= 3);
@@ -73,12 +85,13 @@ export function addCommanderCondition(
   remainingTurns: number
 ): CompleteCampaignCommander {
   const next = ensureCommanderProfile(commander, seed);
+  const duration = cappedConditionDuration(id, remainingTurns);
   const existing = next.conditions.find((condition) => condition.id === id);
   if (existing) {
     existing.severity = Math.max(existing.severity, severity) as 1 | 2 | 3;
-    existing.remainingTurns = Math.max(existing.remainingTurns, remainingTurns);
+    existing.remainingTurns = Math.max(existing.remainingTurns, duration);
   } else {
-    next.conditions.push({ id, severity, remainingTurns: Math.max(1, Math.floor(remainingTurns)) });
+    next.conditions.push({ id, severity, remainingTurns: duration });
   }
   return next;
 }
@@ -110,10 +123,17 @@ export function applyBattleCommanderConsequences(
   victory: boolean
 ): CompleteCampaignCommander {
   let next = ensureCommanderProfile(commander, seed);
-  if (!victory) next = addCommanderCondition(next, seed, 'shaken', shipsLost >= 2 ? 2 : 1, 5);
-  if (shipsLost > 0) next = addCommanderCondition(next, seed, 'fatigued', shipsLost >= 2 ? 2 : 1, 4);
+  if (!victory) next = addCommanderCondition(next, seed, 'shaken', shipsLost >= 2 ? 2 : 1, 3);
+  if (shipsLost > 0) next = addCommanderCondition(next, seed, 'fatigued', shipsLost >= 2 ? 2 : 1, 3);
   if (shipsLost >= 2) {
-    next = addCommanderInjury(next, seed, 'trauma', victory ? 2 : 3, turn, victory ? '惨烈胜利' : '战斗失利');
+    next = addCommanderInjury(
+      next,
+      seed,
+      'trauma',
+      shipsLost >= 3 ? 3 : 2,
+      turn,
+      victory ? '惨烈胜利' : '战斗失利'
+    );
   }
   return next;
 }
@@ -136,9 +156,8 @@ export function treatCommander(commander: CampaignCommander, seed: number): Comm
   }
   const condition = [...next.conditions]
     .filter((item) => item.id !== 'scarred')
-    .sort((left, right) => right.severity - left.severity)[0];
+    .sort((left, right) => right.severity - left.severity || right.remainingTurns - left.remainingTurns)[0];
   if (!condition) return null;
-  if (condition.severity > 1) condition.severity = (condition.severity - 1) as 1 | 2;
-  else next.conditions = next.conditions.filter((item) => item !== condition);
-  return { commander: next, text: `缓解${COMMANDER_CONDITION_LABEL[condition.id]}状态。` };
+  next.conditions = next.conditions.filter((item) => item !== condition);
+  return { commander: next, text: `完成${COMMANDER_CONDITION_LABEL[condition.id]}状态治疗。` };
 }

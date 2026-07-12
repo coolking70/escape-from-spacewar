@@ -1,5 +1,6 @@
 import './style.css';
 import './v071.css';
+import './v081.css';
 import { App } from './App';
 import { installCampaignRuntimeControls } from './campaign/fleet/campaignRuntimeControls';
 import { runDeterministicTest, runBalanceTest } from './sim/deterministicTest';

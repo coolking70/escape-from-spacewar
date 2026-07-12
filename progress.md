@@ -7,6 +7,7 @@
 - V0.6 sector Roguelike vertical slice is frozen.
 - V0.7 campaign save format remains `0.2`; older `0.1` and earlier `0.2` states migrate in place.
 - V0.7.1 playability and readability fixes are merged into `main`.
+- V0.8 commander creation, career, health, recruitment, and succession are merged into `main`.
 - GitHub Actions uses Node.js 24.
 
 ## V0.7 completed scope
@@ -69,7 +70,7 @@
 - Fatigue and logistical aptitude affect turn-based supply consumption.
 - Attributes, traits, conditions, and injuries affect deterministic pre-battle evasion chance.
 - Battle losses, failed evasion, hazards, and emergency extraction can create negative conditions or trauma.
-- Treatment consumes one turn and two additional supplies, reducing the most serious treatable condition or injury.
+- Treatment consumes one turn and two additional supplies.
 - A severity-three nonfatal injury incapacitates the active commander.
 
 ### Recruitment and succession
@@ -95,6 +96,41 @@
 - The campaign HUD and commander card show level, attributes, traits, domain experience, conditions, and injuries.
 - Recruitment, treatment, reserve roster, and successor appointment are playable through the sector screen.
 
+## V0.8.1 playtest closeout
+
+### Recruitment balance
+
+- A sector can produce at most one commander recruitment offer.
+- The first reserve commander remains guaranteed on the first eligible signal.
+- With one reserve commander, later offers use a 1-in-4 deterministic roll.
+- With two reserve commanders, later offers use a 1-in-8 deterministic roll.
+- Recruitment supply cost scales from 2 to 3 to 4 as the reserve roster fills.
+- A full three-person reserve roster disables further offers.
+
+### Health and treatment balance
+
+- Fatigue and shaken conditions are capped at three turns; wounded is capped at four turns.
+- One treatment clears the most serious temporary non-permanent condition.
+- Injuries still require staged severity reduction and remain more expensive over time.
+- Losing two ships causes severity-two trauma instead of immediate incapacitation.
+- Losing three ships still causes severity-three trauma and triggers succession pressure.
+- Temporary conditions naturally expire through normal campaign turns.
+
+### Narrow-screen campaign UI
+
+- Campaign panels use `100dvh` and safe-area bottom padding.
+- Commander creation controls use full-width 44px touch targets.
+- The sector map is shorter on phones so actions and commander panels remain reachable.
+- Campaign, recruitment, deployment, treatment, and succession actions use touch-sized controls.
+- Very narrow screens switch campaign actions to a single-column layout.
+- Logs and region legends remain scrollable without expanding the page indefinitely.
+
+### V0.8.1 verification
+
+- Dedicated tests cover recruitment cadence and cost, condition caps, treatment behavior, trauma thresholds, natural recovery, and a complete three-sector campaign smoke flow.
+- The three-sector flow includes recruitment, treatment, normal extraction, reserve persistence, victory, Campaign Code round-trip, and deep validation.
+- V0.6, V0.7, V0.7.1, V0.8, core-v4, determinism, stress, and static build regressions remain in the standard matrix.
+
 ## Verification matrix
 
 ```bash
@@ -107,16 +143,9 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs frozen V0.6 regressions, V0.7 persistence/extraction tests, V0.7.1 playability tests, and the V0.8 commander suite.
+`npm run test:campaign` runs frozen V0.6 regressions, V0.7 persistence/extraction tests, V0.7.1 playability tests, V0.8 commander tests, and the V0.8.1 playtest closeout suite.
 
-## Remaining manual review items
-
-- Test commander creation and roster panels on narrow mobile layouts.
-- Confirm that recruitment frequency feels useful without making succession trivial.
-- Review treatment cost and negative-condition durations over a full three-sector campaign.
-- Encounter power remains an advisory heuristic rather than a guaranteed win probability.
-
-## Next milestone after V0.8
+## Next milestone after V0.8.1
 
 V0.9 should focus on organizations, government/faction identity, and a modular technology framework without adding multiple player fleets or changing frozen core-v4 battle defaults.
 
