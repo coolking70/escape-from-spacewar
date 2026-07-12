@@ -26,12 +26,15 @@ export interface CampaignHistoryEntry {
 }
 
 export type CampaignStatus = 'active' | 'victory' | 'defeat';
+export type RetreatPolicy = 'never' | 'loss25' | 'loss50' | 'lastShip' | 'critical';
 
 export interface PendingBattle {
   nodeId: string;
+  originNodeId?: string;
   battleIndex: number;
   reason: string;
   deployment?: DeploymentSelection;
+  retreatPolicy?: RetreatPolicy;
 }
 
 export interface SectorSummary {
@@ -81,6 +84,9 @@ export type CampaignAction =
   | { type: 'dismantleShip'; campaignShipId: string }
   | { type: 'abandonShip'; campaignShipId: string }
   | { type: 'toggleDeployment'; campaignShipId: string }
+  | { type: 'setRetreatPolicy'; policy: RetreatPolicy }
+  | { type: 'evadeBattle' }
+  | { type: 'withdrawBeforeBattle' }
   | { type: 'prepareExtraction' }
   | { type: 'enterGate'; mode?: ExtractionMode }
   | { type: 'wait' };

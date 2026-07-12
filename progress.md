@@ -5,47 +5,65 @@
 - `spacewar-core-v4` remains frozen.
 - Replay format remains `v0.5` with ruleset `spacewar-core-v4`.
 - V0.6 sector Roguelike vertical slice is frozen.
-- V0.7 campaign save format is `0.2`; local and exported V0.6 `0.1` states migrate in place.
+- V0.7 campaign save format remains `0.2`; older `0.1` and earlier `0.2` states migrate in place.
 - GitHub Actions uses Node.js 24.
 
 ## V0.7 completed scope
 
-### Persistent fleet and cargo
+- Capacity-limited weighted cargo, salvage, field repair, towing, dismantling, and abandonment.
+- Persistent ship identity, component HP, disabled/towing state, cargo, and history.
+- Pre-battle deployment with stable `campaignShipId ↔ battleShipId` bindings.
+- Extraction preparation, normal/emergency jumps, jettison, deterministic jump damage, and sector summaries.
+- Terminal campaign result flow and structured campaign log export.
 
-- Capacity-limited cargo with supply crates, fuel cells, repair parts, and relics.
-- Deterministic post-battle salvage with quick, thorough, and leave choices.
-- Cargo overflow reporting and manual jettison actions.
-- Field repair using repair parts, turns, and threat.
-- Disabled-ship towing, dismantling, and permanent abandonment.
-- Towing increases movement and jump fuel costs.
-- Ships, component HP, cargo, disabled/towing state, and history persist across sectors.
+## V0.7.1 playability pass
 
-### Pre-battle deployment
+### A. Difficulty and encounter survival
 
-- Every pending campaign battle exposes an eligible-ship deployment list.
-- At least one active ship must remain selected.
-- Unselected ships remain with the persistent fleet but do not enter core-v4.
-- Actual `campaignShipId ↔ battleShipId` binding count matches the selected deployment.
-- Deployment eligibility resets after battle without changing ship identity or damage.
+- Campaign power now uses hull-aware standard costs: Fighter 50, Frigate 150, Cruiser 360.
+- Persistent ship power is reduced by component damage and disabled status.
+- Normal encounters scale to the currently deployed operational fleet instead of a fixed sector-only budget.
+- The pre-battle panel shows player power, estimated enemy power, ratio, and danger class.
+- Deterministic evasion exposes both the calculated chance and stable result.
+- A pending encounter can be abandoned before battle by spending fuel and returning to its origin node.
+- Campaign battles expose a manual full-fleet retreat command.
+- Automatic retreat policies include never, 25% losses, 50% losses, last ship, and critical flagship damage.
+- Automatic retreat checks run after fixed simulation ticks rather than render frames.
+- Retreat preserves component damage, grants no salvage, and leaves the encounter unresolved.
+- First-sector patrol battles do not trigger in the protected early layers.
 
-### Extraction planning
+### B. Fleet recovery economy
 
-- Gate UI shows jump fuel, safe cargo capacity, current load, risk score, risk class, and all contributing factors.
-- Jump preparation consumes a turn and lowers the visible risk score.
-- Untowed disabled ships block extraction.
-- Normal extraction rejects unsafe overload.
-- Cargo can be jettisoned manually to restore safe load.
-- Emergency extraction deterministically auto-jettisons excess cargo and applies visible-risk-derived component damage.
-- Jump effects are derived from campaign seed, sector, turn, ship ID, and stable labels.
+- Disabled enemy ships can occasionally appear as a post-battle recovery choice.
+- A recovered hull joins at low component integrity in disabled/towed state.
+- Rescue signals provide a damaged friendly Fighter as an early recovery path.
+- Sectors generated for a fleet with one or fewer operational ships guarantee a recovery opportunity.
+- Field repair can reactivate disabled ships once core, engine, and weapon systems are operational.
 
-### Sector summary
+### C. Structured sector map
 
-- The previous sector summary records turns, explored nodes, fleet condition, cargo, threat, extraction mode, risk, jettisoned cargo, and jump-damaged ships.
-- Summary and extraction state are included in Campaign Code deep validation.
+- Sectors use seven left-to-right route layers rather than a numbered snake chain.
+- Every sector contains multiple route forks, local cluster links, and a deterministic shortcut.
+- Regions are themed as safe routes, salvage belts, military zones, nebulae, and gate approaches.
+- Region themes influence node-type distribution.
+- The first sector guarantees an early resource node, a rescue signal, and no battle nodes in the first two route layers.
+- The UI distinguishes node types, regions, connectors, and traveled routes.
 
-## Verification
+### D. Battle and map readability
 
-The final V0.7 verification matrix is:
+- The battle canvas uses a brighter, more saturated, higher-contrast presentation preset.
+- The battle container adds subtle blue/red spatial background separation.
+- Sector nodes use icons, stronger borders, region colors, tooltips, and hover/current highlights.
+- The map uses layered stars and colored route lines while preserving fog-of-war visibility rules.
+
+## Save migration and validation
+
+- Existing `0.2` saves receive inferred node `depth` and `region` metadata.
+- Pending battles receive a default retreat policy when absent.
+- Validation covers region/depth, rescue features, encounter origins, retreat policies, and optional recoverable hulls.
+- Sector-summary cargo usage now uses weighted cargo load rather than item count.
+
+## Verification matrix
 
 ```bash
 npm ci
@@ -57,25 +75,17 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs both the frozen V0.6 regression suite and V0.7 cargo, salvage, repair, towing, deployment, extraction, migration, determinism, and summary tests.
+`npm run test:campaign` runs the frozen V0.6 regression suite, V0.7 persistence/extraction tests, and the dedicated V0.7.1 playability suite.
 
-## Latest maintenance
+## Remaining V0.7.1 review items
 
-- Terminal campaign battle results now skip post-battle salvage when no operational fleet remains. This keeps `defeat` saves structurally valid and prevents the campaign completion flow from throwing during persistence.
-- Victory and defeat now open a blocking campaign result dialog with a full-log toggle, Campaign Code export, and a return-to-menu action.
-- The result dialog can export a structured JSON campaign log containing campaign metadata, final resources, cargo, fleet snapshot, threat, sector summary, and complete turn history for later analysis.
-- Screen transitions now hide the full-screen menu root itself, preventing its empty high-z-index layer from intercepting controls in setup, battle, and auxiliary panels.
+- Manual browser testing should confirm the CSS readability preset on both bright and dark displays.
+- Encounter power is an advisory heuristic and must not be presented as a guaranteed win probability.
+- Recovered and rescued hulls use intentionally simplified low-integrity rules; a full ship market remains out of scope.
 
-## Frozen V0.7 limitations
+## Next milestone after V0.7.1
 
-- Campaign battles still do not support seek, timeline replay, or Replay Code sharing because inherited component HP is outside Replay v0.5.
-- Deployment only selects participants inside one persistent fleet; it does not create multiple independent fleets.
-- Emergency jump damage is deterministic and simplified; there is no crew injury or permanent component replacement system.
-- Cargo contains fixed item categories without equipment affixes.
-
-## Next milestone: V0.8 commanders
-
-V0.8 should focus on commander creation, attributes, traits, domain experience, injuries, negative conditions, recruitment, and death rules without changing core-v4 battle balance.
+V0.8 should focus on commander creation, attributes, traits, domain experience, injuries, negative conditions, recruitment, and death rules without changing frozen core-v4 battle defaults.
 
 ## Still out of scope
 
@@ -84,4 +94,4 @@ V0.8 should focus on commander creation, attributes, traits, domain experience, 
 - Faction organizations, governments, diplomacy, and markets.
 - Succession and legacy politics.
 - Random equipment affixes or a complete equipment system.
-- New core-v4 ship classes, variants, or balance changes.
+- New core-v4 ship classes, variants, or default replay balance changes.
