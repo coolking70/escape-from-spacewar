@@ -22,9 +22,10 @@ export function loadCampaign(): CampaignState | null {
     const parsed = JSON.parse(raw);
     const state = migrateCampaignState(parsed);
     if (!state) throw new Error('结构无效');
+    const structuralMigration = JSON.stringify(parsed) !== JSON.stringify(state);
     const careerMigrated = normalizeCareer(state);
     if (!validateCampaignState(state)) throw new Error('结构无效');
-    if (parsed.version !== state.version || careerMigrated) {
+    if (parsed.version !== state.version || structuralMigration || careerMigrated) {
       localStorage.setItem(CAMPAIGN_STORAGE_KEY, JSON.stringify(state));
     }
     return state;
