@@ -1,4 +1,5 @@
 import { getShipDef } from '../../sim/shipVariants';
+import { commanderEvadeModifier } from '../commander/commanderHealth';
 import { CampaignState } from '../campaignTypes';
 import { hash32 } from '../sector/sectorGenerator';
 import { deriveBattleSeed, enemyFleetFor } from './battleAdapter';
@@ -46,10 +47,13 @@ export function buildEncounterPreview(state: CampaignState): CampaignEncounterPr
     (ship) => !ship.disabled && ship.deployed !== false && ship.variant === 'scout'
   ).length;
   const chance = Math.max(
-    10,
+    5,
     Math.min(
-      85,
-      Math.round(30 + scouts * 18 + sensorReadiness(state) * 15 - state.sector.threat.level * 6 + (assessment.ratio > 1.2 ? 10 : 0))
+      90,
+      Math.round(
+        30 + scouts * 18 + sensorReadiness(state) * 15 - state.sector.threat.level * 6 +
+        (assessment.ratio > 1.2 ? 10 : 0) + commanderEvadeModifier(state.commander, state.campaignSeed)
+      )
     )
   );
   const roll = hash32(state.campaignSeed, state.sectorIndex, pending.nodeId, pending.battleIndex, 'evade') % 100;

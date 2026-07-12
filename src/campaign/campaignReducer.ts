@@ -2,6 +2,22 @@ import { BattleState } from '../sim/battleTypes';
 import { getShipDef } from '../sim/shipVariants';
 import { addCargo, cargoSummary, cargoUsed, removeCargo } from './cargo/cargoSystem';
 import { MAX_SECTOR_INDEX } from './campaignConfig';
+import {
+  addCommanderCondition,
+  applyBattleCommanderConsequences,
+  commanderSupplyUpkeepModifier,
+  isCommanderAvailable,
+  tickCommanderConditions,
+  treatCommander
+} from './commander/commanderHealth';
+import { generateRecruitmentOffer, shouldOfferRecruitment } from './commander/commanderRecruitment';
+import {
+  appointCommander,
+  normalizeCommanderRoster,
+  recruitCommander,
+  treatActiveCommander,
+  updateCommanderContinuity
+} from './commander/commanderRoster';
 import { CampaignAction, CampaignState, SectorSummary } from './campaignTypes';
 import { defaultDeployment, toggleDeploymentShip } from './deployment/deploymentSystem';
 import { buildExtractionPlan, jettisonCargo, resolveExtraction } from './extraction/extractionSystem';
@@ -24,12 +40,32 @@ export interface CampaignActionAvailability {
   resolveSignal: boolean;
   resolveSalvage: boolean;
   enterGate: boolean;
+  emergencyRefuel: boolean;
   wait: boolean;
 }
 
-function clone(state: CampaignState): CampaignState {
+function cloneCommander<T extends CampaignState['commander']>(commander: T): T {
   return {
+    ...commander,
+    attributes: commander.attributes ? { ...commander.attributes } : undefined,
+    traits: commander.traits ? [...commander.traits] : undefined,
+    domainExperience: commander.domainExperience ? { ...commander.domainExperience } : undefined,
+    conditions: commander.conditions?.map((condition) => ({ ...condition })),
+    injuries: commander.injuries?.map((injury) => ({ ...injury }))
+  } as T;
+}
+
+function clone(state: CampaignState): CampaignState {
+  const next: CampaignState = {
     ...state,
+    commander: cloneCommander(state.commander),
+    reserveCommanders: state.reserveCommanders?.map(cloneCommander),
+    pendingRecruitment: state.pendingRecruitment
+      ? {
+          ...state.pendingRecruitment,
+          candidates: state.pendingRecruitment.candidates.map(cloneCommander)
+        }
+      : undefined,
     resources: { ...state.resources },
     cargo: { ...state.cargo, items: state.cargo.items.map((item) => ({ ...item })) },
     fleet: {
@@ -68,6 +104,8 @@ function clone(state: CampaignState): CampaignState {
       ? { ...state.lastSectorSummary, damagedInJump: [...state.lastSectorSummary.damagedInJump] }
       : undefined
   };
+  normalizeCommanderRoster(next);
+  return next;
 }
 
 function fail(state: CampaignState, text: string): CampaignState {
@@ -79,23 +117,38 @@ function resetDeployment(state: CampaignState): void {
 }
 
 function emptyAvailability(): CampaignActionAvailability {
-  return { move: false, scan: false, gather: false, resolveSignal: false, resolveSalvage: false, enterGate: false, wait: false };
+  return {
+    move: false,
+    scan: false,
+    gather: false,
+    resolveSignal: false,
+    resolveSalvage: false,
+    enterGate: false,
+    emergencyRefuel: false,
+    wait: false
+  };
 }
 
 export function getAvailableCampaignActions(state: CampaignState): CampaignActionAvailability {
   const none = emptyAvailability();
-  if (state.status !== 'active' || state.pendingBattle) return none;
+  if (
+    state.status !== 'active' || state.pendingBattle || state.pendingRecruitment || state.pendingSuccession ||
+    !isCommanderAvailable(state.commander, state.campaignSeed)
+  ) return none;
   if (state.pendingSalvage) return { ...none, resolveSalvage: true };
   const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);
   if (!current) return none;
   const neighbors = current.neighbors.map((id) => state.sector.nodes.find((node) => node.id === id)).filter(Boolean);
+  const fuelCost = movementFuelCost(state.fleet);
+  const hasRoute = neighbors.length > 0;
   return {
-    move: state.resources.fuel >= movementFuelCost(state.fleet) && neighbors.length > 0,
+    move: state.resources.fuel >= fuelCost && hasRoute,
     scan: neighbors.some((node) => node?.visibility === 'detected'),
     gather: current.type === 'resource' && !current.gathered,
     resolveSignal: current.type === 'signal' && !current.signalResolved,
     resolveSalvage: false,
     enterGate: current.type === 'gate',
+    emergencyRefuel: hasRoute && state.resources.fuel < fuelCost && state.resources.supplies >= 2,
     wait: state.resources.supplies > 0
   };
 }
@@ -103,12 +156,16 @@ export function getAvailableCampaignActions(state: CampaignState): CampaignActio
 export function evaluateCampaignStatus(state: CampaignState): CampaignState {
   const next = clone(state);
   if (next.status !== 'active') return next;
-  if (!next.commander.alive || activeShips(next.fleet).length === 0) next.status = 'defeat';
+  updateCommanderContinuity(next);
+  if (activeShips(next.fleet).length === 0) next.status = 'defeat';
+  else if (!next.commander.alive && !next.pendingSuccession) next.status = 'defeat';
   else if (
     next.resources.supplies === 0 &&
     next.resources.fuel === 0 &&
     !next.pendingBattle &&
     !next.pendingSalvage &&
+    !next.pendingRecruitment &&
+    !next.pendingSuccession &&
     !Object.values(getAvailableCampaignActions(next)).some(Boolean)
   ) next.status = 'defeat';
   return next;
@@ -118,7 +175,10 @@ function finishTurn(state: CampaignState, text: string, threat = 1, turns = 1): 
   const next = clone(state);
   for (let index = 0; index < turns; index++) {
     next.turn++;
-    next.resources.supplies = Math.max(0, next.resources.supplies - (next.sector.threat.level >= 5 ? 3 : 1));
+    const base = next.sector.threat.level >= 5 ? 3 : 1;
+    const upkeep = Math.max(0, base + commanderSupplyUpkeepModifier(next.commander, next.campaignSeed));
+    next.resources.supplies = Math.max(0, next.resources.supplies - upkeep);
+    next.commander = tickCommanderConditions(next.commander, next.campaignSeed, 1);
   }
   next.sector.threat = addThreat(next.sector.threat, threat);
   next.history.push({ turn: next.turn, text });
@@ -264,6 +324,12 @@ function enterGate(state: CampaignState, mode: 'normal' | 'emergency'): Campaign
     return fail(state, '当前载荷超过普通跃迁安全上限；请抛弃货物或选择紧急跃迁。');
   }
   let next = finishTurn(resolution.state, mode === 'normal' ? '执行稳定星门跃迁。' : '执行紧急星门跃迁。', 0);
+  if (mode === 'emergency') {
+    next.commander = addCommanderCondition(next.commander, next.campaignSeed, 'fatigued', 2, 5);
+    if (resolution.damagedShipIds.length > 0) {
+      next.commander = addCommanderCondition(next.commander, next.campaignSeed, 'shaken', 1, 4);
+    }
+  }
   const jettisonedUnits = resolution.jettisoned.reduce((sum, stack) => sum + stack.quantity, 0);
   next.lastSectorSummary = buildSectorSummary(next, mode, plan.risk, jettisonedUnits, resolution.damagedShipIds);
   next.history.push({ turn: next.turn, text: `撤离结算：风险 ${plan.risk}，抛弃 ${jettisonedUnits} 件货物，跃迁受损舰 ${resolution.damagedShipIds.length}。` });
@@ -314,14 +380,48 @@ function handlePendingBattle(state: CampaignState, action: CampaignAction): Camp
       if (origin) next.sector.currentNodeId = origin;
       next.pendingBattle = undefined;
       resetDeployment(next);
+    } else {
+      next.commander = addCommanderCondition(next.commander, next.campaignSeed, 'shaken', 1, 3);
     }
     return evaluateCampaignStatus(next);
   }
   return fail(state, '必须先处理当前战斗。');
 }
 
+function handleCommanderAction(state: CampaignState, action: CampaignAction): CampaignState | null {
+  if (action.type === 'resolveRecruitment') {
+    const next = clone(state);
+    const before = next.pendingRecruitment;
+    const text = recruitCommander(next, action.candidateId);
+    if (action.candidateId && before && next.pendingRecruitment) return fail(state, text);
+    next.history.push({ turn: next.turn, text });
+    return evaluateCampaignStatus(next);
+  }
+  if (action.type === 'appointCommander') {
+    const next = clone(state);
+    const text = appointCommander(next, action.commanderId);
+    if (next.pendingSuccession) return fail(state, text);
+    next.history.push({ turn: next.turn, text });
+    return evaluateCampaignStatus(next);
+  }
+  if (action.type === 'treatCommander') {
+    if (!treatCommander(state.commander, state.campaignSeed)) return fail(state, '指挥官当前没有可治疗的伤病或负面状态。');
+    const next = finishTurn(state, '舰队医疗组治疗指挥官。', 0);
+    const text = treatActiveCommander(next);
+    if (text.includes('需要')) return fail(state, text);
+    next.history.push({ turn: next.turn, text });
+    return evaluateCampaignStatus(next);
+  }
+  return null;
+}
+
 export function applyCampaignAction(state: CampaignState, action: CampaignAction): CampaignState {
   if (state.status !== 'active') return fail(state, '当前无法执行该行动。');
+  const commanderAction = handleCommanderAction(state, action);
+  if (commanderAction) return commanderAction;
+  if (state.pendingSuccession) return fail(state, '必须先从候补名单中任命继任指挥官。');
+  if (!isCommanderAvailable(state.commander, state.campaignSeed)) return fail(state, '当前指挥官无法履职，必须先治疗或任命继任者。');
+  if (state.pendingRecruitment) return fail(state, '必须先处理当前招募机会。');
   if (state.pendingBattle) return handlePendingBattle(state, action);
   if (state.pendingSalvage && action.type !== 'resolveSalvage') return fail(state, '必须先决定如何处理战场残骸。');
   if (action.type === 'resolveSalvage') return resolveSalvage(state, action);
@@ -329,6 +429,21 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
   if (action.type === 'jettisonCargo') return jettisonCargo(state, action.itemType, action.quantity ?? 1) ?? fail(state, '货舱中没有足够物资可抛弃。');
   if (action.type === 'fieldRepair') return repairShip(state, action.campaignShipId);
   if (action.type === 'towShip' || action.type === 'dismantleShip' || action.type === 'abandonShip') return handleDisabledShip(state, action);
+  if (action.type === 'emergencyRefuel') {
+    const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId);
+    const fuelCost = movementFuelCost(state.fleet);
+    if (!current || current.neighbors.length === 0) return fail(state, '当前位置没有可继续航行的路线。');
+    if (state.resources.fuel >= fuelCost) return fail(state, '当前燃料已经足够完成下一次移动。');
+    if (state.resources.supplies < 2) return fail(state, '应急燃料调配至少需要 2 点补给。');
+    const next = finishTurn(state, '执行应急燃料调配。', 1);
+    next.resources.supplies = Math.max(0, next.resources.supplies - 1);
+    next.resources.fuel = Math.max(next.resources.fuel, fuelCost);
+    next.history.push({
+      turn: next.turn,
+      text: `应急调配完成：燃料恢复至 ${next.resources.fuel}，足够执行一次移动。`
+    });
+    return evaluateCampaignStatus(next);
+  }
   if (action.type === 'toggleDeployment' || action.type === 'setRetreatPolicy' || action.type === 'evadeBattle' || action.type === 'withdrawBeforeBattle') {
     return fail(state, '当前没有待配置的战斗。');
   }
@@ -366,6 +481,7 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
         const componentIndex = hazard.componentIndex % hp.length;
         hp[componentIndex] = Math.max(0, hp[componentIndex] - hazard.damage);
       }
+      next.commander = addCommanderCondition(next.commander, next.campaignSeed, 'fatigued', 1, 3);
       node.hazardResolved = true;
       node.processed = true;
       next.history.push({ turn: next.turn, text: `${hazard.name}：资源受损，威胁上升。`, nodeId: node.id });
@@ -446,6 +562,9 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
         deployment: defaultDeployment(next.fleet),
         retreatPolicy: 'loss50'
       };
+    } else if (node.feature !== 'rescue' && shouldOfferRecruitment(next, node.id)) {
+      next.pendingRecruitment = generateRecruitmentOffer(next, node.id);
+      next.history.push({ turn: next.turn, text: '信号来源中发现可招募的指挥人员。', nodeId: node.id });
     }
     return evaluateCampaignStatus(next);
   }
@@ -465,6 +584,14 @@ export function applyCampaignBattleResult(
   const node = next.sector.nodes.find((item) => item.id === pending.nodeId)!;
   const ownBefore = next.fleet.ships.length;
   next.fleet = importBattleResult(next.fleet, battle, bindings);
+  const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
+  next.commander = applyBattleCommanderConsequences(
+    next.commander,
+    next.campaignSeed,
+    next.turn,
+    shipsLost,
+    battle.winner === 'A'
+  );
   next.pendingBattle = undefined;
   resetDeployment(next);
   const resolved = evaluateCampaignStatus(next);
@@ -476,7 +603,7 @@ export function applyCampaignBattleResult(
     node.processed = false;
     if (pending.originNodeId) resolved.sector.currentNodeId = pending.originNodeId;
     resolved.sector.threat = addThreat(resolved.sector.threat, 1);
-    resolved.history.push({ turn: resolved.turn, nodeId: node.id, text: `舰队脱离战斗，保留现有损伤；该遭遇仍未解决。` });
+    resolved.history.push({ turn: resolved.turn, nodeId: node.id, text: '舰队脱离战斗，保留现有损伤；该遭遇仍未解决。' });
     return resolved;
   }
   node.processed = true;

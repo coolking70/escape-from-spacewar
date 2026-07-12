@@ -108,7 +108,53 @@
 .encounter-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .salvage-option { display: grid; gap: 3px; margin: 8px 0; }
 
+/* V0.8 commander career presentation. */
+.commander-create {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid rgba(111, 184, 255, .4);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(26, 49, 78, .68), rgba(22, 29, 48, .8));
+}
+.commander-create label { display: grid; gap: 5px; }
+.commander-create input,
+.commander-create select,
+.commander-card select {
+  padding: 8px 10px;
+  border: 1px solid rgba(130, 175, 219, .45);
+  border-radius: 6px;
+  color: #e9f5ff;
+  background: rgba(7, 14, 27, .86);
+}
+.commander-summary {
+  flex-basis: 100%;
+  padding-top: 5px;
+  border-top: 1px solid rgba(126, 174, 215, .25);
+  color: #bfe7ff;
+}
+.commander-card,
+.commander-event {
+  border-color: rgba(112, 184, 240, .45);
+  background:
+    linear-gradient(135deg, rgba(28, 50, 75, .5), rgba(18, 24, 40, .82));
+}
+.commander-event { box-shadow: 0 0 18px rgba(65, 161, 230, .12); }
+.commander-row {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0;
+  padding: 9px 11px;
+  border-left: 3px solid #73bdf0;
+  background: rgba(8, 16, 29, .58);
+}
+.commander-row b { color: #d7f1ff; }
+.commander-row small { color: #aebfd1; line-height: 1.35; }
+.commander-card h4 { margin: 12px 0 4px; color: #b8daf0; }
+
 @media (max-width: 700px) {
   .sector-node { width: 28px; height: 28px; margin: -14px 0 0 -14px; font-size: 15px; }
   .encounter-actions .btn { flex: 1 1 45%; }
+  .commander-summary { font-size: 12px; }
 }
