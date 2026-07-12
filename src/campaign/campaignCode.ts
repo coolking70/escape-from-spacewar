@@ -2,7 +2,17 @@ import { validateFleetEntry } from '../sim/fleetValidator';
 import { cargoUsed, createEmptyCargo } from './cargo/cargoSystem';
 import { CargoItemType } from './cargo/cargoTypes';
 import { STARTING_CARGO_CAPACITY } from './campaignConfig';
-import { CampaignState, RetreatPolicy } from './campaignTypes';
+import { isCommanderAvailable } from './commander/commanderHealth';
+import {
+  COMMANDER_TRAITS,
+  ensureCommanderProfile
+} from './commander/commanderSystem';
+import type {
+  CommanderConditionId,
+  CommanderDomain,
+  CommanderInjuryId
+} from './commander/commanderTypes';
+import { CampaignCommander, CampaignState, RetreatPolicy } from './campaignTypes';
 import { SectorRegion } from './sector/sectorTypes';
 
 export interface CampaignSaveEnvelope {
@@ -21,6 +31,9 @@ const CARGO_TYPES: CargoItemType[] = ['supplyCrate', 'fuelCell', 'repairParts', 
 const SALVAGE_OPTIONS = ['quick', 'thorough', 'recover', 'leave'];
 const EXTRACTION_MODES = ['normal', 'emergency'];
 const EXTRACTION_RISKS = ['low', 'medium', 'high', 'critical'];
+const COMMANDER_DOMAINS: CommanderDomain[] = ['combat', 'exploration', 'logistics', 'survival'];
+const COMMANDER_CONDITIONS: CommanderConditionId[] = ['fatigued', 'shaken', 'wounded', 'scarred'];
+const COMMANDER_INJURIES: CommanderInjuryId[] = ['wound', 'burn', 'fracture', 'trauma', 'fatal'];
 
 function b64(source: string): string {
   const bytes = new TextEncoder().encode(source);
@@ -50,6 +63,7 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
   const raw = value as any;
   if (!raw || typeof raw !== 'object' || !['0.1', '0.2'].includes(raw.version)) return null;
   const legacy = raw.version === '0.1';
+  const seed = Number.isInteger(raw.campaignSeed) ? raw.campaignSeed >>> 0 : 0;
   const nodes = Array.isArray(raw.sector?.nodes)
     ? raw.sector.nodes.map((node: any) => ({
         ...node,
@@ -78,9 +92,27 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
             }))
           : []
       };
+  const commander = ensureCommanderProfile(raw.commander ?? {}, seed);
+  const reserveCommanders = Array.isArray(raw.reserveCommanders)
+    ? raw.reserveCommanders.map((candidate: any) => ensureCommanderProfile(candidate, seed))
+    : [];
+  const pendingRecruitment = raw.pendingRecruitment && typeof raw.pendingRecruitment === 'object'
+    ? {
+        nodeId: raw.pendingRecruitment.nodeId,
+        supplyCost: Number.isInteger(raw.pendingRecruitment.supplyCost) ? raw.pendingRecruitment.supplyCost : 2,
+        candidates: Array.isArray(raw.pendingRecruitment.candidates)
+          ? raw.pendingRecruitment.candidates.map((candidate: any) => ensureCommanderProfile(candidate, seed))
+          : []
+      }
+    : undefined;
   return {
     ...raw,
     version: '0.2',
+    campaignSeed: seed,
+    commander,
+    reserveCommanders,
+    pendingRecruitment,
+    pendingSuccession: typeof raw.pendingSuccession === 'boolean' ? raw.pendingSuccession : false,
     cargo: legacy ? createEmptyCargo(STARTING_CARGO_CAPACITY) : raw.cargo,
     extractionPrepared: typeof raw.extractionPrepared === 'boolean' ? raw.extractionPrepared : false,
     fleet: {
@@ -99,7 +131,7 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
     history: legacy
       ? [
           ...(Array.isArray(raw.history) ? raw.history : []),
-          { turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已从 V0.6 迁移到 V0.7 格式。' }
+          { turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已从 V0.6 迁移到 V0.7/V0.8 兼容格式。' }
         ]
       : raw.history
   } as CampaignState;
@@ -127,6 +159,34 @@ function validateSummary(state: CampaignState): boolean {
   );
 }
 
+function validateCommander(commander: CampaignCommander): boolean {
+  const finite = (candidate: unknown): candidate is number => typeof candidate === 'number' && Number.isFinite(candidate);
+  if (
+    !commander || typeof commander.id !== 'string' || !commander.id ||
+    typeof commander.name !== 'string' || !commander.name ||
+    !Number.isInteger(commander.level) || commander.level < 1 ||
+    !finite(commander.experience) || commander.experience < 0 ||
+    typeof commander.alive !== 'boolean' || !commander.attributes || !commander.domainExperience ||
+    !Array.isArray(commander.traits) || commander.traits.length !== 2 || new Set(commander.traits).size !== 2 ||
+    commander.traits.some((trait) => !COMMANDER_TRAITS.includes(trait)) ||
+    !Array.isArray(commander.conditions) || !Array.isArray(commander.injuries)
+  ) return false;
+  if (!['command', 'tactics', 'logistics', 'resolve'].every((key) => {
+    const value = commander.attributes![key as keyof typeof commander.attributes];
+    return Number.isInteger(value) && value >= 1 && value <= 10;
+  })) return false;
+  if (!COMMANDER_DOMAINS.every((domain) => finite(commander.domainExperience![domain]) && commander.domainExperience![domain] >= 0)) return false;
+  if (commander.conditions.some((condition) =>
+    !COMMANDER_CONDITIONS.includes(condition.id) || ![1, 2, 3].includes(condition.severity) ||
+    !Number.isInteger(condition.remainingTurns) || condition.remainingTurns < 0
+  )) return false;
+  return !commander.injuries.some((injury) =>
+    !COMMANDER_INJURIES.includes(injury.id) || ![1, 2, 3].includes(injury.severity) ||
+    !Number.isInteger(injury.acquiredTurn) || injury.acquiredTurn < 0 ||
+    typeof injury.permanent !== 'boolean' || (injury.cause !== undefined && typeof injury.cause !== 'string')
+  );
+}
+
 export function validateCampaignState(value: unknown): value is CampaignState {
   const state = value as CampaignState;
   const finite = (candidate: unknown): candidate is number => typeof candidate === 'number' && Number.isFinite(candidate);
@@ -134,7 +194,8 @@ export function validateCampaignState(value: unknown): value is CampaignState {
   if (
     !state || state.version !== '0.2' || !nonNegativeInteger(state.campaignSeed) || state.campaignSeed > 0xffffffff ||
     !Number.isInteger(state.sectorIndex) || state.sectorIndex < 1 || !nonNegativeInteger(state.turn) ||
-    !['active', 'victory', 'defeat'].includes(state.status) || typeof state.extractionPrepared !== 'boolean'
+    !['active', 'victory', 'defeat'].includes(state.status) || typeof state.extractionPrepared !== 'boolean' ||
+    typeof state.pendingSuccession !== 'boolean'
   ) return false;
   if (!state.resources || ![state.resources.supplies, state.resources.fuel, state.resources.materials].every((candidate) => finite(candidate) && candidate >= 0)) return false;
   if (
@@ -142,13 +203,11 @@ export function validateCampaignState(value: unknown): value is CampaignState {
     state.cargo.items.some((stack) => !CARGO_TYPES.includes(stack.type) || !Number.isInteger(stack.quantity) || stack.quantity <= 0) ||
     new Set(state.cargo.items.map((stack) => stack.type)).size !== state.cargo.items.length || cargoUsed(state.cargo) > state.cargo.capacity
   ) return false;
-  if (
-    !state.commander || typeof state.commander.id !== 'string' || !state.commander.id ||
-    typeof state.commander.name !== 'string' || !state.commander.name ||
-    !Number.isInteger(state.commander.level) || state.commander.level < 1 ||
-    !finite(state.commander.experience) || state.commander.experience < 0 ||
-    typeof state.commander.alive !== 'boolean'
-  ) return false;
+  if (!validateCommander(state.commander) || !Array.isArray(state.reserveCommanders) || state.reserveCommanders.length > 3) return false;
+  const commanderIds = [state.commander.id, ...state.reserveCommanders.map((commander) => commander.id)];
+  if (new Set(commanderIds).size !== commanderIds.length || state.reserveCommanders.some((commander) => !validateCommander(commander))) return false;
+  if (state.pendingSuccession && !state.reserveCommanders.some((commander) => isCommanderAvailable(commander, state.campaignSeed))) return false;
+
   if (!state.fleet || !Array.isArray(state.fleet.ships) || !FORMATIONS.includes(state.fleet.formation) || !DOCTRINES.includes(state.fleet.doctrine)) return false;
   const shipIds = state.fleet.ships.map((ship) => ship.campaignShipId);
   if (new Set(shipIds).size !== shipIds.length) return false;
@@ -187,6 +246,16 @@ export function validateCampaignState(value: unknown): value is CampaignState {
       return !state.sector.nodes.find((candidate) => candidate.id === neighborId)?.neighbors.includes(node.id);
     });
   })) return false;
+  if (state.pendingRecruitment) {
+    const candidateIds = state.pendingRecruitment.candidates.map((candidate) => candidate.id);
+    if (
+      state.status !== 'active' || !ids.has(state.pendingRecruitment.nodeId) ||
+      !nonNegativeInteger(state.pendingRecruitment.supplyCost) ||
+      !Array.isArray(state.pendingRecruitment.candidates) || state.pendingRecruitment.candidates.length < 1 || state.pendingRecruitment.candidates.length > 2 ||
+      new Set(candidateIds).size !== candidateIds.length || candidateIds.some((id) => commanderIds.includes(id)) ||
+      state.pendingRecruitment.candidates.some((candidate) => !validateCommander(candidate))
+    ) return false;
+  }
   if (state.pendingBattle) {
     const deployment = state.pendingBattle.deployment;
     if (
