@@ -1,5 +1,5 @@
 import { validateFleetEntry } from '../sim/fleetValidator';
-import { addCargo, cargoUsed, createEmptyCargo } from './cargo/cargoSystem';
+import { cargoUsed, createEmptyCargo } from './cargo/cargoSystem';
 import { CargoItemType } from './cargo/cargoTypes';
 import { STARTING_CARGO_CAPACITY } from './campaignConfig';
 import { CampaignState } from './campaignTypes';
@@ -16,6 +16,8 @@ const NODE_TYPES = ['start', 'empty', 'resource', 'battle', 'hazard', 'signal', 
 const VISIBILITIES = ['hidden', 'detected', 'scanned', 'visited'];
 const CARGO_TYPES: CargoItemType[] = ['supplyCrate', 'fuelCell', 'repairParts', 'relic'];
 const SALVAGE_OPTIONS = ['quick', 'thorough', 'leave'];
+const EXTRACTION_MODES = ['normal', 'emergency'];
+const EXTRACTION_RISKS = ['low', 'medium', 'high', 'critical'];
 
 function b64(source: string): string {
   const bytes = new TextEncoder().encode(source);
@@ -33,25 +35,64 @@ function unb64(source: string): string {
 
 export function migrateCampaignState(value: unknown): CampaignState | null {
   const raw = value as any;
-  if (!raw || typeof raw !== 'object') return null;
-  if (raw.version === '0.2') return raw as CampaignState;
-  if (raw.version !== '0.1') return null;
+  if (!raw || typeof raw !== 'object' || !['0.1', '0.2'].includes(raw.version)) return null;
+
+  const legacy = raw.version === '0.1';
   return {
     ...raw,
     version: '0.2',
-    cargo: createEmptyCargo(STARTING_CARGO_CAPACITY),
+    cargo: legacy ? createEmptyCargo(STARTING_CARGO_CAPACITY) : raw.cargo,
+    extractionPrepared: typeof raw.extractionPrepared === 'boolean' ? raw.extractionPrepared : false,
     fleet: {
       ...raw.fleet,
       ships: Array.isArray(raw.fleet?.ships)
-        ? raw.fleet.ships.map((ship: any) => ({ ...ship, towed: false }))
+        ? raw.fleet.ships.map((ship: any) => ({
+            ...ship,
+            towed: typeof ship.towed === 'boolean' ? ship.towed : false,
+            deployed: typeof ship.deployed === 'boolean' ? ship.deployed : true
+          }))
         : []
     },
-    pendingSalvage: undefined,
-    history: [
-      ...(Array.isArray(raw.history) ? raw.history : []),
-      { turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已从 V0.6 迁移到 V0.7 格式。' }
-    ]
+    pendingSalvage: legacy ? undefined : raw.pendingSalvage,
+    history: legacy
+      ? [
+          ...(Array.isArray(raw.history) ? raw.history : []),
+          {
+            turn: Number.isInteger(raw.turn) ? raw.turn : 0,
+            text: '存档已从 V0.6 迁移到 V0.7 格式。'
+          }
+        ]
+      : raw.history
   } as CampaignState;
+}
+
+function validateSummary(state: CampaignState): boolean {
+  const summary = state.lastSectorSummary;
+  if (!summary) return true;
+  const nonNegativeInteger = (value: unknown) =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  return (
+    Number.isInteger(summary.sectorIndex) &&
+    summary.sectorIndex >= 1 &&
+    nonNegativeInteger(summary.turns) &&
+    nonNegativeInteger(summary.visitedNodes) &&
+    nonNegativeInteger(summary.totalNodes) &&
+    summary.visitedNodes <= summary.totalNodes &&
+    nonNegativeInteger(summary.shipsRemaining) &&
+    nonNegativeInteger(summary.disabledShips) &&
+    summary.disabledShips <= summary.shipsRemaining &&
+    nonNegativeInteger(summary.cargoUsed) &&
+    nonNegativeInteger(summary.cargoCapacity) &&
+    summary.cargoUsed <= summary.cargoCapacity &&
+    Number.isInteger(summary.threatLevel) &&
+    summary.threatLevel >= 0 &&
+    summary.threatLevel <= 5 &&
+    EXTRACTION_MODES.includes(summary.extractionMode) &&
+    EXTRACTION_RISKS.includes(summary.extractionRisk) &&
+    nonNegativeInteger(summary.jettisonedUnits) &&
+    Array.isArray(summary.damagedInJump) &&
+    summary.damagedInJump.every((id) => typeof id === 'string' && id.length > 0)
+  );
 }
 
 export function validateCampaignState(value: unknown): value is CampaignState {
@@ -69,7 +110,8 @@ export function validateCampaignState(value: unknown): value is CampaignState {
     !Number.isInteger(state.sectorIndex) ||
     state.sectorIndex < 1 ||
     !nonNegativeInteger(state.turn) ||
-    !['active', 'victory', 'defeat'].includes(state.status)
+    !['active', 'victory', 'defeat'].includes(state.status) ||
+    typeof state.extractionPrepared !== 'boolean'
   ) return false;
 
   if (
@@ -120,6 +162,7 @@ export function validateCampaignState(value: unknown): value is CampaignState {
         typeof ship.disabled !== 'boolean' ||
         typeof ship.escaped !== 'boolean' ||
         typeof ship.towed !== 'boolean' ||
+        typeof ship.deployed !== 'boolean' ||
         (!ship.disabled && ship.towed) ||
         !validateFleetEntry({ shipClass: ship.shipClass, variant: ship.variant, count: 1 }).valid ||
         (ship.componentHp !== undefined &&
@@ -151,55 +194,101 @@ export function validateCampaignState(value: unknown): value is CampaignState {
   if (
     state.sector.nodes.some((node) => {
       if (
-        typeof node.id !== 'string' || !node.id ||
-        !NODE_TYPES.includes(node.type) || !VISIBILITIES.includes(node.visibility) ||
-        !finite(node.x) || !finite(node.y) ||
-        typeof node.processed !== 'boolean' || typeof node.gathered !== 'boolean' ||
+        typeof node.id !== 'string' ||
+        !node.id ||
+        !NODE_TYPES.includes(node.type) ||
+        !VISIBILITIES.includes(node.visibility) ||
+        !finite(node.x) ||
+        !finite(node.y) ||
+        typeof node.processed !== 'boolean' ||
+        typeof node.gathered !== 'boolean' ||
         (node.signalResolved !== undefined && typeof node.signalResolved !== 'boolean') ||
         (node.hazardResolved !== undefined && typeof node.hazardResolved !== 'boolean') ||
-        !Array.isArray(node.neighbors) || new Set(node.neighbors).size !== node.neighbors.length
+        !Array.isArray(node.neighbors) ||
+        new Set(node.neighbors).size !== node.neighbors.length
       ) return true;
       return node.neighbors.some((neighborId) => {
         if (neighborId === node.id || !ids.has(neighborId)) return true;
-        return !state.sector.nodes.find((candidate) => candidate.id === neighborId)?.neighbors.includes(node.id);
+        return !state.sector.nodes
+          .find((candidate) => candidate.id === neighborId)
+          ?.neighbors.includes(node.id);
       });
     })
   ) return false;
 
   if (state.pendingBattle) {
+    const deployment = state.pendingBattle.deployment;
     if (
-      state.status !== 'active' || !ids.has(state.pendingBattle.nodeId) ||
+      state.status !== 'active' ||
+      !ids.has(state.pendingBattle.nodeId) ||
       !nonNegativeInteger(state.pendingBattle.battleIndex) ||
-      typeof state.pendingBattle.reason !== 'string' || !state.pendingBattle.reason ||
+      typeof state.pendingBattle.reason !== 'string' ||
+      !state.pendingBattle.reason ||
       !!state.pendingSalvage
     ) return false;
+    if (deployment) {
+      const selected = deployment.selectedShipIds;
+      const eligible = new Set(
+        state.fleet.ships.filter((ship) => !ship.disabled).map((ship) => ship.campaignShipId)
+      );
+      if (
+        !Array.isArray(selected) ||
+        selected.length < 1 ||
+        new Set(selected).size !== selected.length ||
+        selected.some((id) => typeof id !== 'string' || !eligible.has(id))
+      ) return false;
+    }
   }
 
   if (state.pendingSalvage) {
     const salvage = state.pendingSalvage;
     if (
-      state.status !== 'active' || !ids.has(salvage.nodeId) ||
+      state.status !== 'active' ||
+      !ids.has(salvage.nodeId) ||
       !nonNegativeInteger(salvage.battleIndex) ||
       !salvage.summary ||
-      ![salvage.summary.enemyDestroyed, salvage.summary.enemyDisabled, salvage.summary.ownDestroyed].every(nonNegativeInteger) ||
-      !Array.isArray(salvage.options) || salvage.options.length !== 3 ||
-      salvage.options.some((option) =>
-        !SALVAGE_OPTIONS.includes(option.id) || typeof option.label !== 'string' ||
-        typeof option.description !== 'string' || !nonNegativeInteger(option.turns) ||
-        !nonNegativeInteger(option.threat) || !Array.isArray(option.items) ||
-        option.items.some((item) => !CARGO_TYPES.includes(item.type) || !Number.isInteger(item.quantity) || item.quantity <= 0)
+      ![
+        salvage.summary.enemyDestroyed,
+        salvage.summary.enemyDisabled,
+        salvage.summary.ownDestroyed
+      ].every(nonNegativeInteger) ||
+      !Array.isArray(salvage.options) ||
+      salvage.options.length !== 3 ||
+      salvage.options.some(
+        (option) =>
+          !SALVAGE_OPTIONS.includes(option.id) ||
+          typeof option.label !== 'string' ||
+          typeof option.description !== 'string' ||
+          !nonNegativeInteger(option.turns) ||
+          !nonNegativeInteger(option.threat) ||
+          !Array.isArray(option.items) ||
+          option.items.some(
+            (item) =>
+              !CARGO_TYPES.includes(item.type) ||
+              !Number.isInteger(item.quantity) ||
+              item.quantity <= 0
+          )
       )
     ) return false;
   }
 
-  return Array.isArray(state.history) && state.history.every(
-    (entry) => nonNegativeInteger(entry.turn) && typeof entry.text === 'string' && entry.text.length > 0
+  return (
+    validateSummary(state) &&
+    Array.isArray(state.history) &&
+    state.history.every(
+      (entry) =>
+        nonNegativeInteger(entry.turn) &&
+        typeof entry.text === 'string' &&
+        entry.text.length > 0
+    )
   );
 }
 
 export function encodeCampaign(state: CampaignState): string {
   if (!validateCampaignState(state)) throw new Error('战役状态无效，无法导出。');
-  return b64(JSON.stringify({ type: 'spacewar-campaign', v: '0.2', state } satisfies CampaignSaveEnvelope));
+  return b64(
+    JSON.stringify({ type: 'spacewar-campaign', v: '0.2', state } satisfies CampaignSaveEnvelope)
+  );
 }
 
 export function decodeCampaign(code: string): CampaignState {
@@ -210,11 +299,21 @@ export function decodeCampaign(code: string): CampaignState {
     throw new Error('战役码格式无法解析。');
   }
   const envelope = raw as { type?: string; v?: string; state?: unknown };
-  if (envelope.type === 'spacewar-fleet') throw new Error('这是一段舰队方案码，不是战役码。');
-  if (envelope.type === 'spacewar-battle' || !envelope.type) throw new Error('这是一段战斗录像码，不是战役码。');
-  if (envelope.type !== 'spacewar-campaign') throw new Error('战役码内容无效或版本不支持。');
+  if (envelope.type === 'spacewar-fleet') {
+    throw new Error('这是一段舰队方案码，不是战役码。');
+  }
+  if (envelope.type === 'spacewar-battle' || !envelope.type) {
+    throw new Error('这是一段战斗录像码，不是战役码。');
+  }
+  if (envelope.type !== 'spacewar-campaign') {
+    throw new Error('战役码内容无效或版本不支持。');
+  }
   const migrated = migrateCampaignState(envelope.state);
-  if (!migrated || !validateCampaignState(migrated) || !['0.1', '0.2'].includes(envelope.v ?? '')) {
+  if (
+    !migrated ||
+    !validateCampaignState(migrated) ||
+    !['0.1', '0.2'].includes(envelope.v ?? '')
+  ) {
     throw new Error('战役码内容无效或版本不支持。');
   }
   return migrated;
