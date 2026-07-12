@@ -1,5 +1,6 @@
 import type { CampaignState } from '../campaignTypes';
 import type { CommanderDomainExperience } from './commanderTypes';
+import { updateCommanderContinuity } from './commanderRoster';
 import {
   ensureCommanderProfile,
   killCommander
@@ -24,6 +25,8 @@ export function commanderExperienceFromHistory(state: CampaignState): CommanderD
     if (text.includes('舰队脱离战斗')) xp.survival += 10;
     if (text.includes('成功规避') || text.includes('交战前退回上一节点')) xp.survival += 6;
     if (text.includes('战地维修')) xp.logistics += 8;
+    if (text.includes('治疗')) xp.logistics += 6;
+    if (text.includes('招募')) xp.commander = 0 as never;
     if (text.includes('拆解') && text.includes('回收')) xp.logistics += 4;
     if (text.includes('使用了一份')) xp.logistics += 3;
     if (text.includes('星门跃迁')) {
@@ -52,5 +55,6 @@ export function synchronizeCommanderCareer(state: CampaignState): CampaignState 
     commander = killCommander(commander, state.campaignSeed, state.turn, '舰队全歼');
   }
   state.commander = commander;
+  updateCommanderContinuity(state);
   return state;
 }
