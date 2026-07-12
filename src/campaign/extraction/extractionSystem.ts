@@ -2,6 +2,7 @@ import { cargoQuantity, cargoUsed, removeCargo } from '../cargo/cargoSystem';
 import { CargoItemType, CargoStack } from '../cargo/cargoTypes';
 import { CampaignState } from '../campaignTypes';
 import { disabledShips, towedShipCount } from '../fleet/persistentFleet';
+import { organizationExtractionFuelDiscount } from '../organization/organizationSystem';
 import { getShipDef } from '../../sim/shipVariants';
 import { hash32 } from '../sector/sectorGenerator';
 
@@ -55,7 +56,8 @@ export function buildExtractionPlan(state: CampaignState): ExtractionPlan {
   const used = cargoUsed(state.cargo);
   const overload = Math.max(0, used - safeCargoCapacity);
   const prepared = !!state.extractionPrepared;
-  const fuelCost = 1 + towedDisabled;
+  const fuelDiscount = organizationExtractionFuelDiscount(state.organization);
+  const fuelCost = Math.max(0, 1 + towedDisabled - fuelDiscount);
   const riskScore = Math.max(
     0,
     state.sector.threat.level + towedDisabled * 2 + damagedShips + overload * 2 + untowedDisabled * 5 - (prepared ? 2 : 0)
@@ -67,6 +69,7 @@ export function buildExtractionPlan(state: CampaignState): ExtractionPlan {
   if (overload) factors.push(`超出安全载荷 ${overload}`);
   if (untowedDisabled) factors.push(`未处理失能舰 ${untowedDisabled}`);
   if (prepared) factors.push('已完成跃迁准备');
+  if (fuelDiscount) factors.push(`组织科技降低燃料 ${fuelDiscount}`);
   if (!factors.length) factors.push('舰队状态稳定');
   return {
     prepared,
