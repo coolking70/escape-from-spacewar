@@ -7,6 +7,13 @@ export interface CommanderAttributes {
   resolve: number;
 }
 
+export type CommanderFocus = 'balanced' | 'tactician' | 'quartermaster' | 'scout' | 'survivor';
+
+export interface CommanderCreationOptions {
+  name: string;
+  focus: CommanderFocus;
+}
+
 export type CommanderTraitId =
   | 'cautious'
   | 'bold'
