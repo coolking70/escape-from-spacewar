@@ -3,6 +3,7 @@ import { CAMPAIGN_STORAGE_KEY } from './campaignConfig';
 import { createCampaign } from './campaignGenerator';
 import { loadCampaign } from './campaignPersistence';
 import { evaluateCampaignStatus } from './campaignReducer';
+import { synchronizeCommanderCareer } from './commander/commanderProgression';
 import {
   commanderProfileSignature,
   ensureCommanderProfile,
@@ -63,14 +64,47 @@ export function runV08Tests(): SuiteResult {
     }
 
     {
-      const test = new Case('指挥官死亡会终止战役');
+      const test = new Case('战役日志确定性驱动领域经验');
       const state = createCampaign(812);
+      state.history.push(
+        { turn: 1, text: '扫描附近节点，获得情报。' },
+        { turn: 2, text: '采集星域资源。' },
+        { turn: 3, text: '战斗胜利，剩余舰船 2；等待打捞决策。' },
+        { turn: 4, text: '执行稳定星门跃迁。' }
+      );
+      synchronizeCommanderCareer(state);
+      const profile = ensureCommanderProfile(state.commander, state.campaignSeed);
+      test.eq(profile.domainExperience.combat, 20, '战斗胜利提供战斗经验');
+      test.eq(profile.domainExperience.exploration, 12, '扫描、采集和跃迁提供探索经验');
+      test.eq(profile.domainExperience.logistics, 4, '采集提供后勤经验');
+      test.eq(profile.domainExperience.survival, 10, '跃迁提供生存经验');
+      const first = JSON.stringify(profile.domainExperience);
+      synchronizeCommanderCareer(state);
+      test.eq(JSON.stringify(ensureCommanderProfile(state.commander, state.campaignSeed).domainExperience), first, '重复同步不会重复加经验');
+      add(test);
+    }
+
+    {
+      const test = new Case('指挥官死亡会终止战役');
+      const state = createCampaign(813);
       state.commander = killCommander(state.commander, state.campaignSeed, state.turn, '测试致命事故');
       const ended = evaluateCampaignStatus(state);
       const profile = ensureCommanderProfile(ended.commander, ended.campaignSeed);
       test.eq(ended.status, 'defeat', '主指挥官死亡后战役失败');
       test.true_(!profile.alive, '死亡状态持久化');
       test.true_(profile.injuries.some((injury) => injury.id === 'fatal' && injury.cause === '测试致命事故'), '记录致命伤与原因');
+      add(test);
+    }
+
+    {
+      const test = new Case('舰队全歼会记录主指挥官死亡');
+      const state = createCampaign(814);
+      state.status = 'defeat';
+      state.fleet.ships = [];
+      synchronizeCommanderCareer(state);
+      const profile = ensureCommanderProfile(state.commander, state.campaignSeed);
+      test.true_(!profile.alive, '全歼后指挥官死亡');
+      test.true_(profile.injuries.some((injury) => injury.id === 'fatal' && injury.cause === '舰队全歼'), '全歼死亡原因明确');
       add(test);
     }
   });
