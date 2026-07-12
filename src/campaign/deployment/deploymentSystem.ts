@@ -26,6 +26,13 @@ export function normalizeDeployment(
   return selected.length ? { selectedShipIds: selected } : defaultDeployment(fleet);
 }
 
+function applySelection(fleet: PersistentFleet, selection: DeploymentSelection): void {
+  const selected = new Set(selection.selectedShipIds);
+  for (const ship of fleet.ships) {
+    ship.deployed = !ship.disabled && selected.has(ship.campaignShipId);
+  }
+}
+
 export function toggleDeploymentShip(
   fleet: PersistentFleet,
   selection: DeploymentSelection,
@@ -40,7 +47,9 @@ export function toggleDeploymentShip(
   } else {
     selected.add(campaignShipId);
   }
-  return { selectedShipIds: [...selected].sort() };
+  const next = { selectedShipIds: [...selected].sort() };
+  applySelection(fleet, next);
+  return next;
 }
 
 export function deploymentFleet(
