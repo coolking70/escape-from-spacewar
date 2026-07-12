@@ -5,11 +5,13 @@ import { RULESET_V4, SIM_VERSION_V5 } from '../../sim/battleConfig';
 import { assertValidFleet } from '../../sim/fleetValidator';
 import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
+import { fleetCost } from '../../sim/shipVariants';
 
 export interface CampaignBattleBinding { campaignShipId: string; battleShipId: number; }
 export interface CampaignBattleContext { origin: 'campaign'; replay: ReplayConfig; state: BattleState; rng: PRNG; bindings: CampaignBattleBinding[]; battleSeed: number; }
 
 export function deriveBattleSeed(campaignSeed: number, sectorIndex: number, nodeId: string, battleIndex: number): number { return hash32(campaignSeed, sectorIndex, nodeId, battleIndex); }
+export function enemyBudgetFor(sectorIndex: number, threatLevel: number, gateGuard = false): number { return 220 + (sectorIndex - 1) * 140 + threatLevel * 45 + (gateGuard ? 160 : 0); }
 export function enemyFleetFor(seed: number, sectorIndex: number, threatLevel: number) {
   const templates = [
     [{ shipClass: 'Fighter' as const, variant: 'standard' as const, count: 4 }],
@@ -19,7 +21,9 @@ export function enemyFleetFor(seed: number, sectorIndex: number, threatLevel: nu
     [{ shipClass: 'Cruiser' as const, variant: 'fortress' as const, count: 1 }, { shipClass: 'Frigate' as const, variant: 'escort' as const, count: 1 }]
   ];
   const base = templates[hash32(seed, sectorIndex, threatLevel) % templates.length].map((e) => ({ ...e }));
-  if (threatLevel >= 2) base[0].count += 1; assertValidFleet(base); return base;
+  if (threatLevel >= 2) base[0].count += 1;
+  const target = enemyBudgetFor(sectorIndex, threatLevel); while (fleetCost(base) < target && base[0].count < 20) base[0].count++;
+  assertValidFleet(base); return base;
 }
 export function campaignBattleReplay(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): ReplayConfig {
   const teamA: TeamConfig = { fleet: fleetEntries(fleet), formation: fleet.formation, doctrine: fleet.doctrine };
