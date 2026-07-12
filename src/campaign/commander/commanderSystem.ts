@@ -3,8 +3,10 @@ import type { CampaignCommander } from '../campaignTypes';
 import type {
   CommanderAttributeKey,
   CommanderAttributes,
+  CommanderCreationOptions,
   CommanderDomain,
   CommanderDomainExperience,
+  CommanderFocus,
   CommanderInjury,
   CommanderTraitId
 } from './commanderTypes';
@@ -40,8 +42,17 @@ export const COMMANDER_DOMAIN_LABEL: Record<CommanderDomain, string> = {
   survival: '生存'
 };
 
+export const COMMANDER_FOCUS_LABEL: Record<CommanderFocus, string> = {
+  balanced: '均衡型',
+  tactician: '战术家',
+  quartermaster: '后勤官',
+  scout: '侦察官',
+  survivor: '生存专家'
+};
+
 const ATTRIBUTE_KEYS: CommanderAttributeKey[] = ['command', 'tactics', 'logistics', 'resolve'];
-const TRAITS: CommanderTraitId[] = ['cautious', 'bold', 'quartermaster', 'survivor', 'scout', 'inspiring'];
+export const COMMANDER_TRAITS: CommanderTraitId[] = ['cautious', 'bold', 'quartermaster', 'survivor', 'scout', 'inspiring'];
+export const COMMANDER_FOCUSES: CommanderFocus[] = ['balanced', 'tactician', 'quartermaster', 'scout', 'survivor'];
 
 function hashText(text: string): number {
   let hash = 2166136261;
@@ -52,7 +63,7 @@ function hashText(text: string): number {
   return hash >>> 0;
 }
 
-function profileSeed(seed: number, id: string): number {
+export function commanderSeed(seed: number, id: string): number {
   return (Math.imul(seed >>> 0, 2654435761) ^ hashText(id) ^ 0x80311a7) >>> 0;
 }
 
@@ -68,9 +79,32 @@ function validDomainExperience(value: unknown): value is CommanderDomainExperien
   );
 }
 
-export function createCommander(seed: number, name = '星域指挥官'): CompleteCampaignCommander {
-  const id = `cmd-${seed >>> 0}`;
-  const rng = createPRNG(profileSeed(seed, id));
+function focusTrait(focus: CommanderFocus): CommanderTraitId | null {
+  if (focus === 'tactician') return 'bold';
+  if (focus === 'quartermaster') return 'quartermaster';
+  if (focus === 'scout') return 'scout';
+  if (focus === 'survivor') return 'survivor';
+  return null;
+}
+
+function applyFocus(attributes: CommanderAttributes, focus: CommanderFocus): void {
+  if (focus === 'balanced') attributes.command = Math.min(8, attributes.command + 1);
+  if (focus === 'tactician') attributes.tactics = Math.min(8, attributes.tactics + 2);
+  if (focus === 'quartermaster') attributes.logistics = Math.min(8, attributes.logistics + 2);
+  if (focus === 'scout') {
+    attributes.tactics = Math.min(8, attributes.tactics + 1);
+    attributes.resolve = Math.min(8, attributes.resolve + 1);
+  }
+  if (focus === 'survivor') attributes.resolve = Math.min(8, attributes.resolve + 2);
+}
+
+export function createCommanderWithId(
+  seed: number,
+  id: string,
+  options: CommanderCreationOptions
+): CompleteCampaignCommander {
+  const focus = COMMANDER_FOCUSES.includes(options.focus) ? options.focus : 'balanced';
+  const rng = createPRNG(commanderSeed(seed, id));
   const attributes: CommanderAttributes = {
     command: 2 + rng.int(4),
     tactics: 2 + rng.int(4),
@@ -81,27 +115,46 @@ export function createCommander(seed: number, name = '星域指挥官'): Complet
     const key = ATTRIBUTE_KEYS[rng.int(ATTRIBUTE_KEYS.length)];
     attributes[key] = Math.min(7, attributes[key] + 1);
   }
-  const first = rng.int(TRAITS.length);
-  let second = rng.int(TRAITS.length - 1);
-  if (second >= first) second++;
+  applyFocus(attributes, focus);
+
+  const traits: CommanderTraitId[] = [];
+  const guaranteed = focusTrait(focus);
+  if (guaranteed) traits.push(guaranteed);
+  while (traits.length < 2) {
+    const candidate = COMMANDER_TRAITS[rng.int(COMMANDER_TRAITS.length)];
+    if (!traits.includes(candidate)) traits.push(candidate);
+  }
+
   return {
     id,
-    name: name.trim() || '星域指挥官',
+    name: options.name.trim() || '星域指挥官',
     level: 1,
     experience: 0,
     alive: true,
     attributes,
-    traits: [TRAITS[first], TRAITS[second]],
+    traits,
     domainExperience: { combat: 0, exploration: 0, logistics: 0, survival: 0 },
     conditions: [],
     injuries: []
   };
 }
 
+export function createCommander(
+  seed: number,
+  name = '星域指挥官',
+  focus: CommanderFocus = 'balanced'
+): CompleteCampaignCommander {
+  return createCommanderWithId(seed, `cmd-${seed >>> 0}`, { name, focus });
+}
+
 export function ensureCommanderProfile(commander: CampaignCommander, seed: number): CompleteCampaignCommander {
-  const generated = createCommander(seed, commander?.name || '星域指挥官');
+  const id = typeof commander?.id === 'string' && commander.id ? commander.id : `cmd-${seed >>> 0}`;
+  const generated = createCommanderWithId(seed, id, {
+    name: commander?.name || '星域指挥官',
+    focus: 'balanced'
+  });
   const traits = Array.isArray(commander?.traits)
-    ? commander.traits.filter((trait): trait is CommanderTraitId => TRAITS.includes(trait as CommanderTraitId)).slice(0, 2)
+    ? commander.traits.filter((trait): trait is CommanderTraitId => COMMANDER_TRAITS.includes(trait as CommanderTraitId)).slice(0, 2)
     : [];
   for (const trait of generated.traits) {
     if (traits.length >= 2) break;
@@ -110,7 +163,7 @@ export function ensureCommanderProfile(commander: CampaignCommander, seed: numbe
   return {
     ...generated,
     ...commander,
-    id: typeof commander?.id === 'string' && commander.id ? commander.id : generated.id,
+    id,
     name: typeof commander?.name === 'string' && commander.name.trim() ? commander.name.trim() : generated.name,
     level: Number.isInteger(commander?.level) && commander.level >= 1 ? commander.level : generated.level,
     experience: Number.isFinite(commander?.experience) && commander.experience >= 0 ? commander.experience : 0,
