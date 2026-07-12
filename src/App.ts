@@ -189,6 +189,7 @@ export class App {
   private showBattle(): void {
     this.menu.hide();
     this.setupRoot.style.display = 'none';
+    (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
     this.battleRoot.style.display = 'block';
     this.setupPanel.hide();
     this.hud.show();
