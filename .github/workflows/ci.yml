@@ -17,6 +17,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Export mobility source snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobility-source-snapshot
+          path: |
+            src/campaign/campaignReducer.ts
+            src/campaign/campaignTypes.ts
+            src/ui/sectorMapPanel.ts
+            src/campaign/v08Tests.ts
+            .github/workflows/ci.yml
       - run: npm run build
       - run: npm test
       - run: npm run test:det
