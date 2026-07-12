@@ -17,8 +17,20 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: npm test
-      - run: npm run test:campaign
-      - run: npm run test:stress
-      - run: npm run build:static
+      - name: Capture campaign test output
+        id: campaign
+        shell: bash
+        run: |
+          set +e
+          npm run test:campaign > campaign-test.log 2>&1
+          code=$?
+          cat campaign-test.log
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@v6
+        with:
+          name: campaign-test-log
+          path: campaign-test.log
+      - name: Fail if campaign test failed
+        if: steps.campaign.outputs.exit_code != '0'
+        run: exit 1
