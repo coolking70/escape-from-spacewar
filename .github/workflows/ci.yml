@@ -17,19 +17,19 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Build
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:det
+      - name: Campaign tests
         shell: bash
         run: |
           set -o pipefail
-          npm run build 2>&1 | tee build.log
-      - name: Upload build diagnostics
+          npm run test:campaign 2>&1 | tee campaign-test.log
+      - name: Upload campaign diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: v08-build-log
-          path: build.log
-      - run: npm test
-      - run: npm run test:det
-      - run: npm run test:campaign
+          name: v08-campaign-log
+          path: campaign-test.log
       - run: npm run test:stress
       - run: npm run build:static
