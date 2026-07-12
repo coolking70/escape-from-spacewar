@@ -1,4 +1,11 @@
 import type { CampaignCargo, CargoItemType } from './cargo/cargoTypes';
+import type {
+  CommanderAttributes,
+  CommanderCondition,
+  CommanderDomainExperience,
+  CommanderInjury,
+  CommanderTraitId
+} from './commander/commanderTypes';
 import type { DeploymentSelection } from './deployment/deploymentSystem';
 import type { ExtractionMode, ExtractionRisk } from './extraction/extractionSystem';
 import type { PersistentFleet } from './fleet/persistentFleet';
@@ -11,6 +18,12 @@ export interface CampaignCommander {
   level: number;
   experience: number;
   alive: boolean;
+  /** V0.8 fields are optional at the type boundary so V0.6/V0.7 saves can migrate in place. */
+  attributes?: CommanderAttributes;
+  traits?: CommanderTraitId[];
+  domainExperience?: CommanderDomainExperience;
+  conditions?: CommanderCondition[];
+  injuries?: CommanderInjury[];
 }
 
 export interface CampaignResources {
