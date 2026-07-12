@@ -12,7 +12,8 @@
     "test": "npm run test:acceptance",
     "test:det": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/determinism-test.js",
     "test:acceptance": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/acceptance-test.js",
-    "test:stress": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/stress-test.js"
+    "test:stress": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/stress-test.js",
+    "test:campaign": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/campaign-test.js"
   },
   "dependencies": {
     "three": "0.160.0"
