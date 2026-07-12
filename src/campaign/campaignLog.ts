@@ -2,7 +2,7 @@ import { CampaignState } from './campaignTypes';
 
 export interface CampaignLogExport {
   type: 'spacewar-campaign-log';
-  formatVersion: '1.0';
+  formatVersion: '1.1';
   campaign: {
     version: CampaignState['version'];
     campaignSeed: number;
@@ -10,6 +10,9 @@ export interface CampaignLogExport {
     turn: number;
     status: CampaignState['status'];
     commander: CampaignState['commander'];
+    reserveCommanders: CampaignState['reserveCommanders'];
+    organization: CampaignState['organization'];
+    pendingOrganizationEvent: CampaignState['pendingOrganizationEvent'];
     resources: CampaignState['resources'];
     cargo: CampaignState['cargo'];
     fleet: CampaignState['fleet'];
@@ -23,7 +26,7 @@ export interface CampaignLogExport {
 export function buildCampaignLogExport(state: CampaignState): CampaignLogExport {
   return {
     type: 'spacewar-campaign-log',
-    formatVersion: '1.0',
+    formatVersion: '1.1',
     campaign: {
       version: state.version,
       campaignSeed: state.campaignSeed,
@@ -31,6 +34,9 @@ export function buildCampaignLogExport(state: CampaignState): CampaignLogExport 
       turn: state.turn,
       status: state.status,
       commander: state.commander,
+      reserveCommanders: state.reserveCommanders,
+      organization: state.organization,
+      pendingOrganizationEvent: state.pendingOrganizationEvent,
       resources: state.resources,
       cargo: state.cargo,
       fleet: state.fleet,
