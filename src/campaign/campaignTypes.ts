@@ -1,4 +1,6 @@
 import { CampaignCargo, CargoItemType } from './cargo/cargoTypes';
+import { DeploymentSelection } from './deployment/deploymentSystem';
+import { ExtractionMode, ExtractionRisk } from './extraction/extractionSystem';
 import { PersistentFleet } from './fleet/persistentFleet';
 import { PendingSalvage, SalvageOptionId } from './salvage/salvageTypes';
 import { SectorState } from './sector/sectorTypes';
@@ -29,6 +31,23 @@ export interface PendingBattle {
   nodeId: string;
   battleIndex: number;
   reason: string;
+  deployment?: DeploymentSelection;
+}
+
+export interface SectorSummary {
+  sectorIndex: number;
+  turns: number;
+  visitedNodes: number;
+  totalNodes: number;
+  shipsRemaining: number;
+  disabledShips: number;
+  cargoUsed: number;
+  cargoCapacity: number;
+  threatLevel: number;
+  extractionMode: ExtractionMode;
+  extractionRisk: ExtractionRisk;
+  jettisonedUnits: number;
+  damagedInJump: string[];
 }
 
 export interface CampaignState {
@@ -45,6 +64,8 @@ export interface CampaignState {
   history: CampaignHistoryEntry[];
   pendingBattle?: PendingBattle;
   pendingSalvage?: PendingSalvage;
+  extractionPrepared?: boolean;
+  lastSectorSummary?: SectorSummary;
 }
 
 export type CampaignAction =
@@ -54,9 +75,12 @@ export type CampaignAction =
   | { type: 'resolveSignal'; optionId: string }
   | { type: 'resolveSalvage'; optionId: SalvageOptionId }
   | { type: 'useCargo'; itemType: CargoItemType }
+  | { type: 'jettisonCargo'; itemType: CargoItemType; quantity?: number }
   | { type: 'fieldRepair'; campaignShipId: string }
   | { type: 'towShip'; campaignShipId: string }
   | { type: 'dismantleShip'; campaignShipId: string }
   | { type: 'abandonShip'; campaignShipId: string }
-  | { type: 'enterGate' }
+  | { type: 'toggleDeployment'; campaignShipId: string }
+  | { type: 'prepareExtraction' }
+  | { type: 'enterGate'; mode?: ExtractionMode }
   | { type: 'wait' };
