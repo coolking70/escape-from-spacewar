@@ -26,6 +26,12 @@ export interface CampaignCommander {
   injuries?: CommanderInjury[];
 }
 
+export interface PendingRecruitment {
+  nodeId: string;
+  candidates: CampaignCommander[];
+  supplyCost: number;
+}
+
 export interface CampaignResources {
   supplies: number;
   fuel: number;
@@ -73,6 +79,9 @@ export interface CampaignState {
   turn: number;
   status: CampaignStatus;
   commander: CampaignCommander;
+  reserveCommanders?: CampaignCommander[];
+  pendingRecruitment?: PendingRecruitment;
+  pendingSuccession?: boolean;
   fleet: PersistentFleet;
   resources: CampaignResources;
   cargo: CampaignCargo;
@@ -90,6 +99,9 @@ export type CampaignAction =
   | { type: 'gather' }
   | { type: 'resolveSignal'; optionId: string }
   | { type: 'resolveSalvage'; optionId: SalvageOptionId }
+  | { type: 'resolveRecruitment'; candidateId?: string }
+  | { type: 'appointCommander'; commanderId: string }
+  | { type: 'treatCommander' }
   | { type: 'useCargo'; itemType: CargoItemType }
   | { type: 'jettisonCargo'; itemType: CargoItemType; quantity?: number }
   | { type: 'fieldRepair'; campaignShipId: string }
