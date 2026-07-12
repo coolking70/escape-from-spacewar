@@ -124,6 +124,10 @@ export function runCampaignTests(): SuiteResult {
         gate.neighbors.push(current.id);
         state = applyCampaignAction(state, { type: 'move', targetNodeId: gate.id });
         state = applyCampaignAction(state, { type: 'enterGate' });
+        if (state.pendingOrganizationEvent) {
+          const option = state.pendingOrganizationEvent.options.find((candidate) => !candidate.requiredValue)!;
+          state = applyCampaignAction(state, { type: 'resolveOrganizationEvent', optionId: option.id });
+        }
       }
       test.eq(state.status, 'victory', '第三星域撤离后胜利');
       const roundTrip = decodeCampaign(encodeCampaign(createCampaign(99)));
