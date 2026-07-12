@@ -496,20 +496,34 @@ export function applyCampaignBattleResult(
   next.fleet = importBattleResult(next.fleet, battle, bindings);
   node.processed = true;
   next.sector.threat = addThreat(next.sector.threat, 2);
-  next.pendingSalvage = generatePendingSalvage(
-    next.campaignSeed,
-    next.sectorIndex,
+  next.pendingBattle = undefined;
+
+  // A destroyed or otherwise non-operational fleet cannot perform salvage.  In
+  // particular, do not create a pendingSalvage on a defeat state: terminal
+  // campaign saves deliberately reject actions that can no longer be resolved.
+  const resolved = evaluateCampaignStatus(next);
+  if (resolved.status !== 'active') {
+    resolved.history.push({
+      turn: resolved.turn,
+      nodeId: node.id,
+      text: `战斗结束：舰队已无法继续远征，剩余舰船 ${resolved.fleet.ships.length}。`
+    });
+    return resolved;
+  }
+
+  resolved.pendingSalvage = generatePendingSalvage(
+    resolved.campaignSeed,
+    resolved.sectorIndex,
     pending.nodeId,
     pending.battleIndex,
     battle,
     ownBefore,
-    next.fleet.ships.length
+    resolved.fleet.ships.length
   );
-  next.history.push({
-    turn: next.turn,
+  resolved.history.push({
+    turn: resolved.turn,
     nodeId: node.id,
-    text: `战斗结束：${battle.winner === 'A' ? '舰队获胜' : '舰队遭受挫败'}，剩余舰船 ${next.fleet.ships.length}；等待打捞决策。`
+    text: `战斗结束：${battle.winner === 'A' ? '舰队获胜' : '舰队遭受挫败'}，剩余舰船 ${resolved.fleet.ships.length}；等待打捞决策。`
   });
-  next.pendingBattle = undefined;
-  return evaluateCampaignStatus(next);
+  return resolved;
 }

@@ -9,17 +9,21 @@ import { campaignHud } from './campaignHud';
 import { campaignResultPanel } from './campaignResultPanel';
 
 export class SectorMapPanel {
+  private showFullResultLog = false;
+
   constructor(
     private root: HTMLElement,
     private cb: {
       onAction: (action: CampaignAction) => void;
       onBattle: () => void;
       onExport: () => void;
+      onExportLog: () => void;
       onExit: () => void;
     }
   ) {}
 
   render(state: CampaignState): void {
+    if (state.status === 'active') this.showFullResultLog = false;
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
     const available = getAvailableCampaignActions(state);
     const graph = visibleSectorGraph(state.sector);
@@ -120,7 +124,7 @@ export class SectorMapPanel {
       .slice(-8)
       .reverse()
       .map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`)
-      .join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state)}</div>`;
+      .join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
 
     this.root.querySelectorAll('.sector-node:not([disabled])').forEach((element) => {
       (element as HTMLButtonElement).onclick = () =>
@@ -187,5 +191,24 @@ export class SectorMapPanel {
     if (battle) battle.onclick = this.cb.onBattle;
     (this.root.querySelector('#sp-export') as HTMLButtonElement).onclick = this.cb.onExport;
     (this.root.querySelector('#sp-exit') as HTMLButtonElement).onclick = this.cb.onExit;
+    this.root.querySelectorAll('[data-campaign-result]').forEach((element) => {
+      (element as HTMLButtonElement).onclick = () => {
+        switch ((element as HTMLElement).dataset.campaignResult) {
+          case 'log':
+            this.showFullResultLog = !this.showFullResultLog;
+            this.render(state);
+            break;
+          case 'export':
+            this.cb.onExport();
+            break;
+          case 'export-log':
+            this.cb.onExportLog();
+            break;
+          case 'menu':
+            this.cb.onExit();
+            break;
+        }
+      };
+    });
   }
 }

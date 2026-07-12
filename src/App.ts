@@ -24,6 +24,7 @@ import { createCampaign } from './campaign/campaignGenerator';
 import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campaignReducer';
 import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
+import { encodeCampaignLog } from './campaign/campaignLog';
 import { CampaignBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle } from './campaign/fleet/battleAdapter';
 
 export class App {
@@ -148,6 +149,7 @@ export class App {
       onAction: (action) => this.campaignAction(action),
       onBattle: () => this.resolveCampaignBattle(),
       onExport: () => this.exportCampaign(),
+      onExportLog: () => this.exportCampaignLog(),
       onExit: () => this.showMenu()
     });
   }
@@ -174,11 +176,13 @@ export class App {
     this.setupRoot.style.display = 'none';
     this.battleRoot.style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'block';
     this.menu.show();
   }
 
   private showSetup(): void {
     this.menu.hide();
+    (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'flex';
     this.battleRoot.style.display = 'none';
@@ -188,6 +192,7 @@ export class App {
 
   private showBattle(): void {
     this.menu.hide();
+    (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
     this.battleRoot.style.display = 'block';
@@ -224,6 +229,7 @@ export class App {
   private showCampaign(): void {
     if (!this.campaign) return;
     this.menu.hide();
+    (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'none';
     this.battleRoot.style.display = 'none';
     const root = this.root.querySelector('#campaign-root') as HTMLElement;
@@ -262,6 +268,19 @@ export class App {
     const code = encodeCampaign(this.campaign);
     navigator.clipboard?.writeText(code);
     prompt('Campaign Code（已尝试复制）', code);
+  }
+
+  private exportCampaignLog(): void {
+    if (!this.campaign) return;
+    const blob = new Blob([encodeCampaignLog(this.campaign)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `spacewar-campaign-log-${this.campaign.campaignSeed}-s${this.campaign.sectorIndex}-t${this.campaign.turn}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   private startBattle(

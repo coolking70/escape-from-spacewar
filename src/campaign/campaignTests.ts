@@ -2,6 +2,7 @@ import { Case, runSuite, SuiteResult } from '../sim/testHarness';
 import { createCampaign } from './campaignGenerator';
 import {
   applyCampaignAction,
+  applyCampaignBattleResult,
   evaluateCampaignStatus,
   getAvailableCampaignActions
 } from './campaignReducer';
@@ -26,6 +27,8 @@ import { addThreat } from './sector/threatSystem';
 import { createStarterFleet } from './fleet/persistentFleet';
 import { importBattleResult } from './fleet/battleResultImporter';
 import { visibleSectorGraph } from './sector/sectorVisibility';
+import { buildCampaignLogExport, encodeCampaignLog } from './campaignLog';
+import { campaignResultPanel } from '../ui/campaignResultPanel';
 
 function firstNeighbor(state: ReturnType<typeof createCampaign>): string {
   return state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!.neighbors[0];
@@ -189,6 +192,55 @@ export function runCampaignTests(): SuiteResult {
       test.true_(next.ships.some((ship) => ship.campaignShipId === 'cs-1' && ship.escaped), 'escaped 舰船保留');
       test.true_(next.ships.some((ship) => ship.campaignShipId === 'cs-2' && ship.disabled), 'disabled 舰船保留并标记');
       test.true_(next.ships.every((ship) => ship.campaignShipId.startsWith('cs-')), 'campaignShipId 战斗前后稳定');
+      add(test);
+    }
+
+    {
+      const test = new Case('舰队全歼后生成可保存的终局状态');
+      const state = createCampaign(61);
+      state.pendingBattle = {
+        nodeId: state.sector.currentNodeId,
+        battleIndex: state.turn,
+        reason: '测试全歼'
+      };
+      const bindings = state.fleet.ships.map((ship, index) => ({
+        campaignShipId: ship.campaignShipId,
+        battleShipId: index
+      }));
+      const defeated = applyCampaignBattleResult(
+        state,
+        {
+          winner: 'B',
+          ships: bindings.map((binding) => ({
+            id: binding.battleShipId,
+            team: 'A',
+            combatState: 'destroyed',
+            components: []
+          }))
+        } as any,
+        bindings
+      );
+      test.eq(defeated.status, 'defeat', '全歼后进入失败状态');
+      test.eq(defeated.fleet.ships.length, 0, '全歼舰船从持久舰队移除');
+      test.true_(!defeated.pendingSalvage, '失败状态不创建无法处理的打捞');
+      test.true_(validateCampaignState(defeated), '终局状态可通过深层存档校验');
+      add(test);
+    }
+
+    {
+      const test = new Case('战役日志导出保留分析所需上下文');
+      const state = createCampaign(62);
+      state.history.push({ turn: 1, nodeId: state.sector.currentNodeId, text: '测试日志事件。' });
+      const exported = buildCampaignLogExport(state);
+      const encoded = JSON.parse(encodeCampaignLog(state));
+      test.eq(exported.type, 'spacewar-campaign-log', '日志类型明确');
+      test.eq(exported.campaign.campaignSeed, 62, '保留战役 seed');
+      test.eq(exported.history.length, state.history.length, '保留完整逐回合历史');
+      test.eq(encoded.campaign.currentNodeId, state.sector.currentNodeId, 'JSON 可解析且保留当前位置');
+      test.true_(
+        campaignResultPanel({ ...state, status: 'defeat' }, false).includes('data-campaign-result="export-log"'),
+        '终局结算窗口提供日志导出按钮'
+      );
       add(test);
     }
 

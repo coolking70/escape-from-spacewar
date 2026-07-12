@@ -59,6 +59,13 @@ npm run build:static
 
 `npm run test:campaign` runs both the frozen V0.6 regression suite and V0.7 cargo, salvage, repair, towing, deployment, extraction, migration, determinism, and summary tests.
 
+## Latest maintenance
+
+- Terminal campaign battle results now skip post-battle salvage when no operational fleet remains. This keeps `defeat` saves structurally valid and prevents the campaign completion flow from throwing during persistence.
+- Victory and defeat now open a blocking campaign result dialog with a full-log toggle, Campaign Code export, and a return-to-menu action.
+- The result dialog can export a structured JSON campaign log containing campaign metadata, final resources, cargo, fleet snapshot, threat, sector summary, and complete turn history for later analysis.
+- Screen transitions now hide the full-screen menu root itself, preventing its empty high-z-index layer from intercepting controls in setup, battle, and auxiliary panels.
+
 ## Frozen V0.7 limitations
 
 - Campaign battles still do not support seek, timeline replay, or Replay Code sharing because inherited component HP is outside Replay v0.5.
