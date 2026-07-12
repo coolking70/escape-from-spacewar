@@ -26,6 +26,7 @@ export function createCampaign(seed: number, name = '星域指挥官'): Campaign
     resources: { ...STARTING_RESOURCES },
     cargo: createEmptyCargo(STARTING_CARGO_CAPACITY),
     sector: generateSector(seed, 1),
+    extractionPrepared: false,
     history: [{ turn: 0, text: '战役开始：进入第一星域。' }]
   };
 }
