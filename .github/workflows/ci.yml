@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npm run test:det
       - run: npm run test:campaign
       - run: npm run test:stress
       - run: npm run build:static
