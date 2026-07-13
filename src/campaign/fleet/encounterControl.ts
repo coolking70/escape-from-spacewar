@@ -1,6 +1,7 @@
 import { getShipDef } from '../../sim/shipVariants';
 import { commanderEvadeModifier } from '../commander/commanderHealth';
 import { CampaignState } from '../campaignTypes';
+import { organizationEvadeBonus } from '../organization/organizationSystem';
 import { hash32 } from '../sector/sectorGenerator';
 import { deriveBattleSeed, enemyFleetFor } from './battleAdapter';
 import { assessEncounter, campaignFleetEntryCost, campaignFleetPower, EncounterAssessment } from './campaignPower';
@@ -52,7 +53,8 @@ export function buildEncounterPreview(state: CampaignState): CampaignEncounterPr
       90,
       Math.round(
         30 + scouts * 18 + sensorReadiness(state) * 15 - state.sector.threat.level * 6 +
-        (assessment.ratio > 1.2 ? 10 : 0) + commanderEvadeModifier(state.commander, state.campaignSeed)
+        (assessment.ratio > 1.2 ? 10 : 0) + commanderEvadeModifier(state.commander, state.campaignSeed) +
+        organizationEvadeBonus(state.organization)
       )
     )
   );

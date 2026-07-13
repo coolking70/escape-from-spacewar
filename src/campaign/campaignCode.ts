@@ -1,7 +1,7 @@
 import { validateFleetEntry } from '../sim/fleetValidator';
 import { cargoUsed, createEmptyCargo } from './cargo/cargoSystem';
 import { CargoItemType } from './cargo/cargoTypes';
-import { STARTING_CARGO_CAPACITY } from './campaignConfig';
+import { CAMPAIGN_VERSION, STARTING_CARGO_CAPACITY } from './campaignConfig';
 import { isCommanderAvailable } from './commander/commanderHealth';
 import {
   COMMANDER_TRAITS,
@@ -13,11 +13,24 @@ import type {
   CommanderInjuryId
 } from './commander/commanderTypes';
 import { CampaignCommander, CampaignState, RetreatPolicy } from './campaignTypes';
+import {
+  GOVERNMENT_TYPES,
+  ORGANIZATION_ARCHETYPES,
+  ORGANIZATION_VALUES,
+  ensureOrganization,
+  organizationCargoBonus
+} from './organization/organizationSystem';
+import type {
+  OrganizationEventEffect,
+  PendingOrganizationEvent,
+  ResearchResourceKey
+} from './organization/organizationTypes';
+import { RESEARCH_RESOURCE_KEYS, TECHNOLOGY_IDS } from './organization/technologySystem';
 import { SectorRegion } from './sector/sectorTypes';
 
 export interface CampaignSaveEnvelope {
   type: 'spacewar-campaign';
-  v: '0.2';
+  v: '0.3';
   state: CampaignState;
 }
 
@@ -34,6 +47,7 @@ const EXTRACTION_RISKS = ['low', 'medium', 'high', 'critical'];
 const COMMANDER_DOMAINS: CommanderDomain[] = ['combat', 'exploration', 'logistics', 'survival'];
 const COMMANDER_CONDITIONS: CommanderConditionId[] = ['fatigued', 'shaken', 'wounded', 'scarred'];
 const COMMANDER_INJURIES: CommanderInjuryId[] = ['wound', 'burn', 'fracture', 'trauma', 'fatal'];
+const SAVE_VERSIONS = ['0.1', '0.2', '0.3'];
 
 function b64(source: string): string {
   const bytes = new TextEncoder().encode(source);
@@ -59,11 +73,31 @@ function inferredRegion(node: any): SectorRegion {
   return 'safeRoute';
 }
 
+function migratePendingOrganizationEvent(value: unknown): PendingOrganizationEvent | undefined {
+  const raw = value as PendingOrganizationEvent | undefined;
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.options)) return undefined;
+  return {
+    id: raw.id,
+    title: raw.title,
+    description: raw.description,
+    options: raw.options.map((option) => ({
+      ...option,
+      effect: {
+        ...option.effect,
+        reputation: option.effect?.reputation ? { ...option.effect.reputation } : undefined,
+        research: option.effect?.research ? { ...option.effect.research } : undefined
+      }
+    }))
+  };
+}
+
 export function migrateCampaignState(value: unknown): CampaignState | null {
   const raw = value as any;
-  if (!raw || typeof raw !== 'object' || !['0.1', '0.2'].includes(raw.version)) return null;
-  const legacy = raw.version === '0.1';
+  if (!raw || typeof raw !== 'object' || !SAVE_VERSIONS.includes(raw.version)) return null;
+  const legacyV06 = raw.version === '0.1';
+  const preV09 = raw.version !== '0.3';
   const seed = Number.isInteger(raw.campaignSeed) ? raw.campaignSeed >>> 0 : 0;
+  const organization = ensureOrganization(raw.organization, seed);
   const nodes = Array.isArray(raw.sector?.nodes)
     ? raw.sector.nodes.map((node: any) => ({
         ...node,
@@ -81,7 +115,7 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
         retreatPolicy: RETREAT_POLICIES.includes(raw.pendingBattle.retreatPolicy) ? raw.pendingBattle.retreatPolicy : 'loss50'
       }
     : undefined;
-  const pendingSalvage = legacy || !raw.pendingSalvage
+  const pendingSalvage = legacyV06 || !raw.pendingSalvage
     ? undefined
     : {
         ...raw.pendingSalvage,
@@ -105,15 +139,23 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
           : []
       }
     : undefined;
+  const migratedCargo = legacyV06
+    ? createEmptyCargo(STARTING_CARGO_CAPACITY + organizationCargoBonus(organization))
+    : raw.cargo;
+  const history = Array.isArray(raw.history) ? [...raw.history] : [];
+  if (legacyV06) history.push({ turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已从 V0.6 迁移到持久战役格式。' });
+  if (preV09) history.push({ turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已迁移到 V0.9 组织与科技格式。' });
   return {
     ...raw,
-    version: '0.2',
+    version: CAMPAIGN_VERSION,
     campaignSeed: seed,
     commander,
     reserveCommanders,
     pendingRecruitment,
     pendingSuccession: typeof raw.pendingSuccession === 'boolean' ? raw.pendingSuccession : false,
-    cargo: legacy ? createEmptyCargo(STARTING_CARGO_CAPACITY) : raw.cargo,
+    organization,
+    pendingOrganizationEvent: migratePendingOrganizationEvent(raw.pendingOrganizationEvent),
+    cargo: migratedCargo,
     extractionPrepared: typeof raw.extractionPrepared === 'boolean' ? raw.extractionPrepared : false,
     fleet: {
       ...raw.fleet,
@@ -128,12 +170,7 @@ export function migrateCampaignState(value: unknown): CampaignState | null {
     sector: { ...raw.sector, nodes },
     pendingBattle,
     pendingSalvage,
-    history: legacy
-      ? [
-          ...(Array.isArray(raw.history) ? raw.history : []),
-          { turn: Number.isInteger(raw.turn) ? raw.turn : 0, text: '存档已从 V0.6 迁移到 V0.7/V0.8 兼容格式。' }
-        ]
-      : raw.history
+    history
   } as CampaignState;
 }
 
@@ -172,8 +209,8 @@ function validateCommander(commander: CampaignCommander): boolean {
     !Array.isArray(commander.conditions) || !Array.isArray(commander.injuries)
   ) return false;
   if (!['command', 'tactics', 'logistics', 'resolve'].every((key) => {
-    const value = commander.attributes![key as keyof typeof commander.attributes];
-    return Number.isInteger(value) && value >= 1 && value <= 10;
+    const candidate = commander.attributes![key as keyof typeof commander.attributes];
+    return Number.isInteger(candidate) && candidate >= 1 && candidate <= 10;
   })) return false;
   if (!COMMANDER_DOMAINS.every((domain) => finite(commander.domainExperience![domain]) && commander.domainExperience![domain] >= 0)) return false;
   if (commander.conditions.some((condition) =>
@@ -187,15 +224,62 @@ function validateCommander(commander: CampaignCommander): boolean {
   );
 }
 
+function validateEventEffect(effect: OrganizationEventEffect): boolean {
+  if (!effect || typeof effect !== 'object') return false;
+  const finiteInteger = (candidate: unknown) => candidate === undefined || (typeof candidate === 'number' && Number.isInteger(candidate));
+  if (![effect.stability, effect.supplies, effect.fuel, effect.materials, effect.threat].every(finiteInteger)) return false;
+  if (effect.reputation && !['civilian', 'military', 'frontier'].every((key) => finiteInteger(effect.reputation![key as keyof typeof effect.reputation]))) return false;
+  return !effect.research || RESEARCH_RESOURCE_KEYS.every((key) => finiteInteger(effect.research![key]));
+}
+
+function validateOrganizationEvent(event: PendingOrganizationEvent | undefined): boolean {
+  if (!event) return true;
+  if (
+    typeof event.id !== 'string' || !event.id || typeof event.title !== 'string' || !event.title ||
+    typeof event.description !== 'string' || !event.description || !Array.isArray(event.options) ||
+    event.options.length < 2 || event.options.length > 4 || new Set(event.options.map((option) => option.id)).size !== event.options.length
+  ) return false;
+  return event.options.every((option) =>
+    typeof option.id === 'string' && !!option.id && typeof option.label === 'string' && !!option.label &&
+    typeof option.description === 'string' && !!option.description &&
+    (option.requiredValue === undefined || ORGANIZATION_VALUES.includes(option.requiredValue)) && validateEventEffect(option.effect)
+  );
+}
+
+function validateOrganization(state: CampaignState): boolean {
+  const organization = state.organization;
+  if (
+    !organization || typeof organization.id !== 'string' || !organization.id ||
+    typeof organization.name !== 'string' || !organization.name ||
+    !ORGANIZATION_ARCHETYPES.includes(organization.archetype) || !GOVERNMENT_TYPES.includes(organization.government) ||
+    !Array.isArray(organization.values) || organization.values.length !== 2 || new Set(organization.values).size !== 2 ||
+    organization.values.some((value) => !ORGANIZATION_VALUES.includes(value)) ||
+    !Number.isInteger(organization.stability) || organization.stability < 0 || organization.stability > 100 ||
+    !organization.reputation || !organization.research
+  ) return false;
+  if (!['civilian', 'military', 'frontier'].every((key) => Number.isInteger(organization.reputation[key as keyof typeof organization.reputation]))) return false;
+  if (
+    !organization.research.resources || !RESEARCH_RESOURCE_KEYS.every((key) => Number.isInteger(organization.research.resources[key]) && organization.research.resources[key] >= 0) ||
+    !Number.isInteger(organization.research.slots) || organization.research.slots < 1 || organization.research.slots > 4 ||
+    !Array.isArray(organization.research.unlocked) || !Array.isArray(organization.research.installed) ||
+    new Set(organization.research.unlocked).size !== organization.research.unlocked.length ||
+    new Set(organization.research.installed).size !== organization.research.installed.length ||
+    organization.research.unlocked.some((id) => !TECHNOLOGY_IDS.includes(id)) ||
+    organization.research.installed.some((id) => !organization.research.unlocked.includes(id)) ||
+    organization.research.installed.length > organization.research.slots
+  ) return false;
+  return validateOrganizationEvent(state.pendingOrganizationEvent);
+}
+
 export function validateCampaignState(value: unknown): value is CampaignState {
   const state = value as CampaignState;
   const finite = (candidate: unknown): candidate is number => typeof candidate === 'number' && Number.isFinite(candidate);
   const nonNegativeInteger = (candidate: unknown): candidate is number => finite(candidate) && Number.isInteger(candidate) && candidate >= 0;
   if (
-    !state || state.version !== '0.2' || !nonNegativeInteger(state.campaignSeed) || state.campaignSeed > 0xffffffff ||
+    !state || state.version !== CAMPAIGN_VERSION || !nonNegativeInteger(state.campaignSeed) || state.campaignSeed > 0xffffffff ||
     !Number.isInteger(state.sectorIndex) || state.sectorIndex < 1 || !nonNegativeInteger(state.turn) ||
     !['active', 'victory', 'defeat'].includes(state.status) || typeof state.extractionPrepared !== 'boolean' ||
-    typeof state.pendingSuccession !== 'boolean'
+    typeof state.pendingSuccession !== 'boolean' || !validateOrganization(state)
   ) return false;
   if (!state.resources || ![state.resources.supplies, state.resources.fuel, state.resources.materials].every((candidate) => finite(candidate) && candidate >= 0)) return false;
   if (
@@ -295,7 +379,7 @@ export function validateCampaignState(value: unknown): value is CampaignState {
 
 export function encodeCampaign(state: CampaignState): string {
   if (!validateCampaignState(state)) throw new Error('战役状态无效，无法导出。');
-  return b64(JSON.stringify({ type: 'spacewar-campaign', v: '0.2', state } satisfies CampaignSaveEnvelope));
+  return b64(JSON.stringify({ type: 'spacewar-campaign', v: CAMPAIGN_VERSION, state } satisfies CampaignSaveEnvelope));
 }
 
 export function decodeCampaign(code: string): CampaignState {
@@ -307,7 +391,7 @@ export function decodeCampaign(code: string): CampaignState {
   if (envelope.type === 'spacewar-battle' || !envelope.type) throw new Error('这是一段战斗录像码，不是战役码。');
   if (envelope.type !== 'spacewar-campaign') throw new Error('战役码内容无效或版本不支持。');
   const migrated = migrateCampaignState(envelope.state);
-  if (!migrated || !validateCampaignState(migrated) || !['0.1', '0.2'].includes(envelope.v ?? '')) {
+  if (!migrated || !validateCampaignState(migrated) || !SAVE_VERSIONS.includes(envelope.v ?? '')) {
     throw new Error('战役码内容无效或版本不支持。');
   }
   return migrated;

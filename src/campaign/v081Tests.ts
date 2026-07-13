@@ -113,6 +113,10 @@ export function runV081Tests(): SuiteResult {
         state.resources.supplies = 100;
         state.resources.fuel = 100;
         state = applyCampaignAction(state, { type: 'enterGate', mode: 'normal' });
+        if (state.pendingOrganizationEvent) {
+          const option = state.pendingOrganizationEvent.options.find((candidate) => !candidate.requiredValue)!;
+          state = applyCampaignAction(state, { type: 'resolveOrganizationEvent', optionId: option.id });
+        }
         if (sector < 3) {
           test.eq(state.sectorIndex, sector + 1, `第 ${sector} 次跃迁进入下一星域`);
           test.eq(state.status, 'active', '中途战役保持进行中');

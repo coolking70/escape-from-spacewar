@@ -36,7 +36,7 @@ export function runV07Tests(): SuiteResult {
     }
 
     {
-      const test = new Case('V0.6 存档迁移到 0.2');
+      const test = new Case('V0.6 存档迁移到 0.3');
       const current = createCampaign(101);
       const legacy: any = JSON.parse(JSON.stringify(current));
       legacy.version = '0.1';
@@ -49,7 +49,7 @@ export function runV07Tests(): SuiteResult {
         delete ship.deployed;
       }
       const migrated = migrateCampaignState(legacy)!;
-      test.eq(migrated.version, '0.2', '迁移后版本正确');
+      test.eq(migrated.version, '0.3', '迁移后版本正确');
       test.eq(migrated.cargo.capacity, 18, '迁移后获得默认货舱');
       test.true_(migrated.fleet.ships.every((ship) => ship.towed === false), '旧舰船补充拖曳状态');
       test.true_(migrated.fleet.ships.every((ship) => ship.deployed !== false), '旧舰船默认允许部署');
