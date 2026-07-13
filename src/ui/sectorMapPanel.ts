@@ -31,7 +31,7 @@ import {
 } from '../campaign/organization/technologySystem';
 import { canFieldRepair } from '../campaign/repair/repairSystem';
 import { signalOptions, signalTemplate } from '../campaign/sector/sectorActions';
-import { SectorNodeType, SectorRegion } from '../campaign/sector/sectorTypes';
+import { NodeVisibility, SectorNode, SectorNodeType, SectorRegion } from '../campaign/sector/sectorTypes';
 import { visibleSectorGraph } from '../campaign/sector/sectorVisibility';
 import { campaignHud } from './campaignHud';
 import { campaignResultPanel } from './campaignResultPanel';
@@ -42,9 +42,35 @@ const NODE_ICON: Record<SectorNodeType, string> = {
 const REGION_LABEL: Record<SectorRegion, string> = {
   safeRoute: '安全航道', salvageBelt: '残骸带', militaryZone: '军事封锁区', nebula: '星云区', gateApproach: '星门近域'
 };
+const NODE_NAME: Record<SectorNodeType, string> = {
+  start: '起点空间站', empty: '未知空域', resource: '资源富集区', battle: '交战空域', hazard: '危险空域', signal: '信号源', gate: '跃迁星门'
+};
+const NODE_TYPE_LABEL: Record<SectorNodeType, string> = {
+  start: '起点', empty: '空域', resource: '资源点', battle: '交战区', hazard: '危险区', signal: '信号源', gate: '星门'
+};
+const VISIBILITY_LABEL: Record<NodeVisibility, string> = {
+  hidden: '未探测', detected: '已侦测（未知）', scanned: '已扫描', visited: '已探索'
+};
 const RETREAT_LABEL: Record<RetreatPolicy, string> = {
   never: '不主动撤退', loss25: '损失 25% 时撤退', loss50: '损失 50% 时撤退', lastShip: '仅剩一艘时撤退', critical: '主力舰严重受损时撤退'
 };
+
+interface SectorNodeView {
+  id: string;
+  node: SectorNode;
+  name: string;
+  regionLabel: string;
+  typeLabel: string;
+  icon: string;
+  visibilityLabel: string;
+  featureRescue: boolean;
+  adjacent: boolean;
+  isCurrent: boolean;
+  canMove: boolean;
+  moveCost: number;
+  blockedReason: string;
+  title: string;
+}
 
 function commanderSummary(commander: CampaignCommander, state: CampaignState): string {
   const profile = ensureCommanderProfile(commander, state.campaignSeed);
@@ -92,6 +118,11 @@ function organizationEventPanel(state: CampaignState): string {
 
 export class SectorMapPanel {
   private showFullResultLog = false;
+  private nodeViews = new Map<string, SectorNodeView>();
+  private tooltip: HTMLDivElement | null = null;
+  private infobox: HTMLDivElement | null = null;
+  private backdrop: HTMLDivElement | null = null;
+  private activeInfoNode: string | null = null;
 
   constructor(
     private root: HTMLElement,
@@ -102,10 +133,28 @@ export class SectorMapPanel {
       onExportLog: () => void;
       onExit: () => void;
     }
-  ) {}
+  ) {
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        this.hideInfoBox();
+        this.hideTooltip();
+      }
+    });
+    window.addEventListener('scroll', () => {
+      this.hideInfoBox();
+      this.hideTooltip();
+    }, true);
+    window.addEventListener('resize', () => {
+      this.hideInfoBox();
+      this.hideTooltip();
+    });
+  }
 
   render(state: CampaignState): void {
     if (state.status === 'active') this.showFullResultLog = false;
+    this.hideTooltip();
+    this.hideInfoBox();
+    this.nodeViews.clear();
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
     const available = getAvailableCampaignActions(state);
     const moveCost = movementFuelCost(state.fleet);
@@ -117,20 +166,45 @@ export class SectorMapPanel {
       const right = state.sector.nodes.find((node) => node.id === b)!;
       const traveled = left.visibility === 'visited' && right.visibility === 'visited';
       const sameRegion = left.region === right.region;
-      return `<line class="${traveled ? 'traveled' : ''} ${sameRegion ? `region-${left.region}` : 'connector'}" x1="${left.x}" y1="${left.y}" x2="${right.x}" y2="${right.y}"/>`;
+      const touchesCurrent = a === current.id || b === current.id;
+      return `<line class="${traveled ? 'traveled' : ''} ${sameRegion ? `region-${left.region}` : 'connector'} ${touchesCurrent ? 'edge-current' : ''}" x1="${left.x}" y1="${left.y}" x2="${right.x}" y2="${right.y}"/>`;
     }).join('');
 
     const nodes = state.sector.nodes.filter((node) => shown.has(node.id)).map((node) => {
       const hiddenGate = node.type === 'gate' && !state.sector.gateKnown;
       const label = node.visibility === 'detected' || hiddenGate ? '?' : NODE_ICON[node.type];
       const adjacent = current.neighbors.includes(node.id);
-      const baseTitle = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${node.type}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;
-      const blockedTitle = adjacent && !available.move
+      const isCurrent = node.id === current.id;
+      const canMove = available.move && adjacent && !isCurrent;
+      const name = node.visibility === 'detected' ? '未知节点' : `${NODE_NAME[node.type]}${node.feature === 'rescue' ? '（救援）' : ''}`;
+      const baseTitle = node.visibility === 'detected' ? '未知节点' : `${REGION_LABEL[node.region]} · ${NODE_NAME[node.type]}${node.feature === 'rescue' ? ' · 救援信号' : ''}`;
+      const blockedReason = adjacent && !available.move
         ? fuelShortage
-          ? ` · 移动受阻：当前燃料 ${state.resources.fuel}，需要 ${moveCost}`
-          : ' · 当前有待处理事件或指挥官无法行动'
-        : '';
-      return `<button title="${baseTitle}${blockedTitle}" class="sector-node region-${node.region} ${node.visibility} ${node.id === current.id ? 'current' : ''}" style="left:${node.x}%;top:${node.y}%" data-id="${node.id}" ${!available.move || !adjacent ? 'disabled' : ''}><span>${label}</span></button>`;
+          ? `燃料不足：当前 ${state.resources.fuel} / 需要 ${moveCost}`
+          : '有待处理事件或指挥官无法行动'
+        : !adjacent ? '未直接相连，无法一步抵达' : '';
+      const view: SectorNodeView = {
+        id: node.id,
+        node,
+        name,
+        regionLabel: REGION_LABEL[node.region],
+        typeLabel: NODE_TYPE_LABEL[node.type],
+        icon: label,
+        visibilityLabel: VISIBILITY_LABEL[node.visibility],
+        featureRescue: node.feature === 'rescue',
+        adjacent,
+        isCurrent,
+        canMove,
+        moveCost,
+        blockedReason,
+        title: baseTitle
+      };
+      this.nodeViews.set(node.id, view);
+      const classes = ['sector-node', `region-${node.region}`, node.visibility];
+      if (isCurrent) classes.push('current');
+      else if (canMove) classes.push('reachable');
+      else classes.push('unavailable');
+      return `<button aria-label="${baseTitle}" title="${baseTitle}" class="${classes.join(' ')}" style="left:${node.x}%;top:${node.y}%" data-id="${node.id}"><span>${label}</span></button>`;
     }).join('');
 
     const disabled = (enabled: boolean) => enabled ? '' : 'disabled';
@@ -181,9 +255,7 @@ export class SectorMapPanel {
 
     this.root.innerHTML = `<div class="campaign-screen">${campaignHud(state)}${summary}<div class="sector-region-legend">${Object.entries(REGION_LABEL).map(([key, label]) => `<span class="region-${key}">${label}</span>`).join('')}</div><div class="sector-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div><div class="campaign-actions"><b>当前位置：${current.visibility === 'detected' ? '未知' : `${REGION_LABEL[current.region]} · ${current.type}`}</b>${actions}</div>${organizationPanel(state)}${commanderCard}<div class="campaign-card"><h3>货舱</h3>${cargo}</div><div class="campaign-card"><h3>持久舰队</h3>${ships}</div><div class="campaign-log">${state.history.slice(-8).reverse().map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`).join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
 
-    this.root.querySelectorAll('.sector-node:not([disabled])').forEach((element) => {
-      (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'move', targetNodeId: (element as HTMLElement).dataset.id! });
-    });
+    this.bindNodeEvents();
     const click = (id: string, action: CampaignAction) => {
       const button = this.root.querySelector(id) as HTMLButtonElement | null;
       if (button) button.onclick = () => this.cb.onAction(action);
@@ -256,6 +328,154 @@ export class SectorMapPanel {
           case 'menu': this.cb.onExit(); break;
         }
       };
+    });
+  }
+
+  private ensureOverlay(): void {
+    if (!this.tooltip) {
+      this.tooltip = document.createElement('div');
+      this.tooltip.className = 'sector-node-tooltip';
+      document.body.appendChild(this.tooltip);
+    }
+    if (!this.infobox) {
+      this.backdrop = document.createElement('div');
+      this.backdrop.className = 'sector-node-backdrop';
+      this.backdrop.addEventListener('click', () => this.hideInfoBox());
+      this.infobox = document.createElement('div');
+      this.infobox.className = 'sector-node-infobox';
+      document.body.appendChild(this.backdrop);
+      document.body.appendChild(this.infobox);
+    }
+  }
+
+  private showTooltip(node: HTMLElement, view: SectorNodeView): void {
+    this.ensureOverlay();
+    this.tooltip!.innerHTML = `<b>${view.name}</b><small>${view.regionLabel} · ${view.typeLabel}</small>`;
+    this.tooltip!.style.display = 'block';
+    const rect = node.getBoundingClientRect();
+    const width = this.tooltip!.offsetWidth;
+    const height = this.tooltip!.offsetHeight;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
+    let top = rect.top - height - 8;
+    if (top < 8) top = rect.bottom + 8;
+    this.tooltip!.style.left = `${left}px`;
+    this.tooltip!.style.top = `${top}px`;
+  }
+
+  private hideTooltip(): void {
+    if (this.tooltip) this.tooltip.style.display = 'none';
+  }
+
+  private showInfoBox(node: HTMLElement, view: SectorNodeView): void {
+    this.ensureOverlay();
+    this.hideTooltip();
+    const rows: string[] = [];
+    rows.push(`<div class="sni-row"><span>可见度</span><b>${view.visibilityLabel}</b></div>`);
+    rows.push(`<div class="sni-row"><span>与当前位置</span><b>${view.isCurrent ? '当前所在' : view.adjacent ? '相邻（可一步抵达）' : '不相邻'}</b></div>`);
+    if (view.featureRescue) rows.push(`<div class="sni-row"><span>特殊信号</span><b class="sni-rescue">救援信号</b></div>`);
+    let hint: string;
+    if (view.isCurrent) hint = `<div class="sni-hint">这就是你当前所在的节点。</div>`;
+    else if (view.canMove) hint = `<div class="sni-hint ok">短按节点即可移动至此（消耗 ${view.moveCost} 燃料）。</div>`;
+    else if (view.blockedReason) hint = `<div class="sni-hint warn">无法移动：${view.blockedReason}</div>`;
+    else hint = `<div class="sni-hint">未与当前位置直接相连，无法一步抵达。</div>`;
+    this.infobox!.innerHTML = `
+      <div class="sni-head">
+        <span class="sni-icon region-${view.node.region}">${view.icon}</span>
+        <div class="sni-titles">
+          <div class="sni-title">${view.name}${view.isCurrent ? ' · 当前' : ''}</div>
+          <div class="sni-sub">${view.regionLabel} · ${view.typeLabel}</div>
+        </div>
+        <button class="sni-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="sni-body">${rows.join('')}</div>
+      ${hint}`;
+    (this.infobox!.querySelector('.sni-close') as HTMLButtonElement).onclick = () => this.hideInfoBox();
+    this.backdrop!.style.display = 'block';
+    this.infobox!.style.display = 'block';
+    const rect = node.getBoundingClientRect();
+    const width = this.infobox!.offsetWidth;
+    const height = this.infobox!.offsetHeight;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
+    let top = rect.bottom + 10;
+    if (top + height > window.innerHeight - 8) top = rect.top - height - 10;
+    if (top < 8) top = 8;
+    this.infobox!.style.left = `${left}px`;
+    this.infobox!.style.top = `${top}px`;
+    this.activeInfoNode = view.id;
+  }
+
+  private hideInfoBox(): void {
+    if (this.backdrop) this.backdrop.style.display = 'none';
+    if (this.infobox) this.infobox.style.display = 'none';
+    this.activeInfoNode = null;
+  }
+
+  private bindNodeEvents(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('.sector-node').forEach((node) => {
+      const id = node.dataset.id!;
+      const view = this.nodeViews.get(id);
+      if (!view) return;
+      let timer: number | undefined;
+      let longPressed = false;
+      let startX = 0;
+      let startY = 0;
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+      };
+      const startTimer = (x: number, y: number) => {
+        startX = x;
+        startY = y;
+        longPressed = false;
+        timer = window.setTimeout(() => {
+          longPressed = true;
+          this.showInfoBox(node, view);
+          if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(16);
+          node.classList.add('pressing');
+          window.setTimeout(() => { longPressed = false; }, 800);
+        }, 480);
+      };
+      const onMove = (x: number, y: number) => {
+        if (timer !== undefined && Math.hypot(x - startX, y - startY) > 12) clearTimer();
+      };
+      const cancel = () => {
+        clearTimer();
+        node.classList.remove('pressing');
+      };
+
+      node.addEventListener('pointerdown', (event) => {
+        node.classList.add('pressing');
+        startTimer(event.clientX, event.clientY);
+      });
+      node.addEventListener('pointermove', (event) => {
+        if (timer !== undefined) onMove(event.clientX, event.clientY);
+      });
+      node.addEventListener('pointerup', cancel);
+      node.addEventListener('pointercancel', cancel);
+      node.addEventListener('pointerleave', (event) => {
+        cancel();
+        if (event.pointerType === 'mouse') this.hideTooltip();
+      });
+      node.addEventListener('pointerenter', (event) => {
+        if (event.pointerType === 'mouse') this.showTooltip(node, view);
+      });
+      node.addEventListener('contextmenu', (event) => event.preventDefault());
+      node.addEventListener('click', (event) => {
+        event.preventDefault();
+        if (longPressed) {
+          longPressed = false;
+          return;
+        }
+        if (view.canMove) {
+          this.cb.onAction({ type: 'move', targetNodeId: view.id });
+        } else {
+          this.showInfoBox(node, view);
+        }
+      });
     });
   }
 }

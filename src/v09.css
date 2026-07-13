@@ -182,3 +182,149 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* V0.9 sector map node enhancement: natural visuals + hover/long-press info. */
+.sector-node {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease, filter .15s ease;
+}
+.sector-node:hover { z-index: 5; }
+.sector-node.unavailable {
+  cursor: help;
+  opacity: .82;
+  border-style: dashed;
+}
+.sector-node.reachable { cursor: pointer; }
+.sector-node.reachable::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(120, 225, 255, .55);
+  animation: sectorNodeRing 2.3s ease-in-out infinite;
+  pointer-events: none;
+}
+.sector-node.reachable:hover { transform: scale(1.16); }
+.sector-node.current::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(105, 225, 255, .4);
+  animation: sectorNodeRing 3.4s ease-in-out infinite;
+  pointer-events: none;
+}
+.sector-node.pressing {
+  transform: scale(.9);
+  filter: brightness(1.22) saturate(1.08);
+}
+@keyframes sectorNodeRing {
+  0%, 100% { opacity: .22; transform: scale(.9); }
+  50% { opacity: .7; transform: scale(1.06); }
+}
+.sector-map svg line.edge-current {
+  stroke-width: .85;
+  opacity: 1;
+  filter: drop-shadow(0 0 1px rgba(120, 220, 255, .6));
+}
+
+.sector-node-tooltip {
+  position: fixed;
+  z-index: 60;
+  display: none;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(10, 18, 32, .96);
+  border: 1px solid rgba(120, 180, 255, .4);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .5);
+  color: #e8f1ff;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sector-node-tooltip b { display: block; font-size: 14px; }
+.sector-node-tooltip small { color: #9fc0e8; }
+
+.sector-node-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: none;
+  background: rgba(4, 8, 16, .45);
+  backdrop-filter: blur(1px);
+}
+.sector-node-infobox {
+  position: fixed;
+  z-index: 71;
+  display: none;
+  width: min(280px, calc(100vw - 24px));
+  padding: 12px 13px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(18, 32, 54, .98), rgba(10, 16, 30, .98));
+  border: 1px solid rgba(120, 180, 255, .42);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .6);
+  color: #e8f1ff;
+  font-size: 13px;
+}
+.sni-head { display: flex; align-items: center; gap: 10px; }
+.sni-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid #6f86aa;
+  font-size: 18px;
+  font-weight: 700;
+}
+.sni-icon.region-safeRoute { border-color: #55d5ad; background: rgba(20, 83, 72, .9); }
+.sni-icon.region-salvageBelt { border-color: #dfb95b; background: rgba(91, 68, 25, .9); }
+.sni-icon.region-militaryZone { border-color: #ed6b64; background: rgba(101, 37, 40, .9); }
+.sni-icon.region-nebula { border-color: #b887e7; background: rgba(67, 43, 101, .9); }
+.sni-icon.region-gateApproach { border-color: #70aaff; background: rgba(38, 62, 108, .9); }
+.sni-titles { flex: 1 1 auto; min-width: 0; }
+.sni-title { font-size: 15px; font-weight: 700; color: #fff; }
+.sni-sub { font-size: 12px; color: #9fc0e8; }
+.sni-close {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid rgba(150, 170, 200, .35);
+  background: transparent;
+  color: #cfe0f5;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sni-close:hover { background: rgba(255, 255, 255, .08); }
+.sni-body { margin: 10px 0 6px; display: grid; gap: 5px; }
+.sni-row { display: flex; justify-content: space-between; gap: 12px; color: #c4d4ea; }
+.sni-row b { color: #eaf2ff; font-weight: 600; }
+.sni-rescue { color: #ffd27a !important; }
+.sni-hint {
+  margin-top: 4px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: rgba(120, 180, 255, .1);
+  color: #bcd6f5;
+}
+.sni-hint.ok { background: rgba(76, 224, 138, .12); color: #9af0c0; }
+.sni-hint.warn { background: rgba(255, 140, 90, .14); color: #ffc09a; }
+
+@media (max-width: 600px) {
+  .sector-node-infobox {
+    left: 12px !important;
+    right: 12px !important;
+    width: auto;
+    bottom: 12px;
+    top: auto !important;
+    border-radius: 16px 16px 12px 12px;
+  }
+}
