@@ -26,6 +26,11 @@ import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
 import { encodeCampaignLog } from './campaign/campaignLog';
 import { CampaignBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle } from './campaign/fleet/battleAdapter';
+import { StrategicUniversePanel } from './ui/strategicUniversePanel';
+import { generateUniverse } from './strategy/universeGenerator';
+import { applyUniverseAction } from './strategy/universeRules';
+import { decodeUniverse, encodeUniverse, loadUniverse, saveUniverse } from './strategy/universePersistence';
+import type { UniverseAction, UniverseState } from './strategy/universeTypes';
 
 export class App {
   private root: HTMLElement;
@@ -42,7 +47,9 @@ export class App {
   private analysisPanel!: PreBattleAnalysisPanel;
   private menu!: CampaignMenu;
   private sectorMap!: SectorMapPanel;
+  private strategyPanel!: StrategicUniversePanel;
   private campaign: CampaignState | null = null;
+  private universe: UniverseState | null = null;
   private battleOrigin: 'single' | 'campaign' = 'single';
   private campaignBattleContext: CampaignBattleContext | null = null;
   private balanceWorker: Worker | null = null;
@@ -77,6 +84,7 @@ export class App {
       <div id="setup-root"></div>
       <div id="menu-root"></div>
       <div id="campaign-root"></div>
+      <div id="strategy-root"></div>
       <div id="battle-root" style="display:none">
         <div id="canvas-root"></div>
         <div id="hud-root"></div>
@@ -93,6 +101,7 @@ export class App {
     const previewRoot = root.querySelector('#preview-root') as HTMLElement;
     const menuRoot = root.querySelector('#menu-root') as HTMLElement;
     const campaignRoot = root.querySelector('#campaign-root') as HTMLElement;
+    const strategyRoot = root.querySelector('#strategy-root') as HTMLElement;
 
     this.setupPanel = new SetupPanel(this.setupRoot, {
       onStart: (a, b, seed, budget) => this.startBattle(a, b, seed, budget),
@@ -143,6 +152,16 @@ export class App {
         } catch {
           return false;
         }
+      },
+      onStrategicNew: (factionName) => this.startStrategicUniverse(Date.now() >>> 0, factionName),
+      onStrategicContinue: () => this.continueStrategicUniverse(),
+      onStrategicImport: (code) => this.importStrategicUniverse(code),
+      hasStrategicSave: () => {
+        try {
+          return !!loadUniverse();
+        } catch {
+          return false;
+        }
       }
     });
     this.sectorMap = new SectorMapPanel(campaignRoot, {
@@ -152,6 +171,11 @@ export class App {
       onExportLog: () => this.exportCampaignLog(),
       onExit: () => this.showMenu()
     });
+    this.strategyPanel = new StrategicUniversePanel(strategyRoot, {
+      onAction: (action) => this.strategicAction(action),
+      onExport: () => this.exportStrategicUniverse(),
+      onExit: () => this.showMenu()
+    });
   }
 
   start(): void {
@@ -159,6 +183,15 @@ export class App {
   }
 
   campaignDebugState(): unknown {
+    if (this.universe) {
+      return {
+        screen: 'strategic-universe',
+        turn: this.universe.turn,
+        selectedSystem: this.universe.selectedSystemId,
+        fleetSystem: this.universe.fleet.systemId,
+        resources: this.universe.faction.resources
+      };
+    }
     return this.campaign
       ? {
           sector: this.campaign.sectorIndex,
@@ -176,6 +209,7 @@ export class App {
     this.setupRoot.style.display = 'none';
     this.battleRoot.style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    (this.root.querySelector('#strategy-root') as HTMLElement).style.display = 'none';
     (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'block';
     this.menu.show();
   }
@@ -184,6 +218,7 @@ export class App {
     this.menu.hide();
     (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    (this.root.querySelector('#strategy-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'flex';
     this.battleRoot.style.display = 'none';
     this.setupPanel.show();
@@ -195,12 +230,14 @@ export class App {
     (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'none';
     (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    (this.root.querySelector('#strategy-root') as HTMLElement).style.display = 'none';
     this.battleRoot.style.display = 'block';
     this.setupPanel.hide();
     this.hud.show();
   }
 
   private startCampaign(seed: number): void {
+    this.universe = null;
     this.campaign = createCampaign(seed);
     saveCampaign(this.campaign);
     this.showCampaign();
@@ -208,6 +245,7 @@ export class App {
 
   private continueCampaign(): void {
     try {
+      this.universe = null;
       this.campaign = loadCampaign();
       if (!this.campaign) throw new Error('没有可继续的战役。');
       this.showCampaign();
@@ -218,6 +256,7 @@ export class App {
 
   private importCampaign(code: string): void {
     try {
+      this.universe = null;
       this.campaign = decodeCampaign(code);
       saveCampaign(this.campaign);
       this.showCampaign();
@@ -228,11 +267,13 @@ export class App {
 
   private showCampaign(): void {
     if (!this.campaign) return;
+    this.universe = null;
     this.menu.hide();
     (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
     this.setupRoot.style.display = 'none';
     this.battleRoot.style.display = 'none';
     const root = this.root.querySelector('#campaign-root') as HTMLElement;
+    (this.root.querySelector('#strategy-root') as HTMLElement).style.display = 'none';
     root.style.display = 'block';
     this.sectorMap.render(this.campaign);
   }
@@ -242,6 +283,61 @@ export class App {
     this.campaign = applyCampaignAction(this.campaign, action);
     saveCampaign(this.campaign);
     this.showCampaign();
+  }
+
+  private startStrategicUniverse(seed: number, factionName: string): void {
+    this.campaign = null;
+    this.universe = generateUniverse(seed, factionName);
+    saveUniverse(this.universe);
+    this.showStrategicUniverse();
+  }
+
+  private continueStrategicUniverse(): void {
+    try {
+      this.campaign = null;
+      this.universe = loadUniverse();
+      if (!this.universe) throw new Error('没有可继续的战略宇宙。');
+      this.showStrategicUniverse();
+    } catch (error) {
+      alert((error as Error).message);
+    }
+  }
+
+  private importStrategicUniverse(code: string): void {
+    try {
+      this.campaign = null;
+      this.universe = decodeUniverse(code);
+      saveUniverse(this.universe);
+      this.showStrategicUniverse();
+    } catch (error) {
+      alert('战略宇宙导入失败：' + (error as Error).message);
+    }
+  }
+
+  private showStrategicUniverse(): void {
+    if (!this.universe) return;
+    this.menu.hide();
+    (this.root.querySelector('#menu-root') as HTMLElement).style.display = 'none';
+    (this.root.querySelector('#campaign-root') as HTMLElement).style.display = 'none';
+    this.setupRoot.style.display = 'none';
+    this.battleRoot.style.display = 'none';
+    const root = this.root.querySelector('#strategy-root') as HTMLElement;
+    root.style.display = 'block';
+    this.strategyPanel.render(this.universe);
+  }
+
+  private strategicAction(action: UniverseAction): void {
+    if (!this.universe) return;
+    this.universe = applyUniverseAction(this.universe, action);
+    saveUniverse(this.universe);
+    this.showStrategicUniverse();
+  }
+
+  private exportStrategicUniverse(): void {
+    if (!this.universe) return;
+    const code = encodeUniverse(this.universe);
+    navigator.clipboard?.writeText(code);
+    prompt('Strategic Universe Code（已尝试复制）', code);
   }
 
   private resolveCampaignBattle(): void {
