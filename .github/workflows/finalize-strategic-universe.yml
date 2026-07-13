@@ -1,0 +1,125 @@
+name: Finalize strategic universe boundaries
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/v1.0-strategic-universe'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/v1.0-strategic-universe
+      - name: Apply final boundary and documentation patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          panel = Path('src/ui/strategicUniversePanel.ts')
+          text = panel.read_text()
+          text = text.replace('  applyUniverseAction,\n', '')
+          panel.write_text(text)
+
+          persistence = Path('src/strategy/universePersistence.ts')
+          text = persistence.read_text()
+          old = "  const entityIds = new Set(state.entities.map((entity) => entity.id));\n  if (entityIds.size !== state.entities.length || !entityIds.has(state.faction.baseEntityId)) return false;\n"
+          new = old + "  for (const system of state.systems) {\n    if (new Set(system.entityIds).size !== system.entityIds.length || system.entityIds.some((id) => !entityIds.has(id))) return false;\n  }\n"
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('missing entity validation target')
+              text = text.replace(old, new, 1)
+          old = "  if (state.faction.researchQueue.some((order) => !RESEARCH.includes(order.projectId) || !nonNegativeInteger(order.turnsRemaining) || order.turnsRemaining < 1)) return false;\n  if (!Array.isArray(state.faction.knownSystemIds) || state.faction.knownSystemIds.some((id) => !systemIds.has(id))) return false;\n"
+          new = "  if (state.faction.researchQueue.length > 2 || state.faction.researchQueue.some((order) => !RESEARCH.includes(order.projectId) || !nonNegativeInteger(order.turnsRemaining) || order.turnsRemaining < 1 || state.faction.researched.includes(order.projectId))) return false;\n  if (new Set(state.faction.researchQueue.map((order) => order.projectId)).size !== state.faction.researchQueue.length) return false;\n  if (!Array.isArray(state.faction.knownSystemIds) || new Set(state.faction.knownSystemIds).size !== state.faction.knownSystemIds.length || state.faction.knownSystemIds.some((id) => !systemIds.has(id))) return false;\n  if ((base.constructionQueue?.length ?? 0) > 2) return false;\n"
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('missing queue validation target')
+              text = text.replace(old, new, 1)
+          persistence.write_text(text)
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          marker = "V0.9 只修改战役层，不改变冻结的 core-v4 舰船模板、默认战斗数值、AI 决策和黄金回放。\n"
+          section = """
+
+### V1.0 战略宇宙垂直切片
+
+- 新增独立战略模式，不替换现有 FTL 式星域战役
+- 生成七个长期存在且航线连通的随机星系
+- 行星、卫星、空间站、小行星带和跃迁设施均为独立持久实体
+- 玩家拥有一个轨道基地和一支战略舰队
+- 舰队沿星系航线移动并逐步揭示宇宙
+- 测绘实体可获得科学，小行星带矿物储量会被永久开采
+- 基地设施具有资源成本、建造队列和完成回合
+- 科研项目具有科学成本、研究队列和完成回合
+- 战略宇宙使用独立本地存档和 Strategic Universe Code
+- 当前仍限制为一基地、一舰队；殖民地、舰船制造、AI 势力与局部远征接入留到后续切片
+
+详细边界参见 `docs/STRATEGIC_UNIVERSE_V1.md`。
+"""
+          if '### V1.0 战略宇宙垂直切片' not in text:
+              if marker not in text:
+                  raise SystemExit('missing README V0.9 marker')
+              text = text.replace(marker, marker + section, 1)
+          text = text.replace('`npm run test:campaign` 同时执行 V0.6、V0.7、V0.7.1、V0.8、V0.8.1 和 V0.9 战役套件。', '`npm run test:campaign` 执行 V0.6～V0.9 战役套件；`npm run test:strategy` 验证 V1.0 战略宇宙。')
+          text = text.replace('npm run test:campaign\nnpm run test:stress', 'npm run test:campaign\nnpm run test:strategy\nnpm run test:stress')
+          text = text.replace('│   └── sector/           # 星域、情报、事件和威胁\n├── render/', '│   └── sector/           # 星域、情报、事件和威胁\n├── strategy/             # 持久宇宙、实体、建造、科研和战略存档\n├── render/')
+          readme.write_text(text)
+
+          progress = Path('progress.md')
+          text = progress.read_text()
+          section = """
+
+## V1.0 strategic universe vertical slice
+
+### Persistent world
+
+- Seven deterministic star systems form a connected non-layered route graph.
+- Planets, moons, stations, asteroid fields and jump gates are persistent entities rather than event labels.
+- Entity ids, system membership, orbit, discovery, survey, ownership, deposits and facilities are saved independently.
+- The strategic universe has a separate `1.0-alpha.1` save/code format and local-storage key.
+
+### Strategic economy and movement
+
+- One player faction owns one orbital base and one strategic fleet.
+- Minerals, energy and science persist across turns.
+- Base facilities generate turn income.
+- Strategic travel consumes fuel, reveals systems and identifies local entities.
+- Surveying produces science; asteroid extraction permanently reduces deposits.
+
+### Construction and research
+
+- Solar arrays, mining arrays, research laboratories and a light shipyard use a two-slot construction queue.
+- Stellar Cartography, Automated Industry and Orbital Engineering use a two-slot research queue.
+- Projects require resources and elapsed turns instead of instant module unlocks.
+- Stellar Cartography reduces travel fuel, Automated Industry improves facility output, and Orbital Engineering unlocks the shipyard.
+
+### Mode boundary
+
+- The V0.6–V0.9 FTL-style campaign remains available and unchanged.
+- The strategic universe is a parallel experimental mode in this slice.
+- Local expedition launch, colony establishment, multiple bases, ship production, AI factions and strategic combat are deferred.
+"""
+          if '## V1.0 strategic universe vertical slice' not in text:
+              text = text.replace('\n## Next milestone candidate\n', section + '\n## Next milestone candidate\n', 1)
+          text = text.replace('npm run test:campaign\nnpm run test:stress', 'npm run test:campaign\nnpm run test:strategy\nnpm run test:stress')
+          text = text.replace('After V0.9 playtest acceptance, the next milestone should deepen one of the existing strategic systems rather than widen all of them at once. The recommended path is a V0.9.1 balance and usability pass followed by a focused V1.0 vertical campaign release plan.', 'After this vertical slice, the next focused slice should connect one strategic system or entity to the existing local expedition campaign, then write expedition discoveries, fleet damage and resources back into the persistent universe.')
+          progress.write_text(text)
+          PY
+      - name: Commit finalization
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/ui/strategicUniversePanel.ts src/strategy/universePersistence.ts README.md progress.md
+          git commit -m "docs: finalize V1.0 strategic universe vertical slice"
+          git push origin HEAD:agent/v1.0-strategic-universe
