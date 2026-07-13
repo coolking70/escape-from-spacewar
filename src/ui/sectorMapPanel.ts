@@ -119,10 +119,10 @@ function organizationEventPanel(state: CampaignState): string {
 export class SectorMapPanel {
   private showFullResultLog = false;
   private nodeViews = new Map<string, SectorNodeView>();
-  private tooltip: HTMLDivElement | null = null;
   private infobox: HTMLDivElement | null = null;
   private backdrop: HTMLDivElement | null = null;
-  private activeInfoNode: string | null = null;
+  private currentState: CampaignState | null = null;
+  private currentNodeActionsHTML = '';
 
   constructor(
     private root: HTMLElement,
@@ -135,26 +135,17 @@ export class SectorMapPanel {
     }
   ) {
     window.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        this.hideInfoBox();
-        this.hideTooltip();
-      }
+      if (event.key === 'Escape') this.hideInfoBox();
     });
-    window.addEventListener('scroll', () => {
-      this.hideInfoBox();
-      this.hideTooltip();
-    }, true);
-    window.addEventListener('resize', () => {
-      this.hideInfoBox();
-      this.hideTooltip();
-    });
+    window.addEventListener('scroll', () => this.hideInfoBox(), true);
+    window.addEventListener('resize', () => this.hideInfoBox());
   }
 
   render(state: CampaignState): void {
     if (state.status === 'active') this.showFullResultLog = false;
-    this.hideTooltip();
     this.hideInfoBox();
     this.nodeViews.clear();
+    this.currentState = state;
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
     const available = getAvailableCampaignActions(state);
     const moveCost = movementFuelCost(state.fleet);
@@ -240,6 +231,7 @@ export class SectorMapPanel {
       : '';
     const actions = state.pendingOrganizationEvent ? organizationEvent : state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `${mobilityNotice}<button class="btn" id="sp-scan" ${disabled(available.scan)}>扫描</button><button class="btn" id="sp-gather" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class="btn" id="sp-signal-a">${signal[0]}</button><button class="btn" id="sp-signal-b">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class="btn" id="sp-wait" ${disabled(available.wait)}>${fuelShortage ? '等待（不会恢复燃料）' : '等待'}</button>`;
 
+    this.currentNodeActionsHTML = actions;
     const cargo = state.cargo.items.length ? state.cargo.items.map((stack) => `<span>${CARGO_ITEM_LABEL[stack.type]}×${stack.quantity}${stack.type === 'supplyCrate' || stack.type === 'fuelCell' ? ` <button class="btn small" data-use-cargo="${stack.type}">使用</button>` : ''} <button class="btn small danger" data-jettison="${stack.type}">抛弃 1</button></span>`).join(' ') : '<span>货舱为空</span>';
     const ships = state.fleet.ships.map((ship) => {
       const repair = canFieldRepair(ship) && cargoQuantity(state.cargo, 'repairParts') > 0 ? `<button class="btn small" data-repair="${ship.campaignShipId}">${ship.disabled ? '修复并重新启用' : '战地维修'}</button>` : '';
@@ -253,11 +245,97 @@ export class SectorMapPanel {
     const commanderCard = `<div class="campaign-card commander-card"><h3>指挥官</h3>${commanderSummary(active, state)}<button class="btn small" id="sp-treat-commander" ${disabled(canTreat)}>治疗指挥官（${treatmentCost} 医疗补给 / 1 回合）</button><h4>候补名单</h4>${reserve}</div>`;
     const summary = state.lastSectorSummary ? `<div class="campaign-card"><h3>上一星域结算</h3><p>星域 ${state.lastSectorSummary.sectorIndex} · 探索 ${state.lastSectorSummary.visitedNodes}/${state.lastSectorSummary.totalNodes} · 回合 ${state.lastSectorSummary.turns} · 舰船 ${state.lastSectorSummary.shipsRemaining} · 失能 ${state.lastSectorSummary.disabledShips} · 载荷 ${state.lastSectorSummary.cargoUsed}/${state.lastSectorSummary.cargoCapacity} · 撤离 ${state.lastSectorSummary.extractionMode}/${state.lastSectorSummary.extractionRisk}</p></div>` : '';
 
-    this.root.innerHTML = `<div class="campaign-screen">${campaignHud(state)}${summary}<div class="sector-region-legend">${Object.entries(REGION_LABEL).map(([key, label]) => `<span class="region-${key}">${label}</span>`).join('')}</div><div class="sector-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div><div class="campaign-actions"><b>当前位置：${current.visibility === 'detected' ? '未知' : `${REGION_LABEL[current.region]} · ${current.type}`}</b>${actions}</div>${organizationPanel(state)}${commanderCard}<div class="campaign-card"><h3>货舱</h3>${cargo}</div><div class="campaign-card"><h3>持久舰队</h3>${ships}</div><div class="campaign-log">${state.history.slice(-8).reverse().map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`).join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
+    this.root.innerHTML = `<div class="campaign-screen">${campaignHud(state)}${summary}<div class="sector-region-legend">${Object.entries(REGION_LABEL).map(([key, label]) => `<span class="region-${key}">${label}</span>`).join('')}</div><div class="sector-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div><div class="sector-hint">当前位置：${current.visibility === 'detected' ? '未知' : `${REGION_LABEL[current.region]} · ${current.type}`} · 点击星图节点查看可执行操作</div>${organizationPanel(state)}${commanderCard}<div class="campaign-card"><h3>货舱</h3>${cargo}</div><div class="campaign-card"><h3>持久舰队</h3>${ships}</div><div class="campaign-log">${state.history.slice(-8).reverse().map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`).join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
 
     this.bindNodeEvents();
+    this.bindPanelActions(this.root, state);
+  }
+
+  private ensureOverlay(): void {
+    if (!this.infobox) {
+      this.backdrop = document.createElement('div');
+      this.backdrop.className = 'sector-node-backdrop';
+      this.backdrop.addEventListener('click', () => this.hideInfoBox());
+      this.infobox = document.createElement('div');
+      this.infobox.className = 'sector-node-infobox';
+      document.body.appendChild(this.backdrop);
+      document.body.appendChild(this.infobox);
+    }
+  }
+
+  private showInfoBox(node: HTMLElement, view: SectorNodeView): void {
+    this.ensureOverlay();
+    const rows: string[] = [];
+    rows.push(`<div class="sni-row"><span>可见度</span><b>${view.visibilityLabel}</b></div>`);
+    rows.push(`<div class="sni-row"><span>与当前位置</span><b>${view.isCurrent ? '当前所在' : view.adjacent ? '相邻（可一步抵达）' : '不相邻'}</b></div>`);
+    if (view.featureRescue) rows.push(`<div class="sni-row"><span>特殊信号</span><b class="sni-rescue">救援信号</b></div>`);
+    let hint: string;
+    let actionsHTML = '';
+    if (view.isCurrent) {
+      hint = `<div class="sni-hint">这是你当前所在的节点，可执行以下操作。</div>`;
+      const loc = `${view.regionLabel} · ${view.typeLabel}`;
+      actionsHTML = `<div class="sni-actions"><div class="sni-loc">当前所在：${loc}</div>${this.currentNodeActionsHTML}</div>`;
+    } else if (view.canMove) {
+      hint = `<div class="sni-hint ok">与目标相邻，可选择前往。</div>`;
+      actionsHTML = `<div class="sni-actions"><button class="btn primary sni-move" type="button" data-move="${view.id}">前往此处（消耗 ${view.moveCost} 燃料）</button></div>`;
+    } else if (view.blockedReason) {
+      hint = `<div class="sni-hint warn">无法前往：${view.blockedReason}</div>`;
+    } else {
+      hint = `<div class="sni-hint">未与当前位置直接相连，无法一步抵达。</div>`;
+    }
+    this.infobox!.innerHTML = `
+      <div class="sni-head">
+        <span class="sni-icon region-${view.node.region}">${view.icon}</span>
+        <div class="sni-titles">
+          <div class="sni-title">${view.name}${view.isCurrent ? ' · 当前' : ''}</div>
+          <div class="sni-sub">${view.regionLabel} · ${view.typeLabel}</div>
+        </div>
+        <button class="sni-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="sni-body">${rows.join('')}</div>
+      ${hint}
+      ${actionsHTML}`;
+    (this.infobox!.querySelector('.sni-close') as HTMLButtonElement).onclick = () => this.hideInfoBox();
+    const moveBtn = this.infobox!.querySelector('[data-move]') as HTMLButtonElement | null;
+    if (moveBtn) moveBtn.onclick = () => {
+      this.hideInfoBox();
+      this.cb.onAction({ type: 'move', targetNodeId: view.id });
+    };
+    if (this.currentState) this.bindPanelActions(this.infobox!, this.currentState);
+    this.backdrop!.style.display = 'block';
+    this.infobox!.style.display = 'block';
+    const rect = node.getBoundingClientRect();
+    const width = this.infobox!.offsetWidth;
+    const height = this.infobox!.offsetHeight;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
+    let top = rect.bottom + 10;
+    if (top + height > window.innerHeight - 8) top = rect.top - height - 10;
+    if (top < 8) top = 8;
+    this.infobox!.style.left = `${left}px`;
+    this.infobox!.style.top = `${top}px`;
+  }
+
+  private hideInfoBox(): void {
+    if (this.backdrop) this.backdrop.style.display = 'none';
+    if (this.infobox) this.infobox.style.display = 'none';
+  }
+
+  private bindNodeEvents(): void {
+    this.root.querySelectorAll<HTMLButtonElement>('.sector-node').forEach((node) => {
+      const view = this.nodeViews.get(node.dataset.id!);
+      if (!view) return;
+      node.addEventListener('contextmenu', (event) => event.preventDefault());
+      node.addEventListener('click', (event) => {
+        event.preventDefault();
+        this.showInfoBox(node, view);
+      });
+    });
+  }
+
+  private bindPanelActions(container: HTMLElement, state: CampaignState): void {
     const click = (id: string, action: CampaignAction) => {
-      const button = this.root.querySelector(id) as HTMLButtonElement | null;
+      const button = container.querySelector(id) as HTMLButtonElement | null;
       if (button) button.onclick = () => this.cb.onAction(action);
     };
     click('#sp-scan', { type: 'scan' });
@@ -274,40 +352,40 @@ export class SectorMapPanel {
     click('#sp-recruit-decline', { type: 'resolveRecruitment' });
     click('#sp-treat-commander', { type: 'treatCommander' });
 
-    const policy = this.root.querySelector('#sp-retreat-policy') as HTMLSelectElement | null;
+    const policy = container.querySelector('#sp-retreat-policy') as HTMLSelectElement | null;
     if (policy) policy.onchange = () => this.cb.onAction({ type: 'setRetreatPolicy', policy: policy.value as RetreatPolicy });
-    this.root.querySelectorAll('[data-deploy]').forEach((element) => {
+    container.querySelectorAll('[data-deploy]').forEach((element) => {
       (element as HTMLInputElement).onchange = () => this.cb.onAction({ type: 'toggleDeployment', campaignShipId: (element as HTMLElement).dataset.deploy! });
     });
-    this.root.querySelectorAll('[data-salvage]').forEach((element) => {
+    container.querySelectorAll('[data-salvage]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'resolveSalvage', optionId: (element as HTMLElement).dataset.salvage as any });
     });
-    this.root.querySelectorAll('[data-recruit]').forEach((element) => {
+    container.querySelectorAll('[data-recruit]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'resolveRecruitment', candidateId: (element as HTMLElement).dataset.recruit! });
     });
-    this.root.querySelectorAll('[data-appoint]').forEach((element) => {
+    container.querySelectorAll('[data-appoint]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'appointCommander', commanderId: (element as HTMLElement).dataset.appoint! });
     });
-    this.root.querySelectorAll('[data-organization-event]').forEach((element) => {
+    container.querySelectorAll('[data-organization-event]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'resolveOrganizationEvent', optionId: (element as HTMLElement).dataset.organizationEvent! });
     });
-    this.root.querySelectorAll('[data-tech-unlock]').forEach((element) => {
+    container.querySelectorAll('[data-tech-unlock]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'unlockTechnology', technologyId: (element as HTMLElement).dataset.techUnlock as any });
     });
-    this.root.querySelectorAll('[data-tech-install]').forEach((element) => {
+    container.querySelectorAll('[data-tech-install]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'installTechnology', technologyId: (element as HTMLElement).dataset.techInstall as any });
     });
-    this.root.querySelectorAll('[data-tech-uninstall]').forEach((element) => {
+    container.querySelectorAll('[data-tech-uninstall]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'uninstallTechnology', technologyId: (element as HTMLElement).dataset.techUninstall as any });
     });
-    this.root.querySelectorAll('[data-use-cargo]').forEach((element) => {
+    container.querySelectorAll('[data-use-cargo]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'useCargo', itemType: (element as HTMLElement).dataset.useCargo as 'supplyCrate' | 'fuelCell' });
     });
-    this.root.querySelectorAll('[data-jettison]').forEach((element) => {
+    container.querySelectorAll('[data-jettison]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'jettisonCargo', itemType: (element as HTMLElement).dataset.jettison as any, quantity: 1 });
     });
     const bindShipAction = (selector: string, type: 'fieldRepair' | 'towShip' | 'dismantleShip' | 'abandonShip', key: string) => {
-      this.root.querySelectorAll(selector).forEach((element) => {
+      container.querySelectorAll(selector).forEach((element) => {
         (element as HTMLButtonElement).onclick = () => this.cb.onAction({ type, campaignShipId: (element as HTMLElement).dataset[key]! } as CampaignAction);
       });
     };
@@ -315,11 +393,13 @@ export class SectorMapPanel {
     bindShipAction('[data-tow]', 'towShip', 'tow');
     bindShipAction('[data-dismantle]', 'dismantleShip', 'dismantle');
     bindShipAction('[data-abandon]', 'abandonShip', 'abandon');
-    const battle = this.root.querySelector('#sp-battle') as HTMLButtonElement | null;
+    const battle = container.querySelector('#sp-battle') as HTMLButtonElement | null;
     if (battle) battle.onclick = this.cb.onBattle;
-    (this.root.querySelector('#sp-export') as HTMLButtonElement).onclick = this.cb.onExport;
-    (this.root.querySelector('#sp-exit') as HTMLButtonElement).onclick = this.cb.onExit;
-    this.root.querySelectorAll('[data-campaign-result]').forEach((element) => {
+    const exportBtn = container.querySelector('#sp-export') as HTMLButtonElement | null;
+    if (exportBtn) exportBtn.onclick = this.cb.onExport;
+    const exitBtn = container.querySelector('#sp-exit') as HTMLButtonElement | null;
+    if (exitBtn) exitBtn.onclick = this.cb.onExit;
+    container.querySelectorAll('[data-campaign-result]').forEach((element) => {
       (element as HTMLButtonElement).onclick = () => {
         switch ((element as HTMLElement).dataset.campaignResult) {
           case 'log': this.showFullResultLog = !this.showFullResultLog; this.render(state); break;
@@ -328,154 +408,6 @@ export class SectorMapPanel {
           case 'menu': this.cb.onExit(); break;
         }
       };
-    });
-  }
-
-  private ensureOverlay(): void {
-    if (!this.tooltip) {
-      this.tooltip = document.createElement('div');
-      this.tooltip.className = 'sector-node-tooltip';
-      document.body.appendChild(this.tooltip);
-    }
-    if (!this.infobox) {
-      this.backdrop = document.createElement('div');
-      this.backdrop.className = 'sector-node-backdrop';
-      this.backdrop.addEventListener('click', () => this.hideInfoBox());
-      this.infobox = document.createElement('div');
-      this.infobox.className = 'sector-node-infobox';
-      document.body.appendChild(this.backdrop);
-      document.body.appendChild(this.infobox);
-    }
-  }
-
-  private showTooltip(node: HTMLElement, view: SectorNodeView): void {
-    this.ensureOverlay();
-    this.tooltip!.innerHTML = `<b>${view.name}</b><small>${view.regionLabel} · ${view.typeLabel}</small>`;
-    this.tooltip!.style.display = 'block';
-    const rect = node.getBoundingClientRect();
-    const width = this.tooltip!.offsetWidth;
-    const height = this.tooltip!.offsetHeight;
-    let left = rect.left + rect.width / 2 - width / 2;
-    left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
-    let top = rect.top - height - 8;
-    if (top < 8) top = rect.bottom + 8;
-    this.tooltip!.style.left = `${left}px`;
-    this.tooltip!.style.top = `${top}px`;
-  }
-
-  private hideTooltip(): void {
-    if (this.tooltip) this.tooltip.style.display = 'none';
-  }
-
-  private showInfoBox(node: HTMLElement, view: SectorNodeView): void {
-    this.ensureOverlay();
-    this.hideTooltip();
-    const rows: string[] = [];
-    rows.push(`<div class="sni-row"><span>可见度</span><b>${view.visibilityLabel}</b></div>`);
-    rows.push(`<div class="sni-row"><span>与当前位置</span><b>${view.isCurrent ? '当前所在' : view.adjacent ? '相邻（可一步抵达）' : '不相邻'}</b></div>`);
-    if (view.featureRescue) rows.push(`<div class="sni-row"><span>特殊信号</span><b class="sni-rescue">救援信号</b></div>`);
-    let hint: string;
-    if (view.isCurrent) hint = `<div class="sni-hint">这就是你当前所在的节点。</div>`;
-    else if (view.canMove) hint = `<div class="sni-hint ok">短按节点即可移动至此（消耗 ${view.moveCost} 燃料）。</div>`;
-    else if (view.blockedReason) hint = `<div class="sni-hint warn">无法移动：${view.blockedReason}</div>`;
-    else hint = `<div class="sni-hint">未与当前位置直接相连，无法一步抵达。</div>`;
-    this.infobox!.innerHTML = `
-      <div class="sni-head">
-        <span class="sni-icon region-${view.node.region}">${view.icon}</span>
-        <div class="sni-titles">
-          <div class="sni-title">${view.name}${view.isCurrent ? ' · 当前' : ''}</div>
-          <div class="sni-sub">${view.regionLabel} · ${view.typeLabel}</div>
-        </div>
-        <button class="sni-close" type="button" aria-label="关闭">×</button>
-      </div>
-      <div class="sni-body">${rows.join('')}</div>
-      ${hint}`;
-    (this.infobox!.querySelector('.sni-close') as HTMLButtonElement).onclick = () => this.hideInfoBox();
-    this.backdrop!.style.display = 'block';
-    this.infobox!.style.display = 'block';
-    const rect = node.getBoundingClientRect();
-    const width = this.infobox!.offsetWidth;
-    const height = this.infobox!.offsetHeight;
-    let left = rect.left + rect.width / 2 - width / 2;
-    left = Math.min(Math.max(8, left), window.innerWidth - width - 8);
-    let top = rect.bottom + 10;
-    if (top + height > window.innerHeight - 8) top = rect.top - height - 10;
-    if (top < 8) top = 8;
-    this.infobox!.style.left = `${left}px`;
-    this.infobox!.style.top = `${top}px`;
-    this.activeInfoNode = view.id;
-  }
-
-  private hideInfoBox(): void {
-    if (this.backdrop) this.backdrop.style.display = 'none';
-    if (this.infobox) this.infobox.style.display = 'none';
-    this.activeInfoNode = null;
-  }
-
-  private bindNodeEvents(): void {
-    this.root.querySelectorAll<HTMLButtonElement>('.sector-node').forEach((node) => {
-      const id = node.dataset.id!;
-      const view = this.nodeViews.get(id);
-      if (!view) return;
-      let timer: number | undefined;
-      let longPressed = false;
-      let startX = 0;
-      let startY = 0;
-      const clearTimer = () => {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-      };
-      const startTimer = (x: number, y: number) => {
-        startX = x;
-        startY = y;
-        longPressed = false;
-        timer = window.setTimeout(() => {
-          longPressed = true;
-          this.showInfoBox(node, view);
-          if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(16);
-          node.classList.add('pressing');
-          window.setTimeout(() => { longPressed = false; }, 800);
-        }, 480);
-      };
-      const onMove = (x: number, y: number) => {
-        if (timer !== undefined && Math.hypot(x - startX, y - startY) > 12) clearTimer();
-      };
-      const cancel = () => {
-        clearTimer();
-        node.classList.remove('pressing');
-      };
-
-      node.addEventListener('pointerdown', (event) => {
-        node.classList.add('pressing');
-        startTimer(event.clientX, event.clientY);
-      });
-      node.addEventListener('pointermove', (event) => {
-        if (timer !== undefined) onMove(event.clientX, event.clientY);
-      });
-      node.addEventListener('pointerup', cancel);
-      node.addEventListener('pointercancel', cancel);
-      node.addEventListener('pointerleave', (event) => {
-        cancel();
-        if (event.pointerType === 'mouse') this.hideTooltip();
-      });
-      node.addEventListener('pointerenter', (event) => {
-        if (event.pointerType === 'mouse') this.showTooltip(node, view);
-      });
-      node.addEventListener('contextmenu', (event) => event.preventDefault());
-      node.addEventListener('click', (event) => {
-        event.preventDefault();
-        if (longPressed) {
-          longPressed = false;
-          return;
-        }
-        if (view.canMove) {
-          this.cb.onAction({ type: 'move', targetNodeId: view.id });
-        } else {
-          this.showInfoBox(node, view);
-        }
-      });
     });
   }
 }
