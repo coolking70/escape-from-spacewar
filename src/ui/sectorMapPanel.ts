@@ -35,6 +35,7 @@ import { NodeVisibility, SectorNode, SectorNodeType, SectorRegion } from '../cam
 import { visibleSectorGraph } from '../campaign/sector/sectorVisibility';
 import { campaignHud } from './campaignHud';
 import { campaignResultPanel } from './campaignResultPanel';
+import { escapeHtml } from './html';
 
 const NODE_ICON: Record<SectorNodeType, string> = {
   start: '⌂', empty: '·', resource: '◆', battle: '⚔', hazard: '!', signal: '◉', gate: '◎'
@@ -84,10 +85,10 @@ function commanderSummary(commander: CampaignCommander, state: CampaignState): s
   const injuries = profile.injuries.length
     ? profile.injuries.map((injury) => `${COMMANDER_INJURY_LABEL[injury.id]}${injury.severity}`).join('、')
     : '无伤病';
-  return `<div class="commander-row"><b>${profile.name}</b> Lv.${profile.level} · 指挥 ${profile.attributes.command} / 战术 ${profile.attributes.tactics} / 后勤 ${profile.attributes.logistics} / 意志 ${profile.attributes.resolve}<small>${traits}</small><small>${domains}</small><small>${conditions} · ${injuries}</small></div>`;
+  return `<div class="commander-row"><b>${escapeHtml(profile.name)}</b> Lv.${profile.level} · 指挥 ${profile.attributes.command} / 战术 ${profile.attributes.tactics} / 后勤 ${profile.attributes.logistics} / 意志 ${profile.attributes.resolve}<small>${traits}</small><small>${domains}</small><small>${conditions} · ${injuries}</small></div>`;
 }
 
-function organizationPanel(state: CampaignState): string {
+function organizationPanel(state: CampaignState, locked: boolean): string {
   const organization = state.organization;
   const values = organization.values.map((value) => ORGANIZATION_VALUE_LABEL[value]).join(' / ');
   const research = organization.research.resources;
@@ -96,13 +97,13 @@ function organizationPanel(state: CampaignState): string {
     const unlocked = organization.research.unlocked.includes(id);
     const installed = organization.research.installed.includes(id);
     const action = installed
-      ? `<button class="btn small" data-tech-uninstall="${id}">卸下</button>`
+      ? `<button class="btn small" data-tech-uninstall="${id}" ${locked ? 'disabled' : ''}>卸下</button>`
       : unlocked
-        ? `<button class="btn small primary" data-tech-install="${id}" ${organization.research.installed.length >= organization.research.slots ? 'disabled' : ''}>装配</button>`
-        : `<button class="btn small" data-tech-unlock="${id}" ${canUnlockTechnology(organization, id) ? '' : 'disabled'}>研究：${technologyCostText(id)}</button>`;
+        ? `<button class="btn small primary" data-tech-install="${id}" ${locked || organization.research.installed.length >= organization.research.slots ? 'disabled' : ''}>装配</button>`
+        : `<button class="btn small" data-tech-unlock="${id}" ${!locked && canUnlockTechnology(organization, id) ? '' : 'disabled'}>研究：${technologyCostText(id)}</button>`;
     return `<div class="technology-row ${installed ? 'installed' : unlocked ? 'unlocked' : 'locked'}"><div><b>${definition.label}</b><small>${definition.field} · ${definition.description}</small></div><span>${installed ? '已装配' : unlocked ? '已解锁' : '未解锁'}</span>${action}</div>`;
   }).join('');
-  return `<div class="campaign-card organization-card"><h3>组织与科技</h3><div class="organization-identity"><b>${organization.name}</b><span>${ORGANIZATION_ARCHETYPE_LABEL[organization.archetype]} · ${GOVERNMENT_LABEL[organization.government]}</span><span>价值观：${values}</span><span>稳定度 ${organization.stability} · 声望 民间 ${organization.reputation.civilian} / 军事 ${organization.reputation.military} / 边疆 ${organization.reputation.frontier}</span></div><div class="research-points">航行 ${research.navigation} · 工程 ${research.engineering} · 战术 ${research.tactical} · 社会 ${research.social} · 科技槽 ${organization.research.installed.length}/${organization.research.slots}</div><div class="technology-list">${technologies}</div></div>`;
+  return `<div class="campaign-card organization-card"><h3>组织与科技</h3><div class="organization-identity"><b>${escapeHtml(organization.name)}</b><span>${ORGANIZATION_ARCHETYPE_LABEL[organization.archetype]} · ${GOVERNMENT_LABEL[organization.government]}</span><span>价值观：${values}</span><span>稳定度 ${organization.stability} · 声望 民间 ${organization.reputation.civilian} / 军事 ${organization.reputation.military} / 边疆 ${organization.reputation.frontier}</span></div><div class="research-points">航行 ${research.navigation} · 工程 ${research.engineering} · 战术 ${research.tactical} · 社会 ${research.social} · 科技槽 ${organization.research.installed.length}/${organization.research.slots}</div><div class="technology-list">${technologies}</div></div>`;
 }
 
 function organizationEventPanel(state: CampaignState): string {
@@ -111,9 +112,9 @@ function organizationEventPanel(state: CampaignState): string {
   const options = event.options.map((option) => {
     const enabled = canResolveOrganizationEvent(state, option);
     const requirement = option.requiredValue ? ` · 需要价值观：${ORGANIZATION_VALUE_LABEL[option.requiredValue]}` : '';
-    return `<div class="organization-event-option"><button class="btn ${enabled ? 'primary' : ''}" data-organization-event="${option.id}" ${enabled ? '' : 'disabled'}>${option.label}</button><small>${option.description}${requirement}</small></div>`;
+    return `<div class="organization-event-option"><button class="btn ${enabled ? 'primary' : ''}" data-organization-event="${escapeHtml(option.id)}" ${enabled ? '' : 'disabled'}>${escapeHtml(option.label)}</button><small>${escapeHtml(option.description)}${requirement}</small></div>`;
   }).join('');
-  return `<div class="campaign-card organization-event"><h3>${event.title}</h3><p>${event.description}</p>${options}</div>`;
+  return `<div class="campaign-card organization-event"><h3>${escapeHtml(event.title)}</h3><p>${escapeHtml(event.description)}</p>${options}</div>`;
 }
 
 export class SectorMapPanel {
@@ -147,6 +148,9 @@ export class SectorMapPanel {
     this.nodeViews.clear();
     this.currentState = state;
     const current = state.sector.nodes.find((node) => node.id === state.sector.currentNodeId)!;
+    const managementLocked = state.status !== 'active' || Boolean(
+      state.pendingOrganizationEvent || state.pendingSuccession || state.pendingRecruitment || state.pendingBattle || state.pendingSalvage
+    );
     const available = getAvailableCampaignActions(state);
     const moveCost = movementFuelCost(state.fleet);
     const fuelShortage = current.neighbors.length > 0 && state.resources.fuel < moveCost;
@@ -195,18 +199,18 @@ export class SectorMapPanel {
       if (isCurrent) classes.push('current');
       else if (canMove) classes.push('reachable');
       else classes.push('unavailable');
-      return `<button aria-label="${baseTitle}" title="${baseTitle}" class="${classes.join(' ')}" style="left:${node.x}%;top:${node.y}%" data-id="${node.id}"><span>${label}</span></button>`;
+      return `<button aria-label="${escapeHtml(baseTitle)}" title="${escapeHtml(baseTitle)}" class="${classes.join(' ')}" style="left:${node.x}%;top:${node.y}%" data-id="${escapeHtml(node.id)}"><span>${label}</span></button>`;
     }).join('');
 
     const disabled = (enabled: boolean) => enabled ? '' : 'disabled';
     const signal = available.resolveSignal ? signalOptions(state, current.id) : null;
     const salvage = state.pendingSalvage
-      ? `<div class="campaign-card"><h3>战后打捞</h3><p>敌舰摧毁 ${state.pendingSalvage.summary.enemyDestroyed} · 敌舰失能 ${state.pendingSalvage.summary.enemyDisabled} · 我方损失 ${state.pendingSalvage.summary.ownDestroyed}</p>${state.pendingSalvage.options.map((option) => `<div class="salvage-option"><button class="btn ${option.id === 'thorough' || option.id === 'recover' ? 'primary' : ''}" data-salvage="${option.id}">${option.label}（${option.turns} 回合 / 威胁 +${option.threat}）</button><small>${option.description}</small></div>`).join('')}</div>`
+      ? `<div class="campaign-card"><h3>战后打捞</h3><p>敌舰摧毁 ${state.pendingSalvage.summary.enemyDestroyed} · 敌舰失能 ${state.pendingSalvage.summary.enemyDisabled} · 我方损失 ${state.pendingSalvage.summary.ownDestroyed}</p>${state.pendingSalvage.options.map((option) => `<div class="salvage-option"><button class="btn ${option.id === 'thorough' || option.id === 'recover' ? 'primary' : ''}" data-salvage="${escapeHtml(option.id)}">${escapeHtml(option.label)}（${option.turns} 回合 / 威胁 +${option.threat}）</button><small>${escapeHtml(option.description)}</small></div>`).join('')}</div>`
       : '';
 
     const deployment = state.pendingBattle ? (() => {
       const selected = new Set(state.pendingBattle?.deployment?.selectedShipIds ?? state.fleet.ships.filter((ship) => !ship.disabled).map((ship) => ship.campaignShipId));
-      const choices = state.fleet.ships.filter((ship) => !ship.disabled).map((ship) => `<label><input type="checkbox" data-deploy="${ship.campaignShipId}" ${selected.has(ship.campaignShipId) ? 'checked' : ''}> ${ship.campaignShipId} · ${ship.shipClass}/${ship.variant}</label>`).join('');
+      const choices = state.fleet.ships.filter((ship) => !ship.disabled).map((ship) => `<label><input type="checkbox" data-deploy="${escapeHtml(ship.campaignShipId)}" ${selected.has(ship.campaignShipId) ? 'checked' : ''}> ${escapeHtml(ship.campaignShipId)} · ${ship.shipClass}/${ship.variant}</label>`).join('');
       const preview = buildEncounterPreview(state);
       const policy = state.pendingBattle?.retreatPolicy ?? 'loss50';
       const risk = preview ? `<div class="encounter-risk ${preview.assessment.danger}"><b>${preview.assessment.label}</b><span>我方 ${preview.assessment.playerPower} / 敌方估计 ${preview.assessment.enemyPower}（${preview.assessment.ratio.toFixed(2)}×）</span><span>规避成功率 ${preview.evadeChance}%</span></div>` : '';
@@ -232,20 +236,21 @@ export class SectorMapPanel {
     const actions = state.pendingOrganizationEvent ? organizationEvent : state.pendingSuccession ? succession : state.pendingRecruitment ? recruitment : state.pendingBattle ? deployment : state.pendingSalvage ? salvage : `${mobilityNotice}<button class="btn" id="sp-scan" ${disabled(available.scan)}>扫描</button><button class="btn" id="sp-gather" ${disabled(available.gather)}>采集</button>${signal ? `<span>信号：${current.feature === 'rescue' ? '受损友军求救' : signalTemplate(state, current.id)}</span><button class="btn" id="sp-signal-a">${signal[0]}</button><button class="btn" id="sp-signal-b">${signal[1]}</button>` : ''}${current.type === 'gate' ? extraction : ''}<button class="btn" id="sp-wait" ${disabled(available.wait)}>${fuelShortage ? '等待（不会恢复燃料）' : '等待'}</button>`;
 
     this.currentNodeActionsHTML = actions;
-    const cargo = state.cargo.items.length ? state.cargo.items.map((stack) => `<span>${CARGO_ITEM_LABEL[stack.type]}×${stack.quantity}${stack.type === 'supplyCrate' || stack.type === 'fuelCell' ? ` <button class="btn small" data-use-cargo="${stack.type}">使用</button>` : ''} <button class="btn small danger" data-jettison="${stack.type}">抛弃 1</button></span>`).join(' ') : '<span>货舱为空</span>';
+    const cargo = state.cargo.items.length ? state.cargo.items.map((stack) => `<span>${CARGO_ITEM_LABEL[stack.type]}×${stack.quantity}${stack.type === 'supplyCrate' || stack.type === 'fuelCell' ? ` <button class="btn small" data-use-cargo="${stack.type}" ${managementLocked ? 'disabled' : ''}>使用</button>` : ''} <button class="btn small danger" data-jettison="${stack.type}" ${managementLocked ? 'disabled' : ''}>抛弃 1</button></span>`).join(' ') : '<span>货舱为空</span>';
     const ships = state.fleet.ships.map((ship) => {
-      const repair = canFieldRepair(ship) && cargoQuantity(state.cargo, 'repairParts') > 0 ? `<button class="btn small" data-repair="${ship.campaignShipId}">${ship.disabled ? '修复并重新启用' : '战地维修'}</button>` : '';
-      const controls = ship.disabled ? `<button class="btn small" data-tow="${ship.campaignShipId}">${ship.towed ? '停止拖曳' : '拖曳'}</button><button class="btn small" data-dismantle="${ship.campaignShipId}">拆解</button><button class="btn small danger" data-abandon="${ship.campaignShipId}">放弃</button>` : '';
-      return `<div><b>${ship.campaignShipId}</b> ${ship.shipClass}/${ship.variant} · ${ship.disabled ? '失能' : '可战'}${ship.towed ? ' · 拖曳中' : ''} ${repair}${controls}</div>`;
+      const shipId = escapeHtml(ship.campaignShipId);
+      const repair = canFieldRepair(ship) && cargoQuantity(state.cargo, 'repairParts') > 0 ? `<button class="btn small" data-repair="${shipId}" ${managementLocked ? 'disabled' : ''}>${ship.disabled ? '修复并重新启用' : '战地维修'}</button>` : '';
+      const controls = ship.disabled ? `<button class="btn small" data-tow="${shipId}" ${managementLocked ? 'disabled' : ''}>${ship.towed ? '停止拖曳' : '拖曳'}</button><button class="btn small" data-dismantle="${shipId}" ${managementLocked ? 'disabled' : ''}>拆解</button><button class="btn small danger" data-abandon="${shipId}" ${managementLocked ? 'disabled' : ''}>放弃</button>` : '';
+      return `<div><b>${shipId}</b> ${ship.shipClass}/${ship.variant} · ${ship.disabled ? '失能' : '可战'}${ship.towed ? ' · 拖曳中' : ''} ${repair}${controls}</div>`;
     }).join('');
     const active = ensureCommanderProfile(state.commander, state.campaignSeed);
     const treatmentCost = organizationTreatmentCost(state.organization);
     const canTreat = !!treatCommander(active, state.campaignSeed) && state.resources.supplies >= treatmentCost;
     const reserve = (state.reserveCommanders ?? []).length ? (state.reserveCommanders ?? []).map((commander) => commanderSummary(commander, state)).join('') : '<small>暂无候补指挥官</small>';
-    const commanderCard = `<div class="campaign-card commander-card"><h3>指挥官</h3>${commanderSummary(active, state)}<button class="btn small" id="sp-treat-commander" ${disabled(canTreat)}>治疗指挥官（${treatmentCost} 医疗补给 / 1 回合）</button><h4>候补名单</h4>${reserve}</div>`;
+    const commanderCard = `<div class="campaign-card commander-card"><h3>指挥官</h3>${commanderSummary(active, state)}<button class="btn small" id="sp-treat-commander" ${disabled(canTreat && !managementLocked)}>治疗指挥官（${treatmentCost} 医疗补给 / 1 回合）</button><h4>候补名单</h4>${reserve}</div>`;
     const summary = state.lastSectorSummary ? `<div class="campaign-card"><h3>上一星域结算</h3><p>星域 ${state.lastSectorSummary.sectorIndex} · 探索 ${state.lastSectorSummary.visitedNodes}/${state.lastSectorSummary.totalNodes} · 回合 ${state.lastSectorSummary.turns} · 舰船 ${state.lastSectorSummary.shipsRemaining} · 失能 ${state.lastSectorSummary.disabledShips} · 载荷 ${state.lastSectorSummary.cargoUsed}/${state.lastSectorSummary.cargoCapacity} · 撤离 ${state.lastSectorSummary.extractionMode}/${state.lastSectorSummary.extractionRisk}</p></div>` : '';
 
-    this.root.innerHTML = `<div class="campaign-screen">${campaignHud(state)}${summary}<div class="sector-region-legend">${Object.entries(REGION_LABEL).map(([key, label]) => `<span class="region-${key}">${label}</span>`).join('')}</div><div class="sector-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div><div class="sector-hint">当前位置：${current.visibility === 'detected' ? '未知' : `${REGION_LABEL[current.region]} · ${current.type}`} · 点击星图节点查看可执行操作</div>${organizationPanel(state)}${commanderCard}<div class="campaign-card"><h3>货舱</h3>${cargo}</div><div class="campaign-card"><h3>持久舰队</h3>${ships}</div><div class="campaign-log">${state.history.slice(-8).reverse().map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`).join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
+    this.root.innerHTML = `<div class="campaign-screen">${campaignHud(state)}${summary}<div class="sector-region-legend">${Object.entries(REGION_LABEL).map(([key, label]) => `<span class="region-${key}">${label}</span>`).join('')}</div><div class="sector-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div><div class="sector-hint">当前位置：${current.visibility === 'detected' ? '未知' : `${REGION_LABEL[current.region]} · ${current.type}`} · 点击星图节点查看可执行操作</div>${organizationPanel(state, managementLocked)}${commanderCard}<div class="campaign-card"><h3>货舱</h3>${cargo}</div><div class="campaign-card"><h3>持久舰队</h3>${ships}</div><div class="campaign-log">${state.history.slice(-8).reverse().map((entry) => `<div>R${entry.turn} · ${escapeHtml(entry.text)}</div>`).join('')}</div><div><button class="btn" id="sp-export">导出 Campaign Code</button><button class="btn" id="sp-exit">返回主菜单</button></div>${campaignResultPanel(state, this.showFullResultLog)}</div>`;
 
     this.bindNodeEvents();
     this.bindPanelActions(this.root, state);
@@ -277,7 +282,7 @@ export class SectorMapPanel {
       actionsHTML = `<div class="sni-actions"><div class="sni-loc">当前所在：${loc}</div>${this.currentNodeActionsHTML}</div>`;
     } else if (view.canMove) {
       hint = `<div class="sni-hint ok">与目标相邻，可选择前往。</div>`;
-      actionsHTML = `<div class="sni-actions"><button class="btn primary sni-move" type="button" data-move="${view.id}">前往此处（消耗 ${view.moveCost} 燃料）</button></div>`;
+      actionsHTML = `<div class="sni-actions"><button class="btn primary sni-move" type="button" data-move="${escapeHtml(view.id)}">前往此处（消耗 ${view.moveCost} 燃料）</button></div>`;
     } else if (view.blockedReason) {
       hint = `<div class="sni-hint warn">无法前往：${view.blockedReason}</div>`;
     } else {

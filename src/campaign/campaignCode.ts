@@ -94,6 +94,35 @@ function migratePendingOrganizationEvent(value: unknown): PendingOrganizationEve
 export function migrateCampaignState(value: unknown): CampaignState | null {
   const raw = value as any;
   if (!raw || typeof raw !== 'object' || !SAVE_VERSIONS.includes(raw.version)) return null;
+  // Current-format saves are strict. The only retained V0.9 compatibility path
+  // fills fields introduced during the V0.7.1/V0.8 rollout. Organization and
+  // technology data are never normalized here: malformed V0.9 content is
+  // rejected instead of being silently repaired.
+  if (raw.version === CAMPAIGN_VERSION) {
+    if (!validateOrganization({ organization: raw.organization, pendingOrganizationEvent: raw.pendingOrganizationEvent } as CampaignState)) {
+      return null;
+    }
+    const nodes = Array.isArray(raw.sector?.nodes)
+      ? raw.sector.nodes.map((node: any) => ({
+          ...node,
+          depth: Number.isInteger(node.depth) && node.depth >= 0
+            ? node.depth
+            : Math.max(0, Math.round(((Number(node.x) || 7) - 7) / 14)),
+          region: REGIONS.includes(node.region) ? node.region : inferredRegion(node),
+          feature: node.feature === 'rescue' ? 'rescue' : undefined
+        }))
+      : [];
+    const candidate = {
+      ...raw,
+      commander: ensureCommanderProfile(raw.commander ?? {}, raw.campaignSeed >>> 0),
+      reserveCommanders: Array.isArray(raw.reserveCommanders)
+        ? raw.reserveCommanders.map((commander: any) => ensureCommanderProfile(commander, raw.campaignSeed >>> 0))
+        : [],
+      pendingSuccession: typeof raw.pendingSuccession === 'boolean' ? raw.pendingSuccession : false,
+      sector: { ...raw.sector, nodes }
+    };
+    return validateCampaignState(candidate) ? candidate : null;
+  }
   const legacyV06 = raw.version === '0.1';
   const preV09 = raw.version !== '0.3';
   const seed = Number.isInteger(raw.campaignSeed) ? raw.campaignSeed >>> 0 : 0;
@@ -281,6 +310,7 @@ export function validateCampaignState(value: unknown): value is CampaignState {
     !['active', 'victory', 'defeat'].includes(state.status) || typeof state.extractionPrepared !== 'boolean' ||
     typeof state.pendingSuccession !== 'boolean' || !validateOrganization(state)
   ) return false;
+  if (state.pendingOrganizationEvent && state.status !== 'active') return false;
   if (!state.resources || ![state.resources.supplies, state.resources.fuel, state.resources.materials].every((candidate) => finite(candidate) && candidate >= 0)) return false;
   if (
     !state.cargo || !nonNegativeInteger(state.cargo.capacity) || !Array.isArray(state.cargo.items) ||

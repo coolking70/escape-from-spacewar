@@ -82,6 +82,12 @@ function noActions(): CampaignActionAvailability {
   };
 }
 
+function rejectAction(state: CampaignState, text: string): CampaignState {
+  const next = cloneOrganizationState(state);
+  next.history = [...state.history, { turn: state.turn, text }];
+  return next;
+}
+
 function setThreatValue(state: CampaignState, value: number): void {
   const normalized = Math.max(0, value);
   state.sector.threat.value = normalized;
@@ -242,6 +248,7 @@ export function evaluateCampaignStatus(state: CampaignState): CampaignState {
 }
 
 export function applyCampaignAction(state: CampaignState, action: CampaignAction): CampaignState {
+  if (state.status !== 'active') return rejectAction(state, '当前无法执行该行动。');
   if (action.type === 'resolveOrganizationEvent') {
     const next = cloneOrganizationState(state);
     const option = next.pendingOrganizationEvent?.options.find((candidate) => candidate.id === action.optionId);
@@ -254,10 +261,12 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
     return evaluateCampaignStatus(next);
   }
   if (state.pendingOrganizationEvent) {
-    const next = cloneOrganizationState(state);
-    next.history = [...state.history, { turn: state.turn, text: '必须先处理当前组织事件。' }];
-    return next;
+    return rejectAction(state, '必须先处理当前组织事件。');
   }
+  if (
+    (state.pendingBattle || state.pendingSalvage || state.pendingRecruitment || state.pendingSuccession) &&
+    (isTechnologyAction(action) || action.type === 'treatCommander' || action.type === 'emergencyRefuel')
+  ) return rejectAction(state, '必须先处理当前待决事件。');
   const technology = technologyAction(state, action);
   if (technology) return evaluateCampaignStatus(technology);
   if (action.type === 'treatCommander') {

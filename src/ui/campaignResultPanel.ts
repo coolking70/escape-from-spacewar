@@ -1,4 +1,5 @@
 import { CampaignState } from '../campaign/campaignTypes';
+import { escapeHtml } from './html';
 
 function defeatMessage(state: CampaignState): string {
   if (state.fleet.ships.length === 0) return '你的舰队已被全歼，远征到此结束。';
@@ -13,7 +14,7 @@ export function campaignResultPanel(state: CampaignState, showFullLog: boolean):
     ? `<div class="campaign-result-log">${state.history
         .slice()
         .reverse()
-        .map((entry) => `<div>R${entry.turn} · ${entry.text}</div>`)
+        .map((entry) => `<div>R${entry.turn} · ${escapeHtml(entry.text)}</div>`)
         .join('')}</div>`
     : '';
   return `<div class="campaign-result-overlay" role="dialog" aria-modal="true" aria-labelledby="campaign-result-title">

@@ -137,6 +137,13 @@ V0.9 deliberately does not add:
 - a large branching technology tree
 - new core-v4 ship classes, variants or default battle balance
 
+## V0.9 hardening maintenance
+
+- Terminal campaigns and pending decision states now reject technology, treatment, and emergency-refuel actions consistently with the base reducer.
+- Current `0.3` Campaign Codes are strictly validated; only explicit historical map/commander compatibility fields are filled during local migration.
+- Campaign-facing imported text is HTML-escaped before rendering, including organization and commander names plus historical log text.
+- Organization, cargo, fleet, and commander management controls are disabled while a pending decision owns the action flow.
+
 ## Next milestone candidate
 
 After V0.9 playtest acceptance, the next milestone should deepen one of the existing strategic systems rather than widen all of them at once. The recommended path is a V0.9.1 balance and usability pass followed by a focused V1.0 vertical campaign release plan.

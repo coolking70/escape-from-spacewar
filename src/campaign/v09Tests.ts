@@ -18,6 +18,8 @@ import {
   organizationTreatmentCost
 } from './organization/organizationSystem';
 import { TECHNOLOGY_DEFINITIONS } from './organization/technologySystem';
+import { escapeHtml } from '../ui/html';
+import { campaignResultPanel } from '../ui/campaignResultPanel';
 
 function resolveNeutralOrganizationEvent(state: ReturnType<typeof createCampaign>) {
   if (!state.pendingOrganizationEvent) return state;
@@ -97,6 +99,9 @@ export function runV09Tests(): SuiteResult {
       const lockedInstalled = JSON.parse(JSON.stringify(state));
       lockedInstalled.organization.research.installed.push('jumpCalibration');
       test.true_(!validateCampaignState(lockedInstalled), '未解锁科技不能装配');
+      const currentFormatCorrupt = JSON.parse(JSON.stringify(state));
+      currentFormatCorrupt.organization.values = ['survival', 'survival'];
+      test.eq(migrateCampaignState(currentFormatCorrupt), null, '当前版本损坏存档不会被静默规范化');
       add(test);
     }
 
@@ -199,6 +204,31 @@ export function runV09Tests(): SuiteResult {
       state.organization.stability = 0;
       state = evaluateCampaignStatus(state);
       test.eq(state.status, 'defeat', '组织稳定度归零导致战役失败');
+      add(test);
+    }
+
+    {
+      const test = new Case('终局、待决事件与 HTML 渲染边界一致');
+      const terminal = createCampaign(911, '终局官', 'balanced');
+      terminal.status = 'victory';
+      terminal.organization.research.resources.engineering = TECHNOLOGY_DEFINITIONS.modularCargo.cost.engineering!;
+      const afterTechnology = applyCampaignAction(terminal, {
+        type: 'unlockTechnology',
+        technologyId: 'modularCargo'
+      });
+      test.true_(!afterTechnology.organization.research.unlocked.includes('modularCargo'), '终局后不能解锁科技');
+
+      const terminalEvent = createCampaign(912, '终局事件官', 'balanced');
+      terminalEvent.pendingOrganizationEvent = generateOrganizationEvent(terminalEvent);
+      terminalEvent.status = 'defeat';
+      test.true_(!validateCampaignState(terminalEvent), '终局状态不能保留待处理组织事件');
+
+      const escaped = escapeHtml('<img src=x onerror=alert(1)>');
+      test.true_(!escaped.includes('<img'), '导入文本会被转义而非成为标签');
+      const logged = createCampaign(913, '日志官', 'balanced');
+      logged.status = 'defeat';
+      logged.history.push({ turn: 0, text: '<script>bad()</script>' });
+      test.true_(!campaignResultPanel(logged, true).includes('<script>'), '结算完整日志会转义导入文本');
       add(test);
     }
 
