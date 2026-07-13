@@ -104,14 +104,25 @@ export function runStrategicTests(): SuiteResult {
     }
 
     {
-      const test = new Case('战略宇宙码完整往返并拒绝损坏航线');
+      const test = new Case('战略宇宙码完整往返并拒绝损坏引用');
       const state = generateUniverse(1007);
       const decoded = decodeUniverse(encodeUniverse(state));
       test.eq(JSON.stringify(decoded), JSON.stringify(state), '战略宇宙状态完整往返');
       test.true_(validateUniverseState(decoded), '往返状态通过深层校验');
-      const corrupted = JSON.parse(JSON.stringify(state));
-      corrupted.systems[0].neighbors.push('missing-system');
-      test.true_(!validateUniverseState(corrupted), '不存在的航线目标被拒绝');
+
+      const badRoute = JSON.parse(JSON.stringify(state));
+      badRoute.systems[0].neighbors.push('missing-system');
+      test.true_(!validateUniverseState(badRoute), '不存在的航线目标被拒绝');
+
+      const badEntityReference = JSON.parse(JSON.stringify(state));
+      badEntityReference.systems[0].entityIds.push('missing-entity');
+      test.true_(!validateUniverseState(badEntityReference), '不存在的实体引用被拒绝');
+
+      let duplicateResearch = generateUniverse(1008);
+      duplicateResearch.faction.resources.science = 100;
+      duplicateResearch = applyUniverseAction(duplicateResearch, { type: 'queueResearch', projectId: 'stellarCartography' });
+      duplicateResearch.faction.researchQueue.push({ ...duplicateResearch.faction.researchQueue[0], id: 'duplicate-research' });
+      test.true_(!validateUniverseState(duplicateResearch), '重复研究项目被拒绝');
       add(test);
     }
   });
