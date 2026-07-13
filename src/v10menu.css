@@ -1,0 +1,55 @@
+.strategic-create {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid rgba(92, 190, 225, .4);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(15, 48, 72, .78), rgba(21, 27, 54, .74));
+}
+
+.strategic-create h2 {
+  margin: 0 0 6px;
+  color: #aee9ff;
+}
+
+.strategic-create p {
+  margin: 0 0 10px;
+  color: #a9bfd2;
+  line-height: 1.45;
+}
+
+.strategic-create label {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 9px;
+}
+
+.strategic-create input,
+.strategic-create textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.strategic-create textarea {
+  min-height: 76px;
+  margin-top: 10px;
+}
+
+.strategic-create .btn {
+  margin: 4px 4px 4px 0;
+}
+
+@media (max-width: 700px) {
+  .strategic-create {
+    padding: 11px;
+  }
+
+  .strategic-create input,
+  .strategic-create .btn {
+    min-height: 44px;
+  }
+
+  .strategic-create .btn {
+    width: 100%;
+    margin-right: 0;
+  }
+}
