@@ -57,6 +57,9 @@ export function validateUniverseState(value: unknown): value is UniverseState {
 
   const entityIds = new Set(state.entities.map((entity) => entity.id));
   if (entityIds.size !== state.entities.length || !entityIds.has(state.faction.baseEntityId)) return false;
+  for (const system of state.systems) {
+    if (new Set(system.entityIds).size !== system.entityIds.length || system.entityIds.some((id) => !entityIds.has(id))) return false;
+  }
   for (const entity of state.entities) {
     if (!entity.id || !systemIds.has(entity.systemId) || !ENTITY_KINDS.includes(entity.kind) || !nonNegativeInteger(entity.orbit)) return false;
     const system = state.systems.find((candidate) => candidate.id === entity.systemId)!;
@@ -68,11 +71,25 @@ export function validateUniverseState(value: unknown): value is UniverseState {
 
   const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
   if (base.kind !== 'station' || base.ownerId !== state.faction.id || !Array.isArray(base.facilities) || !Array.isArray(base.constructionQueue)) return false;
+  if ((base.constructionQueue?.length ?? 0) > 2) return false;
   if (!state.faction.id || !state.faction.name || !state.faction.resources || !Array.isArray(state.faction.researched) || !Array.isArray(state.faction.researchQueue)) return false;
   if ([state.faction.resources.minerals, state.faction.resources.energy, state.faction.resources.science].some((amount) => !nonNegativeInteger(amount))) return false;
   if (state.faction.researched.some((project) => !RESEARCH.includes(project)) || new Set(state.faction.researched).size !== state.faction.researched.length) return false;
-  if (state.faction.researchQueue.some((order) => !RESEARCH.includes(order.projectId) || !nonNegativeInteger(order.turnsRemaining) || order.turnsRemaining < 1)) return false;
-  if (!Array.isArray(state.faction.knownSystemIds) || state.faction.knownSystemIds.some((id) => !systemIds.has(id))) return false;
+  if (
+    state.faction.researchQueue.length > 2 ||
+    state.faction.researchQueue.some((order) =>
+      !RESEARCH.includes(order.projectId) ||
+      !nonNegativeInteger(order.turnsRemaining) ||
+      order.turnsRemaining < 1 ||
+      state.faction.researched.includes(order.projectId)
+    ) ||
+    new Set(state.faction.researchQueue.map((order) => order.projectId)).size !== state.faction.researchQueue.length
+  ) return false;
+  if (
+    !Array.isArray(state.faction.knownSystemIds) ||
+    new Set(state.faction.knownSystemIds).size !== state.faction.knownSystemIds.length ||
+    state.faction.knownSystemIds.some((id) => !systemIds.has(id))
+  ) return false;
   if (!state.fleet.id || !state.fleet.name || !nonNegativeInteger(state.fleet.fuel) || !nonNegativeInteger(state.fleet.maxFuel) || state.fleet.fuel > state.fleet.maxFuel) return false;
   return true;
 }
