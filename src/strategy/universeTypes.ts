@@ -1,12 +1,17 @@
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
-export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'jumpGate';
-export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'shipyard';
-export type ResearchProjectId = 'stellarCartography' | 'automatedIndustry' | 'orbitalEngineering';
+export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
+export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid';
+export type ResearchProjectId = 'routeAnalysis' | 'rapidFabrication' | 'crisisForecasting' | 'gateTheory';
+export type PermanentBlueprintId = 'fieldLogistics' | 'hardenedBulkheads' | 'compactFoundry';
+export type CrisisPhase = 'foothold' | 'contest' | 'collapse' | 'evacuation';
+export type SystemControl = 'unknown' | 'neutral' | 'player' | 'enemy';
+export type ExtractionMode = 'stable' | 'emergency';
 
 export interface StrategicResources {
   minerals: number;
   energy: number;
   science: number;
+  supplies: number;
 }
 
 export interface FacilityInstance {
@@ -43,8 +48,10 @@ export interface SpaceEntity {
     minerals: number;
     energy: number;
   };
+  facilitySlots?: number;
   facilities?: FacilityInstance[];
   constructionQueue?: ConstructionOrder[];
+  blueprint?: PermanentBlueprintId;
 }
 
 export interface StarSystem {
@@ -57,6 +64,8 @@ export interface StarSystem {
   neighbors: string[];
   discovered: boolean;
   surveyed: boolean;
+  control: SystemControl;
+  enemyPower: number;
 }
 
 export interface StrategicFleet {
@@ -65,34 +74,70 @@ export interface StrategicFleet {
   systemId: string;
   fuel: number;
   maxFuel: number;
+  shipCount: number;
+  disabledShips: number;
+  combatPower: number;
+}
+
+export interface SectorLegacy {
+  sectorsCleared: number;
+  portableMaterials: number;
+  reserveSupplies: number;
+  blueprints: PermanentBlueprintId[];
+  shipsLost: number;
 }
 
 export interface StrategicFaction {
   id: string;
   name: string;
   resources: StrategicResources;
-  researched: ResearchProjectId[];
+  localResearch: ResearchProjectId[];
   researchQueue: ResearchOrder[];
   knownSystemIds: string[];
-  baseEntityId: string;
+  baseEntityId?: string;
+  recoveredBlueprints: PermanentBlueprintId[];
+  legacy: SectorLegacy;
 }
 
-export type UniverseStatus = 'active' | 'collapsed';
+export interface CrisisState {
+  phase: CrisisPhase;
+  pressure: number;
+  finalTurn: number;
+}
+
+export interface ExtractionState {
+  gateEntityId: string;
+  discovered: boolean;
+  calibration: number;
+  requiredCalibration: number;
+  emergencyThreshold: number;
+}
+
+export type UniverseStatus = 'active' | 'victory' | 'collapsed';
 
 export interface UniverseLogEntry {
   turn: number;
   text: string;
 }
 
+/**
+ * The historical name is kept at the API boundary so App wiring and saved-mode
+ * separation remain stable. The state itself now represents one complete,
+ * temporary strategic sector rather than a permanent galaxy.
+ */
 export interface UniverseState {
-  version: '1.0-alpha.1';
+  version: '1.0-alpha.2';
   seed: number;
+  sectorIndex: number;
+  targetSectorCount: number;
   turn: number;
   status: UniverseStatus;
   systems: StarSystem[];
   entities: SpaceEntity[];
   faction: StrategicFaction;
   fleet: StrategicFleet;
+  crisis: CrisisState;
+  extraction: ExtractionState;
   selectedSystemId: string;
   log: UniverseLogEntry[];
 }
@@ -102,6 +147,11 @@ export type UniverseAction =
   | { type: 'travel'; systemId: string }
   | { type: 'surveyEntity'; entityId: string }
   | { type: 'extractAsteroid'; entityId: string }
+  | { type: 'establishBase'; entityId: string }
   | { type: 'queueConstruction'; facilityType: FacilityType }
   | { type: 'queueResearch'; projectId: ResearchProjectId }
+  | { type: 'engageEnemy' }
+  | { type: 'repairFleet' }
+  | { type: 'calibrateGate' }
+  | { type: 'extractSector'; mode: ExtractionMode; rearguardShips?: number }
   | { type: 'advanceTurn' };
