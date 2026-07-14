@@ -4,12 +4,12 @@
 
 - `spacewar-core-v4` remains frozen.
 - Replay format remains `v0.5` with ruleset `spacewar-core-v4`.
-- V0.6 through V0.8.1 campaign milestones are frozen on `main`.
-- V0.9 upgrades Campaign Code from `0.2` to `0.3` while retaining `0.1` and `0.2` migration.
-- Campaign Log format is `1.1`.
+- V0.6 through V0.9 are retained on `main` as the compatible seven-layer route campaign.
+- Campaign Code remains `0.3`; Campaign Log remains `1.1`.
+- V1.0 development is isolated in PR #9 and remains Draft.
 - GitHub Actions uses Node.js 24.
 
-## Frozen campaign foundation
+## Frozen compatible campaign
 
 ### V0.7 and V0.7.1
 
@@ -24,79 +24,112 @@
 - Commander creation, attributes, deterministic traits and four career domains.
 - Health conditions, injuries, treatment and campaign-level effects.
 - Deterministic recruitment, three-person reserve roster and succession.
-- Recruitment cadence, treatment cost, trauma thresholds and narrow-screen UI completed through playtest closeout.
+- Recruitment cadence, treatment cost, trauma thresholds and narrow-screen UI playtest closeout.
 
-## V0.9 organization and modular technology
+### V0.9
 
-### A. Organization identity
+- Organization archetypes, governments, values, stability and reputation.
+- Research resources and six modular campaign technologies.
+- Deterministic organization events and Campaign Code `0.3` migration.
+- Current-format validation and imported-text rendering hardening.
 
-- Four archetypes: expedition, military, commerce and exile.
-- Five governments: military council, captains assembly, corporate board, technocracy and emergency directorate.
-- Two distinct values selected from order, freedom, survival, expansion, knowledge, profit and unity.
-- Stable organization id and default values derived from campaign seed and creation choices.
-- Organization stability plus civilian, military and frontier reputation.
+This route campaign remains available as a compatibility mode. V1.0 does not continue expanding its abstract event-node map.
 
-### B. Government and archetype effects
+## V1.0-A unified strategic-sector refactor
 
-- Expedition organizations reduce scan pressure and begin with deep sensors.
-- Military organizations and military councils improve tactical research.
-- Commerce organizations and corporate boards improve material gathering.
-- Exile organizations reduce treatment and emergency logistics costs.
-- Technocracy improves action-derived research.
-- Emergency directorate further reduces emergency refuel cost.
-- Values unlock organization-event options and modify research, logistics or survival decisions.
+### Direction correction
 
-### C. Research and modular technology
+The discarded direction was:
 
-Research resources:
+```text
+persistent galaxy map → select a system → launch a separate FTL-style local expedition
+```
 
-- navigation
-- engineering
-- tactical
-- social
+The implemented direction is:
 
-Research is earned from scanning, gathering, signals, battle, salvage, repair, treatment and extraction.
+```text
+one sector is one complete fast SLG run
+→ explore, gather, fight, occupy, build and research on the same map
+→ find and calibrate the gate under an escalating crisis
+→ extract assets into the next complete strategic sector
+```
 
-Technology modules:
+### Complete sector map
 
-- jump calibration
-- modular cargo
-- field repair protocol
-- deep sensor array
-- retreat coordination
-- trauma care
+- Each sector deterministically generates nine connected star systems.
+- Planets, moons, stations, asteroid fields, relic sites and one gate are persistent entities for the current run.
+- The gate is placed in a graph-distant hostile system rather than a final route layer.
+- At least two systems begin under enemy control with explicit local combat power.
+- The player begins with a fleet and limited resources, but no free owned base.
 
-Each organization begins with one archetype technology installed and has two technology slots. Technology must be unlocked with research resources before installation. Installed modules affect campaign calculations only.
+### Temporary foothold and production
 
-### D. Campaign integration
+- A surveyed safe station can be occupied as the sector's forward base.
+- Occupation costs minerals, energy and supplies and consumes strategic time.
+- Stations have limited facility slots and a two-item construction queue.
+- Temporary facilities provide energy, minerals, science, supplies, repair or defense.
+- Facilities, construction queues and local stockpiles are abandoned when the fleet crosses the gate.
+- Remaining mobile without a base is valid, but prevents sustained production, research and repair.
 
-- Organization creation is part of the new-campaign menu.
-- Organization identity, stability and government appear in the campaign HUD.
-- A full organization and technology card supports unlock, install and uninstall actions.
-- Modular cargo adjusts live cargo capacity and cannot be removed while the resulting capacity would be exceeded.
-- Deep sensors affect scan threat and evasion.
-- Jump calibration affects extraction fuel.
-- Repair and trauma technologies affect field operations.
-- Retreat coordination affects evasion and post-battle stability.
-- Structured Campaign Log exports include organization, research and technology state.
+### Local research and permanent blueprints
 
-### E. Organization events
+Local research:
 
-- Entering a new sector creates one deterministic organization event.
-- Events currently cover rescue allocation, route security and relic disposition.
-- Options can require organization values.
-- Effects can modify stability, reputation, research, supplies, fuel, materials and threat.
-- A pending organization event blocks normal sector actions until resolved.
-- Stability reaching zero ends the campaign in defeat.
+- route analysis
+- rapid fabrication
+- crisis forecasting
+- gate theory
 
-## Save migration and validation
+Local projects give fast sector-specific benefits and reset after extraction.
 
-- Campaign Code version is `0.3`.
-- `0.1` and `0.2` saves receive a deterministic default expedition organization.
-- Migration adds organization identity, reputation, research, technology slots and event defaults.
-- Invalid or duplicate technology ids are normalized during migration.
-- Deep validation covers organization identity, two unique values, stability, reputation, research resources, technology unlock/install relationships and pending organization events.
-- Additive migration is written back to the existing local-storage key.
+Relic sites can provide permanent blueprints:
+
+- field logistics core
+- hardened bulkheads
+- compact foundry core
+
+Recovered blueprints enter long-term inheritance only after a successful extraction.
+
+### Crisis and enemy pressure
+
+- Crisis phases are foothold, contest, collapse and evacuation.
+- Pressure increases every strategic turn.
+- The final extraction window is shorter in later sectors.
+- Enemy control expands along actual routes at phase-dependent intervals.
+- Enemy systems have persistent local power that must be reduced through strategic combat.
+- Enemy expansion can raid the player's forward base; defense grids reduce losses.
+- Missing the final window collapses the sector and ends the run.
+
+### Fleet operations
+
+The V1.0-A fleet is still an abstract strategic placeholder, but now tracks:
+
+- ship count
+- disabled ships
+- combat power
+- strategic fuel
+- cumulative ship losses
+
+Strategic combat can permanently reduce enemy power, disable ships or destroy ships. A repair dock can restore disabled ships at a material and supply cost.
+
+### Gate and extraction
+
+- The gate must be located, surveyed and cleared of defenders.
+- Calibration consumes energy, science, supplies and strategic turns.
+- Stable extraction requires full calibration and carries more resources and disabled ships.
+- Emergency extraction requires partial calibration but discards most resources and loses disabled ships.
+- High-pressure emergency extraction can cause additional ship loss.
+- The player can deliberately leave a ship as rearguard during emergency extraction.
+- Extracted ships, permanent blueprints and limited compressed materials/supplies generate the next complete sector.
+- The current vertical slice ends after extracting from the third sector.
+
+### Persistence
+
+- New code type: `spacewar-sector-expedition`.
+- New version: `1.0-alpha.2`.
+- Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state and inherited assets.
+- The earlier `1.0-alpha.1` permanent-universe experiment migrates by resetting into a new first strategic sector.
+- The old Campaign Code and the new Sector Expedition Code remain separate.
 
 ## Verification matrix
 
@@ -106,44 +139,41 @@ npm run build
 npm test
 npm run test:det
 npm run test:campaign
+npm run test:strategy
 npm run test:stress
 npm run build:static
 ```
 
-`npm run test:campaign` runs V0.6, V0.7, V0.7.1, V0.8, V0.8.1 and V0.9 suites.
+The V1.0-A strategic suite covers:
 
-The V0.9 suite covers:
+- deterministic nine-system generation and connectivity
+- gate, relic and hostile-system generation
+- no-base opening and station occupation
+- temporary construction and turn income
+- local research and cross-sector reset
+- crisis phase progression and timeout defeat
+- enemy-power reduction and system clearing
+- disabled-ship repair
+- emergency extraction losses
+- three-sector completion
+- `1.0-alpha.2` code round-trip and invalid-state rejection
 
-- deterministic organization creation and archetype starting modules
-- `0.2 → 0.3` migration
-- Campaign Code round-trip and invalid organization rejection
-- research gains and organization modifiers
-- technology unlock, installation, removal and cargo safety
-- deterministic value-gated organization events
-- event action blocking
-- cross-sector event creation
-- jump fuel technology
-- treatment cost and organization-collapse defeat
-- a complete three-sector V0.9 smoke flow
+## Next milestone: V1.0-B/C
 
-## V0.9 boundary
+The next development slice should replace strategic placeholders with existing mature systems:
 
-V0.9 deliberately does not add:
+1. use the V0.7 persistent fleet and component HP model instead of abstract ship count/power;
+2. launch core-v4 battles for strategic interceptions and hostile-system assaults;
+3. connect V0.8 commanders, injuries, reserves and succession;
+4. support multiple temporary outposts and abstract transport links;
+5. simulate moving enemy fleets, sieges and a real gate-defense battle;
+6. assign individual ships to cargo escort, early extraction and rearguard roles.
 
-- multiple player fleets or bases
-- external faction diplomacy
-- market prices or trade routes
-- internal political factions or voting simulations
-- a large branching technology tree
-- new core-v4 ship classes, variants or default battle balance
+## Still out of scope for V1.0-A
 
-## V0.9 hardening maintenance
-
-- Terminal campaigns and pending decision states now reject technology, treatment, and emergency-refuel actions consistently with the base reducer.
-- Current `0.3` Campaign Codes are strictly validated; only explicit historical map/commander compatibility fields are filled during local migration.
-- Campaign-facing imported text is HTML-escaped before rendering, including organization and commander names plus historical log text.
-- Organization, cargo, fleet, and commander management controls are disabled while a pending decision owns the action flow.
-
-## Next milestone candidate
-
-After V0.9 playtest acceptance, the next milestone should deepen one of the existing strategic systems rather than widen all of them at once. The recommended path is a V0.9.1 balance and usability pass followed by a focused V1.0 vertical campaign release plan.
+- Multiple independently controlled player fleets.
+- Population and worker micromanagement.
+- Permanent colonies or a long-lived empire map.
+- Full diplomacy, markets or trade simulation.
+- Detailed ship production and equipment fitting.
+- Real-time strategic movement.
