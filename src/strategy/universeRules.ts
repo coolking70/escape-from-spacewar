@@ -453,7 +453,7 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
   const carriedSupplies = mode === 'stable'
     ? Math.min(12, Math.max(0, next.faction.resources.supplies - 8))
     : Math.min(5, Math.max(0, next.faction.resources.supplies - 4));
-  const blueprints = Array.from(new Set([
+  const blueprints = Array.from(new Set<PermanentBlueprintId>([
     ...next.faction.legacy.blueprints,
     ...next.faction.recoveredBlueprints
   ]));

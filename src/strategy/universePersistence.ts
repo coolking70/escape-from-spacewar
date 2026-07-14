@@ -49,7 +49,7 @@ function positiveInteger(value: unknown): value is number {
 }
 
 function uniqueValid<T>(items: unknown, allowed: readonly T[]): items is T[] {
-  return Array.isArray(items) && new Set(items).size === items.length && items.every((item) => allowed.includes(item));
+  return Array.isArray(items) && new Set(items).size === items.length && items.every((item) => allowed.includes(item as T));
 }
 
 function migrateAlpha1(raw: any): UniverseState | null {
