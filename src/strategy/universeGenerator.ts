@@ -1,5 +1,7 @@
 import { createPRNG } from '../sim/prng';
 import { createStarterFleet, PersistentFleet } from '../campaign/fleet/persistentFleet';
+import { systemEnemyBudget } from '../campaign/fleet/campaignPower';
+import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
 import type {
   PermanentBlueprintId,
   SectorLegacy,
@@ -170,9 +172,9 @@ export function generateUniverse(
   const gateSystem = orderedByDistance[0];
   const enemyOutpost = orderedByDistance.find((system) => system.id !== gateSystem.id && system.id !== start.id)!;
   gateSystem.control = 'enemy';
-  gateSystem.enemyPower = 42 + sectorIndex * 10;
+  gateSystem.enemyPower = systemEnemyBudget(sectorIndex, true);
   enemyOutpost.control = 'enemy';
-  enemyOutpost.enemyPower = 20 + sectorIndex * 6;
+  enemyOutpost.enemyPower = systemEnemyBudget(sectorIndex, false);
 
   const entities: SpaceEntity[] = [];
   let gateEntityId = '';
@@ -206,7 +208,7 @@ export function generateUniverse(
   const inherited = options.fleet ?? createStarterFleet();
 
   return {
-    version: '1.0-alpha.3',
+    version: SECTOR_EXPEDITION_VERSION,
     seed: normalizedSeed,
     sectorIndex,
     targetSectorCount,

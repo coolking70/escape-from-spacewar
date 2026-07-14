@@ -12,9 +12,10 @@ export function importBattleResult(
     throw new Error('战役战斗绑定包含重复 campaignShipId。');
   }
 
+  // 未参战舰保持 deployed / escaped / disabled / towed / componentHp 原样不变；
+  // 只有 binding 中实际参战的舰船会被修改（见下方循环）。
   const next = fleet.ships.map((ship) => ({
     ...ship,
-    deployed: true,
     componentHp: ship.componentHp ? [...ship.componentHp] : undefined
   }));
 
@@ -32,6 +33,7 @@ export function importBattleResult(
       next.splice(next.indexOf(persistent), 1);
       continue;
     }
+    persistent.deployed = true;
     persistent.disabled = battle.combatState === 'disabled';
     persistent.escaped = battle.combatState === 'escaped';
     persistent.towed = persistent.disabled ? persistent.towed : false;

@@ -9,6 +9,22 @@
   overflow: auto;
 }
 
+.strategy-banner {
+  width: min(1280px, 100%);
+  margin: 0 auto 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.strategy-banner.pending {
+  background: linear-gradient(90deg, rgba(214, 69, 69, .22), rgba(214, 138, 69, .18));
+  border: 1px solid rgba(255, 138, 92, .55);
+  color: #ffd9c2;
+  box-shadow: 0 0 0 1px rgba(255, 138, 92, .12) inset;
+}
+
 .strategic-header,
 .strategic-toolbar,
 .strategic-layout,

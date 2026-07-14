@@ -3,6 +3,7 @@ import { createInitialState, createSimulator } from '../../sim/rulesets';
 import { BattleState, FleetEntry, ReplayConfig, TeamConfig } from '../../sim/battleTypes';
 import { RULESET_V4, SIM_VERSION_V5 } from '../../sim/battleConfig';
 import { assertValidFleet } from '../../sim/fleetValidator';
+import { getShipDef } from '../../sim/shipVariants';
 import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
 import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost } from './campaignPower';
@@ -158,6 +159,62 @@ export function strategicEnemyFleetFor(
 
 function sameHull(a: PersistentShip, battle: BattleState['ships'][number]): boolean {
   return a.shipClass === battle.type && a.variant === battle.variant;
+}
+
+/**
+ * 严格校验战略/战役战斗 binding：
+ * - campaignShipId 唯一、battleShipId 唯一；
+ * - 每个 binding 都能在持久舰队中找到对应舰，且未部署舰不得参战；
+ * - 每个 binding 都能在 Team A 战斗舰中找到对应舰；
+ * - 持久舰 shipClass/variant 与 battle ship type/variant 一致（hull 与改型一致）；
+ * - 组件数组长度与舰船定义一致（顺序由同一 ship 定义保证）；
+ * - 组件 HP 有限且落在 [0, maxHp]；
+ * - 每艘实际参战的玩家舰有且只有一个 binding（未参战舰不得被错误修改）。
+ * 任何一项不成立都抛出明确错误。
+ */
+export function validatePersistentBattleBindings(
+  bindings: ReadonlyArray<PersistentBattleBinding>,
+  fleet: PersistentFleet,
+  battle: BattleState
+): void {
+  const campaignIds = new Set<string>();
+  const battleIds = new Set<number>();
+  for (const binding of bindings) {
+    if (campaignIds.has(binding.campaignShipId)) throw new Error('战斗绑定包含重复的 campaignShipId。');
+    campaignIds.add(binding.campaignShipId);
+    if (battleIds.has(binding.battleShipId)) throw new Error('战斗绑定包含重复的 battleShipId。');
+    battleIds.add(binding.battleShipId);
+
+    const ship = fleet.ships.find((candidate) => candidate.campaignShipId === binding.campaignShipId);
+    if (!ship) throw new Error(`绑定 campaignShipId ${binding.campaignShipId} 找不到对应的持久舰。`);
+    if (ship.deployed === false) throw new Error(`未部署舰 ${binding.campaignShipId} 不应出现在战斗绑定中。`);
+
+    const battleShip = battle.ships.find((candidate) => candidate.id === binding.battleShipId && candidate.team === 'A');
+    if (!battleShip) throw new Error(`绑定 battleShipId ${binding.battleShipId} 找不到对应的 Team A 战斗舰。`);
+    if (ship.shipClass !== battleShip.type) throw new Error('持久舰 shipClass 与战斗舰 hull 不匹配。');
+    if (ship.variant !== battleShip.variant) throw new Error('持久舰 variant 与战斗舰改型不匹配。');
+
+    const def = getShipDef(ship.shipClass, ship.variant).def;
+    if (ship.componentHp && ship.componentHp.length !== def.components.length) {
+      throw new Error('持久舰 componentHp 长度与舰船定义不一致。');
+    }
+    if (battleShip.components.length !== def.components.length) {
+      throw new Error('战斗舰组件数量与舰船定义不一致。');
+    }
+    if (ship.componentHp) {
+      for (let i = 0; i < ship.componentHp.length; i++) {
+        const hp = ship.componentHp[i];
+        if (!Number.isFinite(hp) || hp < 0 || hp > def.components[i].maxHp) {
+          throw new Error('持久舰组件 HP 越界（应为有限值且落在 [0, maxHp]）。');
+        }
+      }
+    }
+  }
+  const participating = battle.ships.filter((candidate) => candidate.team === 'A');
+  for (const battleShip of participating) {
+    const count = bindings.filter((binding) => binding.battleShipId === battleShip.id).length;
+    if (count !== 1) throw new Error(`Team A 战斗舰 #${battleShip.id} 的绑定数量不为 1（实际 ${count}）。`);
+  }
 }
 
 /** 将持久舰队的已部署未失能舰与战斗 Team A 舰建成稳定绑定，并注入组件 HP。缺失/重复/结构不匹配立即报错。 */

@@ -115,7 +115,7 @@ V1.0-A 没有修改 core-v4 舰船模板、默认平衡、AI 或黄金回放。
 ### Sector Expedition Code
 
 - `type: "spacewar-sector-expedition"`
-- 版本：`1.0-alpha.3`（真实逐舰舰队）；`1.0-alpha.2` 抽象舰队存档会就地迁移为三艘真实初始舰
+- 版本：`1.0-alpha.4`（真实逐舰舰队；敌方战力自 V1.0-B.1 起改用 core-v4 舰船成本量纲）；`1.0-alpha.2` 抽象舰队 / `1.0-alpha.3` 旧量纲敌战力存档均会确定性迁移为 `1.0-alpha.4`
 - 保存当前星域、实体、敌军、设施、队列、危机、星门、真实舰队与跨域继承状态
 - 旧 `1.0-alpha.1` 永久宇宙实验存档会重置迁移为新的第一星域
 
@@ -150,7 +150,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（22 项）：
+`npm run test:strategy` 覆盖（35 项，无 `as unknown as` 伪造 BattleState）：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；
@@ -158,21 +158,30 @@ npm run build:static
 - 临时建设与回合生产；
 - 本地科研效果与跨域重置；
 - 危机阶段与超时失败；
+- **战略敌方战力与 core-v4 舰船成本同量纲**（预算≥最低合法舰船成本，且等于按预算生成的真实敌舰队成本）；
+- 不同星域前哨 / 星门守卫预算因子差异（约 45%～150% 基线）；
+- `strategicEnemyFleetFor` 确定性且不对强敌压缩；
+- `validateUniverseState` 拒绝敌战力与控制不一致的存档（敌方控制但 0 战力 / 非敌方却有正战力 / 低于最低合法预算）；
 - `engageEnemy` 仅锁定 `PendingStrategicBattle`，不直接削减敌方战力；
 - 待处理战斗锁定 travel / advance-turn，但允许选择星系；
-- `strategicEnemyFleetFor` 确定性且不对强敌压缩；
-- 逐舰失能维修与 `canRepairShip` 前置条件；
-- 紧急 / 稳定 / 断后撤离的真实逐舰损失；
-- `previewExtractLosses` 与实际撤离损失一致；
-- 三星域完整循环；
-- `1.0-alpha.3` 远征码深层校验；
-- `1.0-alpha.2` → `1.0-alpha.3` 迁移为真实舰船并移除抽象字段；
-- 真实 `core-v4` 战斗结果写回：destroyed 删除、敌方剩余战力由 Team B 重算、清零转 neutral、单回合推进；
-- 写回幂等与玩家全灭 → 崩溃。
+- **待处理战斗逻辑层锁定**：`canQueueFacility` / `canQueueResearch` / `canEngageEnemy` / `canCalibrateGate` / `canExtractSector` 在 pending 时一律 false（与 UI 禁用共同防呆）；
+- 单舰高压紧急撤离最多损失 `max(0, 总数-1)`，不产生空舰队；
+- `previewExtractLosses` 返回具体舰船 ID 且与实际撤离一致；
+- 真实 `core-v4` 战斗结果写回：destroyed 删除、敌方剩余战力由真实 Team B（部分摧毁）重算、清零转 neutral、单回合推进；
+- 写回后 escaped 玩家舰归一化为 `escaped=false / deployed=true`，未参战舰状态完全不变；
+- `validatePersistentBattleBindings`：合法通过；重复 campaignShipId / 未部署舰参战 / hull·改型不匹配 / battleShipId 重复 均抛错；
+- 写回幂等与玩家全灭 → 崩溃；
+- 战斗 seed / ruleset 不一致、敌方舰队与 pending 不一致、战后战力高于战前 一律拒绝写回；
+- 跨星域继承真实舰队（舰船 ID 持续保留）；
+- `1.0-alpha.2` → `1.0-alpha.4` 迁移为真实舰船（旧抽象战力换算为 core-v4 价值、保留失能舰）；
+- `1.0-alpha.3` → `1.0-alpha.4` 迁移确定性重建敌战力（旧量纲 → core-v4 价值）；
+- `1.0-alpha.4` 远征码完整往返 + 拒绝损坏状态（不存在星门 / 重复永久蓝图）。
+
+> V1.0-B.1 修复了一处真实写回缺陷：`applyStrategicBattleResult` 原先将战后 `enemyPower` / `control` 写到了原始 `state` 的星系对象上，而返回值是深拷贝的 `next`，导致敌方剩余战力从未真正生效、星系清零逻辑失效；现改为写入克隆后的 `target` 星系。
 
 ## 当前边界
 
-V1.0-B 已用 V0.7 真实逐舰持久舰队与组件 HP 替代抽象舰船数量 / 战力，并将战略交战接入 `core-v4` 真实战斗（共享模拟 / 渲染 / HUD / 绑定路径，`BattleOrigin = 'strategy'`）。以下内容仍属于 V1.0-C：
+V1.0-B 已用 V0.7 真实逐舰持久舰队与组件 HP 替代抽象舰船数量 / 战力，并将战略交战接入 `core-v4` 真实战斗（共享模拟 / 渲染 / HUD / 绑定路径，`BattleOrigin = 'strategy'`）。V1.0-B.1 进一步统一战力量纲（战略 / 战役敌军、战后剩余战力、存档迁移均改用 core-v4 舰船成本）、强化战斗写回的安全校验与 UI 待处理战斗锁定，并修复了战后敌方战力写回失效的真实缺陷。以下内容仍属于 V1.0-C：
 
 - 将 V0.8 指挥官与候补系统接入新模式；
 - 多据点与真实运输航线；

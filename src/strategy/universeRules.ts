@@ -1,8 +1,18 @@
 import { generateUniverse, hash32 } from './universeGenerator';
-import { campaignFleetPower, campaignShipCost } from '../campaign/fleet/campaignPower';
+import {
+  battleTeamRemainingPower,
+  campaignFleetEntryCost,
+  campaignFleetPower,
+  systemEnemyBudget
+} from '../campaign/fleet/campaignPower';
 import { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import { importBattleResult } from '../campaign/fleet/battleResultImporter';
-import { PersistentBattleBinding, strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
+import {
+  PersistentBattleBinding,
+  strategicEnemyFleetFor,
+  validatePersistentBattleBindings
+} from '../campaign/fleet/battleAdapter';
+import { RULESET_V4 } from '../sim/battleConfig';
 import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
 import type { BattleState } from '../sim/battleTypes';
 import type {
@@ -192,18 +202,9 @@ export function strategicFleetPower(state: UniverseState): number {
 
 // ---------------- 战略战斗回写辅助 ----------------
 
-/** 敌方剩余战力：仅由真实 Team B 结果计算（destroyed/disabled 不贡献，escaped/operational 按成本×组件完整度）。 */
+/** 敌方剩余战力：复用与持久舰战力同一套成本单位的共享函数（destroyed/disabled 不贡献，escaped/operational 按成本×完整度）。 */
 function enemyRemainingPower(battle: BattleState): number {
-  let total = 0;
-  for (const ship of battle.ships.filter((candidate) => candidate.team === 'B')) {
-    if (ship.combatState === 'destroyed' || ship.combatState === 'disabled') continue;
-    const cost = campaignShipCost(ship.type, ship.variant);
-    const max = ship.components.reduce((sum, component) => sum + component.maxHp, 0);
-    const current = ship.components.reduce((sum, component) => sum + Math.max(0, Math.min(component.maxHp, component.hp)), 0);
-    const integrity = max > 0 ? current / max : 0;
-    total += cost * integrity;
-  }
-  return Math.max(0, Math.round(total));
+  return battleTeamRemainingPower(battle, 'B');
 }
 
 function teamACombatIds(battle: BattleState, bindings: ReadonlyArray<PersistentBattleBinding>, combatState: string): string[] {
@@ -288,7 +289,10 @@ function enemyExpansion(state: UniverseState): void {
     return;
   }
   target.control = 'enemy';
-  target.enemyPower = Math.max(target.enemyPower, 14 + state.sectorIndex * 5 + (state.crisis.phase === 'collapse' ? 8 : 0));
+  target.enemyPower = Math.max(
+    target.enemyPower,
+    Math.max(50, Math.round(systemEnemyBudget(state.sectorIndex, false) * 0.5))
+  );
   appendLog(state, `敌方势力扩张至${target.name}，当地出现战力 ${target.enemyPower} 的守军。`);
 }
 
@@ -345,7 +349,7 @@ export function canEstablishBase(state: UniverseState, entityId: string): boolea
 }
 
 export function canQueueFacility(state: UniverseState, facilityType: FacilityType): boolean {
-  if (state.status !== 'active') return false;
+  if (state.status !== 'active' || state.pendingBattle) return false;
   const base = baseEntity(state);
   if (!base || state.fleet.systemId !== base.systemId) return false;
   const queue = base.constructionQueue ?? [];
@@ -355,7 +359,7 @@ export function canQueueFacility(state: UniverseState, facilityType: FacilityTyp
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
-  if (state.status !== 'active' || !baseEntity(state)) return false;
+  if (state.status !== 'active' || !baseEntity(state) || state.pendingBattle) return false;
   if (state.faction.localResearch.includes(projectId)) return false;
   if (state.faction.researchQueue.some((order) => order.projectId === projectId)) return false;
   if (state.faction.researchQueue.length >= 2) return false;
@@ -364,7 +368,7 @@ export function canQueueResearch(state: UniverseState, projectId: ResearchProjec
 
 export function canEngageEnemy(state: UniverseState): boolean {
   const current = state.systems.find((system) => system.id === state.fleet.systemId);
-  return state.status === 'active' && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
+  return state.status === 'active' && !state.pendingBattle && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
 }
 
 export function canRepairFleet(state: UniverseState): boolean {
@@ -380,6 +384,7 @@ export function canRepairShip(state: UniverseState, campaignShipId: string): boo
 }
 
 export function canCalibrateGate(state: UniverseState): boolean {
+  if (state.pendingBattle) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   return state.status === 'active' && !!gate && gate.surveyed && gate.systemId === state.fleet.systemId &&
@@ -392,12 +397,16 @@ export function canExtractSector(
   mode: ExtractionMode,
   rearguardShips = 0
 ): boolean {
+  if (state.pendingBattle) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   if (
     state.status !== 'active' || !gate || !gate.surveyed || gate.systemId !== state.fleet.systemId ||
     (system?.enemyPower ?? 0) > 0 || rearguardShips < 0 || rearguardShips >= strategicFleetCounts(state.fleet).operational
   ) return false;
+  // 任何成功撤离必须至少保留一艘舰船（含失能舰），不得产生空舰队或零舰船 victory。
+  const wouldLose = previewExtractLosses(state, mode, rearguardShips).length;
+  if (state.fleet.ships.length - wouldLose < 1) return false;
   if (mode === 'stable') {
     return state.extraction.calibration >= state.extraction.requiredCalibration &&
       state.faction.resources.supplies >= 8 && state.fleet.fuel >= 2;
@@ -552,7 +561,11 @@ function calibrateGate(state: UniverseState): UniverseState {
   return next;
 }
 
-/** 确定性选择撤离损失舰船：稳定撤离只损失断后舰（保留失能舰）；紧急撤离先舍弃失能舰，再按稳定 ID 顺序损失断后舰与高压额外舰。 */
+/**
+ * 确定性选择撤离损失舰船：稳定撤离只损失断后舰（保留失能舰）；紧急撤离先舍弃失能舰，再按稳定 ID 顺序损失断后舰与高压额外舰。
+ * 统一裁剪：任何成功撤离至少保留一艘舰船（maximumLosses = max(0, 总数 - 1)）。
+ * 损失 ID 唯一、顺序稳定、不依赖当前数组偶然顺序；仅剩一艘舰时高压撤离不会删除最后一艘。
+ */
 function selectExtractLosses(fleet: StrategicFleet, mode: ExtractionMode, rearguard: number, extraLoss: number): string[] {
   const operational = fleet.ships
     .filter((ship) => !ship.disabled)
@@ -566,7 +579,9 @@ function selectExtractLosses(fleet: StrategicFleet, mode: ExtractionMode, reargu
   if (mode === 'emergency') {
     lost.push(...operational.slice(rearguard, rearguard + extraLoss).map((ship) => ship.campaignShipId));
   }
-  return lost;
+  const unique = [...new Set(lost)];
+  const maximumLosses = Math.max(0, fleet.ships.length - 1);
+  return unique.slice(0, maximumLosses);
 }
 
 /** UI 预览：给定撤离模式与断后舰数，确定性返回将损失的舰船 ID 列表（与实际撤离逻辑完全一致）。 */
@@ -743,8 +758,14 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
 /**
  * 将一次完成的真实 core-v4 战略战斗结果写回战略状态。
  * 幂等：若已无待处理战斗 / 状态非 active / 战斗未结束，直接返回原状态（结果只应用一次）。
- * - 玩家舰：destroyed 永久删除；disabled/escaped/operational 保留组件 HP；未参战舰不变。
- * - 敌方剩余战力：仅由真实 Team B 结果重算（destroyed/disabled 不贡献，escaped/operational 按成本×完整度）。
+ * 写回前执行严格校验，任何不匹配都拒绝应用并抛出明确错误（绝不静默写入任意 BattleState）：
+ * - 战斗 binding 与当前战略舰队 / Team A 战斗舰结构一致（见 validatePersistentBattleBindings）；
+ * - battle.seed / ruleset 与预期 core-v4 一致；
+ * - Team B 的舰种/改型/数量与 pendingBattle.enemyFleet 一致；
+ * - pendingBattle.systemId 等于舰队当前星系、对应星系仍为敌方且 enemyPower 与 pending 一致。
+ * 写回规则：
+ * - 玩家舰：destroyed 永久删除；disabled 保持 disabled；escaped 归一化为 escaped=false / deployed=true（脱离战斗而非离队）；未参战舰原状态完全不变。
+ * - 敌方剩余战力：仅由真实 Team B 结果重算（destroyed/disabled 不贡献，escaped/operational 按成本×完整度）；无增援时不得高于战前。
  * - 仅推进一个战略回合；清零则星系恢复 neutral，否则保持 enemy。
  */
 export function applyStrategicBattleResult(
@@ -753,29 +774,59 @@ export function applyStrategicBattleResult(
   bindings: ReadonlyArray<PersistentBattleBinding>
 ): UniverseState {
   if (!state.pendingBattle || state.status !== 'active' || !battle.finished) return state;
-  const next = cloneState(state);
-  const pending = next.pendingBattle!;
-  const system = next.systems.find((candidate) => candidate.id === pending.systemId);
-  if (!system) return state;
+  const pending = state.pendingBattle;
+  const system = state.systems.find((candidate) => candidate.id === pending.systemId);
+  if (!system) throw new Error('战略待处理战斗引用了不存在的星系。');
 
+  // —— 关联与结构校验（拒绝任意不匹配的 BattleState）——
+  if (battle.seed !== pending.battleSeed) {
+    throw new Error(`战斗 seed（${battle.seed}）与待处理战斗（${pending.battleSeed}）不一致。`);
+  }
+  if (battle.ruleset !== RULESET_V4) {
+    throw new Error(`战斗规则集（${battle.ruleset ?? '未知'}）不是预期的 core-v4（${RULESET_V4}）。`);
+  }
+  if (pending.systemId !== state.fleet.systemId) {
+    throw new Error('待处理战斗的星系与舰队当前所在星系不一致。');
+  }
+  if (system.control !== 'enemy' || system.enemyPower !== pending.enemyPowerBefore) {
+    throw new Error('待处理战斗对应星系的控制状态 / 战前预算与存档不一致。');
+  }
+  if (!teamBMatchesPending(battle, pending.enemyFleet)) {
+    throw new Error('战斗敌方舰队（Team B）与待处理战斗的 enemyFleet 不一致。');
+  }
+  validatePersistentBattleBindings(bindings, toPersistentFleet(state.fleet), battle);
+
+  const next = cloneState(state);
+  const target = next.systems.find((candidate) => candidate.id === pending.systemId)!;
   const persistentFleet = toPersistentFleet(next.fleet);
   const ownBefore = persistentFleet.ships.length;
   const updatedFleet = importBattleResult(persistentFleet, battle, bindings);
-  next.fleet.ships = updatedFleet.ships.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
+
+  // 归一化 escaped：从本次战斗脱离的玩家舰标准化为 escaped=false / deployed=true，
+  // disabled 舰保持 disabled，destroyed 已删除，未参战舰保持原 deployed/escaped/disabled/towed/componentHp。
+  const escapedIds = new Set(teamACombatIds(battle, bindings, 'escaped'));
+  const standardizedShips = updatedFleet.ships.map((ship) => {
+    if (!escapedIds.has(ship.campaignShipId)) return ship;
+    return { ...ship, escaped: false, deployed: true };
+  });
+  next.fleet.ships = standardizedShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
   const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
 
   const enemyRemaining = enemyRemainingPower(battle);
-  system.enemyPower = enemyRemaining;
-  system.control = enemyRemaining === 0 ? 'neutral' : 'enemy';
+  // 无增援 / 敌方恢复 / 新单位生成时，战后战力不得高于战前（离散装箱误差已在共享函数层归整）。
+  if (enemyRemaining > pending.enemyPowerBefore) {
+    throw new Error(`敌方战后战力 ${enemyRemaining} 高于战前 ${pending.enemyPowerBefore}，拒绝写回。`);
+  }
+  target.enemyPower = enemyRemaining;
+  target.control = enemyRemaining === 0 ? 'neutral' : 'enemy';
 
   const destroyedIds = teamACombatIds(battle, bindings, 'destroyed');
   const disabledIds = teamACombatIds(battle, bindings, 'disabled');
-  const escapedIds = teamACombatIds(battle, bindings, 'escaped');
   next.faction.legacy.shipsLost += shipsLost;
   appendLog(
     next,
     `战斗结束于${system.name}（battleId ${pending.battleId} / seed ${pending.battleSeed}）：` +
-      `玩家损毁 [${destroyedIds.join(', ')}]，失能 [${disabledIds.join(', ')}]，逃脱 [${escapedIds.join(', ')}]；` +
+      `玩家损毁 [${destroyedIds.join(', ')}]，失能 [${disabledIds.join(', ')}]，脱离 [${escapedIds.size ? [...escapedIds].sort().join(', ') : '无'}]；` +
       `敌方战力 ${pending.enemyPowerBefore} → ${system.enemyPower}${system.enemyPower === 0 ? '；星系已清除' : ''}。`
   );
 
@@ -789,4 +840,23 @@ export function applyStrategicBattleResult(
   }
 
   return advanceUniverseTurn(next, '战斗行动结束');
+}
+
+/** 校验战斗 Team B 的舰种/改型/数量是否与 pending 的 enemyFleet 完全一致。 */
+function teamBMatchesPending(battle: BattleState, enemyFleet: ReadonlyArray<{ shipClass: string; variant: string; count: number }>): boolean {
+  const counts = new Map<string, number>();
+  for (const ship of battle.ships.filter((candidate) => candidate.team === 'B')) {
+    const key = `${ship.type}:${ship.variant}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const want = new Map<string, number>();
+  for (const entry of enemyFleet) {
+    const key = `${entry.shipClass}:${entry.variant}`;
+    want.set(key, (want.get(key) ?? 0) + Math.max(0, Math.floor(entry.count)));
+  }
+  if (counts.size !== want.size) return false;
+  for (const [key, value] of want) {
+    if (counts.get(key) !== value) return false;
+  }
+  return true;
 }

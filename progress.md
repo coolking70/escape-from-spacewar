@@ -125,9 +125,9 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.3` (real per-ship fleet); `1.0-alpha.2` (abstract fleet) is migrated in place.
+- Current version: `1.0-alpha.4` (real per-ship fleet; enemy power uses the core-v4 ship-cost dimension). `1.0-alpha.2` (abstract fleet) and `1.0-alpha.3` (old-dimension enemy power) are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state (per-ship) and inherited assets.
-- `1.0-alpha.2` abstract fleets migrate deterministically into three real starter ships with disabled flags preserved; `1.0-alpha.1` resets into a fresh first strategic sector.
+- `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
 
 ## V1.0-B real persistent fleet and core-v4 strategic battle
@@ -142,6 +142,17 @@ V1.0-B removes the last abstract fields from the strategic layer and wires it to
 - Cross-sector extraction carries the real ships (disabled dropped on emergency), and `repairFleet` is replaced by per-ship `repairShip`.
 - `StrategicUniversePanel` renders a per-ship roster with status, component integrity, key-component destruction warnings and per-ship repair buttons.
 
+## V1.0-B.1 boundary fixes, power-unit unification and save upgrade
+
+V1.0-B.1 closes the gaps left after the real-fleet wiring:
+
+- **Power-unit unification (same core-v4 dimension):** `systemEnemyBudget(sectorIndex, gateGuard)` replaces the old `20 ~ 70` abstract numbers. Outpost factors `[0.55, 0.78, 0.85]` and gate-guard factors `[0.95, 1.2, 1.5]` scale the `strategicBaselineFleetPower()` baseline; the floor is `max(50, …)` so every enemy budget is at least one legal ship. Enemy generation, post-battle remaining power, migration and expansion all reuse the same `campaignFleetEntryCost` / `battleTeamRemainingPower` unit, so a generated enemy fleet's cost equals its budget (within one cheapest-ship tolerance).
+- **Writeback bug fixed:** `applyStrategicBattleResult` previously mutated `system` resolved on the *original* `state`, while the returned value is a deep clone (`cloneState`). The post-battle `enemyPower` and `control` therefore never reached the serialized state — the enemy system kept its pre-battle power and the clear-to-neutral path was dead. It now writes to `target` resolved on the cloned `next`.
+- **Strict writeback validation (no silent writes):** seed/ruleset mismatch, `systemId` ≠ fleet location, `control`/`enemyPower` inconsistency, `Team B` ≠ `pending.enemyFleet`, and `validatePersistentBattleBindings` (unique campaign/battle ids, no undeployed ship in combat, hull·variant match, one binding per participating ship) all throw. Post-battle power above pre-battle throws.
+- **`escaped` normalization:** ships that left the battlefield are standardized to `escaped=false / deployed=true` (left the fight, not the fleet); undeployed ships are untouched.
+- **Pending-battle UI + logic lock:** `StrategicUniversePanel` disables every action (travel, survey, extract, base, build, research, calibrate, next-turn) and shows a banner while a `pendingBattle` exists; the `can*` predicates gain the same `state.pendingBattle` guard as defense-in-depth. Loss preview now lists concrete ship IDs.
+- **Save upgrade to `1.0-alpha.4`:** `decodeUniverse` / `loadUniverse` branch on `1.0-alpha.2` (abstract → per-ship via `legacyAbstractPowerToCoreBudget` + `recomputeEnemyPowers`) and `1.0-alpha.3` (`recomputeEnemyPowers` rebuilds enemy power in the core-v4 dimension). `validateUniverseState` enforces `version === 1.0-alpha.4`, enemy/control consistency and `fleet.ships.length >= 1`.
+
 ## Verification matrix
 
 ```bash
@@ -155,7 +166,7 @@ npm run test:stress
 npm run build:static
 ```
 
-The V1.0-B strategic suite (`runStrategicTests`, 22 cases) covers:
+The V1.0-B.1 strategic suite (`runStrategicTests`, 35 cases, no `as unknown as` fabricated `BattleState`) covers:
 
 - deterministic nine-system generation and connectivity
 - gate, relic and hostile-system generation
@@ -163,17 +174,22 @@ The V1.0-B strategic suite (`runStrategicTests`, 22 cases) covers:
 - temporary construction and turn income
 - local research and cross-sector reset
 - crisis phase progression and timeout defeat
+- **strategic enemy power shares the core-v4 ship-cost dimension** (budget ≥ cheapest legal ship; generated fleet cost == budget within tolerance)
+- outpost / gate-guard budget factors across sectors (≈ 45–150% baseline)
+- `validateUniverseState` rejects enemy-power / control mismatches
 - `engageEnemy` only locks a `PendingStrategicBattle` and does not immediately reduce enemy power
 - pending battle locks travel / advance-turn while allowing system selection
-- deterministic `strategicEnemyFleetFor` that does not compress strong enemies
-- per-ship disabled-ship repair and `canRepairShip` preconditions
-- emergency / stable / rearguard extraction losses (real per-ship, deterministic)
-- `previewExtractLosses` matching actual extraction losses
-- three-sector completion
-- `1.0-alpha.3` code round-trip and invalid-state rejection
-- `1.0-alpha.2` → `1.0-alpha.3` migration into real ships with abstract fields removed
-- real `core-v4` battle-result writeback: destroyed deletion, enemy power from Team B, clear-to-neutral, single-turn advance
-- idempotent writeback and player-wipe → collapsed
+- **`can*` logic lock** (queue facility / research / engage / calibrate / extract all false under pending)
+- single-ship high-pressure extraction loses at most `max(0, total-1)` (no empty fleet)
+- `previewExtractLosses` returns concrete ship IDs and matches the actual extraction
+- real `core-v4` writeback: destroyed deletion, enemy power recomputed from real Team B, escaped normalization, undeployed preserved
+- `validatePersistentBattleBindings`: positive + duplicate-id / undeployed / hull-mismatch / non-1-binding negatives
+- idempotent writeback, player-wipe → collapsed
+- writeback rejection: seed/ruleset mismatch, Team B ≠ pending, post-battle power above pre-battle
+- cross-sector real-fleet inheritance (ship IDs preserved)
+- `1.0-alpha.2` → `1.0-alpha.4` migration (abstract power converted, disabled preserved)
+- `1.0-alpha.3` → `1.0-alpha.4` migration (deterministic enemy-power rebuild)
+- `1.0-alpha.4` code round-trip and corrupted-state rejection
 
 ## Next milestone: V1.0-B/C
 

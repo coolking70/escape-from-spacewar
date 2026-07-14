@@ -2,6 +2,10 @@ import type { PersistentFleet } from '../campaign/fleet/persistentFleet';
 import type { DeploymentSelection } from '../campaign/deployment/deploymentSystem';
 import type { FleetEntry } from '../sim/battleTypes';
 
+/** 当前 Sector Expedition Code 版本。V1.0-B.1 起为 1.0-alpha.4（敌战力改用 core-v4 价值量纲、escaped 语义统一、存档深层校验增强）。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.4';
+export type SectorExpeditionVersion = '1.0-alpha.4';
+
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
 export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid';
@@ -149,7 +153,7 @@ export interface UniverseLogEntry {
  * temporary strategic sector rather than a permanent galaxy.
  */
 export interface UniverseState {
-  version: '1.0-alpha.3';
+  version: SectorExpeditionVersion;
   seed: number;
   sectorIndex: number;
   targetSectorCount: number;

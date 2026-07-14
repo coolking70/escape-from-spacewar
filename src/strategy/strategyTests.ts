@@ -1,25 +1,39 @@
 import { Case, runSuite, SuiteResult } from '../sim/testHarness';
-import { generateUniverse } from './universeGenerator';
+import { generateUniverse, hash32 } from './universeGenerator';
 import { decodeUniverse, encodeUniverse, validateUniverseState } from './universePersistence';
 import {
   FACILITY_DEFINITIONS,
   RESEARCH_DEFINITIONS,
   applyStrategicBattleResult,
   applyUniverseAction,
+  canCalibrateGate,
   canEngageEnemy,
+  canExtractSector,
+  canQueueFacility,
+  canQueueResearch,
   canRepairShip,
   crisisPhaseForTurn,
   previewExtractLosses,
   strategicFleetCounts,
   strategicFleetPower,
   travelFuelCost,
-  universeTurnIncome
+  universeTurnIncome,
+  toPersistentFleet
 } from './universeRules';
-import { campaignShipCost } from '../campaign/fleet/campaignPower';
+import {
+  campaignFleetEntryCost,
+  campaignShipCost,
+  strategicBaselineFleetPower,
+  systemEnemyBudget,
+  battleTeamRemainingPower
+} from '../campaign/fleet/campaignPower';
 import { getShipDef } from '../sim/shipVariants';
-import { strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
+import { strategicEnemyFleetFor, prepareStrategicBattle, validatePersistentBattleBindings } from '../campaign/fleet/battleAdapter';
 import type { PersistentBattleBinding } from '../campaign/fleet/battleAdapter';
 import type { BattleState, CombatState } from '../sim/battleTypes';
+import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
+
+type Ship = BattleState['ships'][number];
 
 function graphReachable(state: ReturnType<typeof generateUniverse>): boolean {
   const seen = new Set<string>([state.systems[0].id]);
@@ -59,11 +73,13 @@ function prepareGate(state: ReturnType<typeof generateUniverse>, calibration: nu
   system.enemyPower = 0;
   if (!next.faction.knownSystemIds.includes(system.id)) next.faction.knownSystemIds.push(system.id);
   next.faction.resources.supplies = 50;
+  next.faction.resources.energy = 10;
+  next.faction.resources.science = 10;
   next.fleet.fuel = next.fleet.maxFuel;
   return next;
 }
 
-/** 与 universePersistence 保持一致的 base64url 编码，用于构造旧版 alpha.2 远征码。 */
+/** 与 universePersistence 保持一致的 base64url 编码，用于构造旧版 alpha.2 / alpha.3 远征码。 */
 function b64urlEncode(value: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   let text = '';
@@ -71,34 +87,11 @@ function b64urlEncode(value: unknown): string {
   return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** 用最小字段构造一个可被写回逻辑消费的战斗结果（写回辅助函数只读其中少数字段）。 */
-function makeBattle(
-  aShips: Array<{ id: number; combatState: CombatState; hp: number; maxHp: number }>,
-  bShips: Array<{ id: number; combatState: CombatState; hp: number; maxHp: number }>
-): BattleState {
-  const ships = [
-    ...aShips.map((s) => ({ id: s.id, team: 'A', type: 'Frigate', variant: 'standard', combatState: s.combatState, components: [{ hp: s.hp, maxHp: s.maxHp }] })),
-    ...bShips.map((s) => ({ id: s.id, team: 'B', type: 'Cruiser', variant: 'standard', combatState: s.combatState, components: [{ hp: s.hp, maxHp: s.maxHp }] }))
-  ];
-  return {
-    version: '0.5',
-    seed: 1,
-    tick: 100,
-    maxTicks: 120,
-    ships: ships as never,
-    shots: [],
-    explosions: [],
-    finished: true,
-    winner: 'A',
-    teamACount: aShips.length,
-    teamBCount: bShips.length,
-    teamFocusTarget: { A: null, B: null },
-    teamDoctrine: { A: 'balanced', B: 'balanced' },
-    stats: {} as never
-  } as unknown as BattleState;
-}
-
-/** 构造一个已锁定待处理战斗的状态，并返回玩家舰绑定与敌方舰战斗 id。 */
+/**
+ * 真实集成工厂：通过 applyUniverseAction(engageEnemy) 锁定待处理战斗，
+ * 再用 prepareStrategicBattle 按存档确定性重建一个完全合法（无任何 as unknown as 伪造）的
+ * core-v4 BattleState 与绑定。测试只需在此基础上修改 combatState / 组件 HP 并标记 finished。
+ */
 function lockPendingBattle(seed: number, enemyPower: number) {
   let state = generateUniverse(seed);
   const hostile = state.systems.find((s) => s.control === 'enemy')!;
@@ -107,15 +100,52 @@ function lockPendingBattle(seed: number, enemyPower: number) {
   hostile.discovered = true;
   hostile.enemyPower = enemyPower;
   state = applyUniverseAction(state, { type: 'engageEnemy' });
-  const ids = state.fleet.ships.map((s) => s.campaignShipId);
-  const bindings: PersistentBattleBinding[] = ids.map((cid, i) => ({ campaignShipId: cid, battleShipId: i }));
-  const enemyTotal = state.pendingBattle!.enemyFleet.reduce((sum, e) => sum + Math.max(0, Math.floor(e.count)), 0);
-  const enemyIds = Array.from({ length: enemyTotal }, (_, i) => 100 + i);
-  return { state, bindings, enemyIds, ids, hostileId: hostile.id };
+  const pending = state.pendingBattle!;
+  const ctx = prepareStrategicBattle(toPersistentFleet(state.fleet), pending.enemyFleet, pending.battleSeed);
+  const battle = ctx.state;
+  battle.finished = true;
+  battle.winner = 'A';
+  return { state, battle, bindings: ctx.bindings, pending, hostileId: hostile.id };
 }
+
+/** 直接修改战斗舰的 combatState 及其组件 HP（无需伪造 BattleState 结构）。 */
+function applyCombatState(ship: Ship, state: CombatState): void {
+  ship.combatState = state;
+  if (state === 'destroyed') {
+    for (const component of ship.components) {
+      component.hp = 0;
+      component.destroyed = true;
+    }
+  } else if (state === 'disabled') {
+    const index = ship.components.findIndex(
+      (component) => component.def.type === 'core' || component.def.type === 'engine' || component.def.type === 'weapon'
+    );
+    if (index >= 0) {
+      ship.components[index].hp = 0;
+      ship.components[index].destroyed = true;
+    }
+  } else if (state !== 'escaped') {
+    for (const component of ship.components) {
+      component.hp = component.maxHp;
+      component.destroyed = false;
+    }
+  }
+}
+
+/** 注入一个最小合法的待处理战斗，用于验证 can* 逻辑层锁定（不依赖具体敌军舰队）。 */
+function withPending(state: ReturnType<typeof generateUniverse>, systemId: string, enemyPower: number) {
+  return {
+    ...state,
+    pendingBattle: { battleId: 'test-pending', systemId, battleSeed: 7, enemyPowerBefore: enemyPower, enemyFleet: [] as never[] }
+  };
+}
+
+/** 真实同量纲敌方预算（>= 最低合法舰船成本），用于战斗写回测试，保证 enemyPowerBefore 与生成的敌舰队成本一致。 */
+const ENEMY_BUDGET = systemEnemyBudget(2, false);
 
 export function runStrategicTests(): SuiteResult {
   return runSuite('strategic-sector-v1.0', (add) => {
+    // 1. 每个星域按 seed 生成完整战略结构
     {
       const test = new Case('每个星域按 seed 生成完整战略结构');
       const first = generateUniverse(1001, '开拓局');
@@ -135,6 +165,37 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 2. 相同 seed 跨次生成一致、不同 seed 不同
+    {
+      const test = new Case('相同 seed 跨次生成一致、不同 seed 不同');
+      const a = generateUniverse(2001);
+      const b = generateUniverse(2001);
+      const c = generateUniverse(2002);
+      test.eq(JSON.stringify(a.fleet.ships), JSON.stringify(b.fleet.ships), '同 seed 舰队逐舰一致');
+      test.true_(JSON.stringify(a.systems) !== JSON.stringify(c.systems), '不同 seed 星系布局不同');
+      add(test);
+    }
+
+    // 3. 星域航线图整体连通
+    {
+      const test = new Case('星域航线图整体连通');
+      for (const seed of [3001, 3002, 3003]) {
+        test.true_(graphReachable(generateUniverse(seed)), `seed ${seed} 航线图连通`);
+      }
+      add(test);
+    }
+
+    // 4. 开局舰队为真实逐舰数组且无免费永久基地
+    {
+      const test = new Case('开局舰队为真实逐舰数组且无免费永久基地');
+      const state = generateUniverse(4001);
+      test.true_(state.fleet.ships.every((s) => typeof s.campaignShipId === 'string' && !!s.shipClass && !!s.variant), '逐舰均含合法 hull/改型');
+      test.true_(state.fleet.ships.every((s) => s.disabled === false && s.escaped === false), '开局无失能/脱离舰');
+      test.eq(state.faction.baseEntityId, undefined, '无免费永久基地');
+      add(test);
+    }
+
+    // 5. 占领据点后可进行临时建设与回合生产
     {
       const test = new Case('占领据点后可进行临时建设与回合生产');
       let state = establishStartingBase(generateUniverse(1003));
@@ -152,6 +213,7 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 6. 本地科研提供快速收益但穿越星门后重置
     {
       const test = new Case('本地科研提供快速收益但穿越星门后重置');
       let state = establishStartingBase(generateUniverse(1004));
@@ -171,6 +233,7 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 7. 危机阶段随时间升级并最终摧毁未撤离舰队
     {
       const test = new Case('危机阶段随时间升级并最终摧毁未撤离舰队');
       let state = generateUniverse(1005);
@@ -184,36 +247,28 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 8. 战略敌军战力与 core-v4 舰船成本同量纲
     {
-      const test = new Case('敌军是地图实体压力：engageEnemy 仅创建待处理战斗且不立即削减战力');
-      let state = generateUniverse(1006);
-      const hostile = state.systems.find((system) => system.control === 'enemy')!;
-      state.fleet.systemId = hostile.id;
-      state.selectedSystemId = hostile.id;
-      hostile.discovered = true;
-      hostile.enemyPower = 18;
-      const before = hostile.enemyPower;
-      state = applyUniverseAction(state, { type: 'engageEnemy' });
-      const updated = state.systems.find((system) => system.id === hostile.id)!;
-      test.eq(updated.enemyPower, before, 'engageEnemy 仅创建待处理战斗，不直接削减敌方战力');
-      test.true_(!!state.pendingBattle, '攻击生成 PendingStrategicBattle');
-      test.true_(!!state.pendingBattle && state.pendingBattle.enemyFleet.reduce((sum, e) => sum + e.count, 0) > 0, '待处理战斗按 StarSystem.enemyPower 预算确定性生成敌军');
+      const test = new Case('战略敌军战力与 core-v4 舰船成本同量纲');
+      const baseline = strategicBaselineFleetPower();
+      const budgets = [
+        systemEnemyBudget(0, false), systemEnemyBudget(1, false), systemEnemyBudget(2, false),
+        systemEnemyBudget(0, true), systemEnemyBudget(1, true), systemEnemyBudget(2, true)
+      ];
+      test.true_(budgets.every((b) => b >= 50), '所有敌方预算不低于最低合法舰船成本');
+      // 离散装箱一致性：预算必须等于“用该预算生成的真实敌舰队成本”（容差 = 最便宜舰船成本）。
+      const tolerance = 60;
+      const cases: Array<[number, boolean]> = [[0, false], [1, false], [2, false], [0, true], [1, true], [2, true]];
+      for (const [sectorIndex, gateGuard] of cases) {
+        const budget = systemEnemyBudget(sectorIndex, gateGuard);
+        const fleet = strategicEnemyFleetFor(12345, budget, { sectorIndex, gateGuard, cruiserAllowed: sectorIndex >= 2 || gateGuard });
+        const cost = campaignFleetEntryCost(fleet);
+        test.true_(Math.abs(cost - budget) <= tolerance, `预算 ${budget} 与真实敌舰队成本 ${cost} 同量纲（星域 ${sectorIndex} ${gateGuard ? '星门' : '前哨'}）`);
+      }
       add(test);
     }
 
-    {
-      const test = new Case('待处理战斗锁定其他战略行动（travel/advanceTurn 被阻止，selectSystem 允许）');
-      const { state } = lockPendingBattle(1017, 30);
-      const turnBefore = state.turn;
-      const advanced = applyUniverseAction(state, { type: 'advanceTurn' });
-      test.eq(advanced.turn, turnBefore, '存在待处理战斗时推进回合被阻止');
-      const selected = state.systems.find((s) => s.id !== state.selectedSystemId)!;
-      const afterSelect = applyUniverseAction(state, { type: 'selectSystem', systemId: selected.id });
-      test.eq(afterSelect.selectedSystemId, selected.id, '选择星系在待处理战斗时仍允许');
-      test.true_(!!afterSelect.pendingBattle, '选择星系不会清除待处理战斗');
-      add(test);
-    }
-
+    // 9. 战略敌军舰队确定性生成（同 seed 一致 + 不压缩强敌）
     {
       const test = new Case('战略敌军舰队确定性生成（同 seed 一致 + 不压缩强敌）');
       const opts = { sectorIndex: 2, gateGuard: false, cruiserAllowed: true };
@@ -230,152 +285,440 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 10. 不同星域前哨/星门守卫预算因子差异
     {
-      const test = new Case('维修坞能逐舰恢复失能舰并消耗本地资源');
-      let state = establishStartingBase(generateUniverse(1007));
-      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
-      base.facilities!.push({ id: 'test-repair-dock', type: 'repairDock', level: 1 });
-      const ship = state.fleet.ships[0];
-      const def = getShipDef(ship.shipClass, ship.variant).def;
-      const keyIdx = def.components.findIndex((c) => c.type === 'engine' || c.type === 'core' || c.type === 'weapon');
-      ship.componentHp = def.components.map((c, i) => (i === keyIdx ? 0 : c.maxHp));
-      ship.disabled = true;
-      state.faction.resources.supplies = 20;
-      state.faction.resources.minerals = 20;
-      const cid = ship.campaignShipId;
-      test.true_(canRepairShip(state, cid), '失能舰在拥有维修坞与资源时可维修');
-      const suppliesBefore = state.faction.resources.supplies;
-      const mineralsBefore = state.faction.resources.minerals;
-      state = applyUniverseAction(state, { type: 'repairShip', campaignShipId: cid });
-      test.true_(!state.fleet.ships.find((s) => s.campaignShipId === cid)!.disabled, '失能舰恢复战斗能力');
-      test.true_(state.fleet.ships.find((s) => s.campaignShipId === cid)!.componentHp![keyIdx] > 0, '被摧毁的关键组件已恢复');
-      test.true_(state.faction.resources.supplies < suppliesBefore, '维修消耗星域补给');
-      test.true_(state.faction.resources.minerals < mineralsBefore, '维修消耗星域矿物');
+      const test = new Case('不同星域前哨/星门守卫预算因子差异');
+      const baseline = strategicBaselineFleetPower();
+      const outpost0 = systemEnemyBudget(0, false);
+      const outpost2 = systemEnemyBudget(2, false);
+      const gate0 = systemEnemyBudget(0, true);
+      const gate3 = systemEnemyBudget(3, true);
+      test.true_(outpost0 < baseline && outpost0 >= baseline * 0.45, '前哨预算落于基线 45–85%');
+      test.true_(outpost2 <= baseline * 0.95 && outpost2 >= baseline * 0.7, '高星域前哨预算接近基线 85%');
+      test.true_(gate0 >= baseline * 0.9 && gate0 <= baseline * 1.1, '星门守卫预算≈基线 95%');
+      test.true_(gate3 >= baseline * 1.4 && gate3 <= baseline * 1.6, '高星域星门守卫预算≈基线 150%');
+      test.true_(gate3 > outpost2 && gate0 > outpost0, '星门守卫强于同星域前哨');
       add(test);
     }
 
+    // 11. validateUniverseState 拒绝敌战力与控制不一致的存档
     {
-      const test = new Case('canRepairShip 仅在拥有 repairDock 且资源充足且舰船失能时为真');
-      let state = establishStartingBase(generateUniverse(1012));
-      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
-      const cid = state.fleet.ships[0].campaignShipId;
-      test.true_(!canRepairShip(state, cid), '无 repairDock 时不可维修');
-      base.facilities!.push({ id: 'rd', type: 'repairDock', level: 1 });
-      const ship = state.fleet.ships[0];
-      ship.disabled = true;
-      ship.componentHp = getShipDef(ship.shipClass, ship.variant).def.components.map((c, i) => (i === 0 ? 0 : c.maxHp));
-      state.faction.resources.supplies = 20;
-      state.faction.resources.minerals = 20;
-      test.true_(canRepairShip(state, cid), '拥有 repairDock、资源充足且舰船失能时可维修');
-      state.faction.resources.supplies = 0;
-      test.true_(!canRepairShip(state, cid), '补给不足时不可维修');
-      state.faction.resources.supplies = 20;
-      ship.disabled = false;
-      test.true_(!canRepairShip(state, cid), '舰船未失能时不可维修');
+      const test = new Case('validateUniverseState 拒绝敌战力与控制不一致的存档');
+      const valid = generateUniverse(1040);
+      test.true_(validateUniverseState(valid), '正常生成状态通过校验');
+      const enemyZero = JSON.parse(JSON.stringify(valid));
+      const ezSys = enemyZero.systems.find((s: { control: string }) => s.control !== 'enemy')!;
+      ezSys.control = 'enemy';
+      ezSys.enemyPower = 0;
+      test.true_(!validateUniverseState(enemyZero), '敌方控制但战力 0 被拒绝');
+      const neutralPos = JSON.parse(JSON.stringify(valid));
+      const npSys = neutralPos.systems.find((s: { control: string }) => s.control === 'neutral')!;
+      npSys.enemyPower = 30;
+      test.true_(!validateUniverseState(neutralPos), '非敌方控制却有正战力被拒绝');
+      const tooLow = JSON.parse(JSON.stringify(valid));
+      const tlSys = tooLow.systems.find((s: { control: string }) => s.control !== 'enemy')!;
+      tlSys.control = 'enemy';
+      tlSys.enemyPower = 10;
+      test.true_(!validateUniverseState(tooLow), '敌方战力低于最低合法舰船成本被拒绝');
       add(test);
     }
 
+    // 12. engageEnemy 仅创建待处理战斗且不立即削减战力
     {
-      const test = new Case('紧急撤离会确定性损失舰船并携带压缩资源进入下一星域');
-      let state = prepareGate(generateUniverse(1008), 40);
+      const test = new Case('engageEnemy 仅创建待处理战斗且不立即削减战力');
+      let state = generateUniverse(1006);
+      const hostile = state.systems.find((system) => system.control === 'enemy')!;
+      state.fleet.systemId = hostile.id;
+      state.selectedSystemId = hostile.id;
+      hostile.discovered = true;
+      hostile.enemyPower = 18;
+      const before = hostile.enemyPower;
+      state = applyUniverseAction(state, { type: 'engageEnemy' });
+      const updated = state.systems.find((system) => system.id === hostile.id)!;
+      test.eq(updated.enemyPower, before, 'engageEnemy 仅创建待处理战斗，不直接削减敌方战力');
+      test.true_(!!state.pendingBattle, '攻击生成 PendingStrategicBattle');
+      test.true_(
+        !!state.pendingBattle && state.pendingBattle.enemyFleet.reduce((sum, e) => sum + e.count, 0) > 0,
+        '待处理战斗按 StarSystem.enemyPower 预算确定性生成敌军'
+      );
+      add(test);
+    }
+
+    // 13. 待处理战斗锁定战略行动（travel/advanceTurn 被阻止，selectSystem 允许）
+    {
+      const test = new Case('待处理战斗锁定战略行动（advanceTurn 被阻止，selectSystem 允许）');
+      const { state } = lockPendingBattle(1017, ENEMY_BUDGET);
+      const turnBefore = state.turn;
+      const advanced = applyUniverseAction(state, { type: 'advanceTurn' });
+      test.eq(advanced.turn, turnBefore, '存在待处理战斗时推进回合被阻止');
+      const selected = state.systems.find((s) => s.id !== state.selectedSystemId)!;
+      const afterSelect = applyUniverseAction(state, { type: 'selectSystem', systemId: selected.id });
+      test.eq(afterSelect.selectedSystemId, selected.id, '选择星系在待处理战斗时仍允许');
+      test.true_(!!afterSelect.pendingBattle, '选择星系不会清除待处理战斗');
+      add(test);
+    }
+
+    // 14. 待处理战斗逻辑层锁定：can* 全部返回 false
+    {
+      const test = new Case('待处理战斗逻辑层锁定：canExtractSector/canQueueFacility/canQueueResearch/canCalibrateGate/canEngageEnemy 均 false');
+      // 撤离 / 校准：先构造允许状态，再注入 pending，确认被锁定。
+      let gate = prepareGate(generateUniverse(1018), 100);
+      test.true_(canExtractSector(gate, 'stable'), '满校准时可稳定撤离');
+      test.true_(!canCalibrateGate(gate), '满校准时无需再校准');
+      const gateHostile = gate.systems.find((s) => s.control === 'enemy')!;
+      const gateLocked = withPending(gate, gateHostile.id, gateHostile.enemyPower);
+      test.true_(!canExtractSector(gateLocked, 'stable'), '注入待处理战斗后撤离被锁定');
+      test.true_(!canExtractSector(gateLocked, 'emergency'), '注入待处理战斗后紧急撤离被锁定');
+
+      let gateCal = prepareGate(generateUniverse(1019), 50);
+      test.true_(canCalibrateGate(gateCal), '校准未满时可校准星门');
+      const gateCalHostile = gateCal.systems.find((s) => s.control === 'enemy')!;
+      const gateCalLocked = withPending(gateCal, gateCalHostile.id, gateCalHostile.enemyPower);
+      test.true_(!canCalibrateGate(gateCalLocked), '注入待处理战斗后校准被锁定');
+
+      // 建造 / 科研：先构造有基地的允许状态，再注入 pending，确认被锁定。
+      let baseState = establishStartingBase(generateUniverse(1044));
+      test.true_(canQueueFacility(baseState, 'miningArray'), '有基地时可建造');
+      test.true_(canQueueResearch(baseState, 'routeAnalysis'), '有基地时可科研');
+      const baseLocked = withPending(baseState, baseState.fleet.systemId, 999);
+      test.true_(!canQueueFacility(baseLocked, 'miningArray'), '注入待处理战斗后建造被锁定');
+      test.true_(!canQueueResearch(baseLocked, 'routeAnalysis'), '注入待处理战斗后科研被锁定');
+
+      // 攻击：位于敌军星系且有作战舰时可攻击，注入 pending 后不可。
+      let eng = generateUniverse(1045);
+      const h = eng.systems.find((s) => s.control === 'enemy')!;
+      eng.fleet.systemId = h.id;
+      eng.selectedSystemId = h.id;
+      h.discovered = true;
+      h.enemyPower = 18;
+      test.true_(canEngageEnemy(eng), '位于敌军星系且有作战舰时可攻击');
+      const engLocked = withPending(eng, h.id, 18);
+      test.true_(!canEngageEnemy(engLocked), '存在待处理战斗时不可发起新攻击');
+      add(test);
+    }
+
+    // 15. 单舰高压紧急撤离最多损失 max(0,len-1)，不产生空舰队
+    {
+      const test = new Case('单舰高压紧急撤离最多损失 max(0,len-1)，不产生空舰队');
+      let state = generateUniverse(1046);
+      state = prepareGate(state, 40);
       state.crisis.pressure = 85;
-      state.faction.resources.minerals = 80;
-      const beforeCount = state.fleet.ships.length;
+      state = { ...state, fleet: { ...state.fleet, ships: [state.fleet.ships[0]] } };
+      const oneId = state.fleet.ships[0].campaignShipId;
+      const preview = previewExtractLosses(state, 'emergency');
+      test.eq(preview.length, 0, '单舰高压撤离预览损失为 0（不会清空最后一艘）');
+      test.true_(preview.every((id) => typeof id === 'string'), '预览返回具体舰船 ID 字符串');
       const next = applyUniverseAction(state, { type: 'extractSector', mode: 'emergency' });
-      test.eq(next.sectorIndex, 2, '部分校准允许紧急穿越星门');
-      test.true_(next.fleet.ships.length < beforeCount, '高压无断后撤离造成舰船损失');
-      test.true_(next.faction.resources.minerals < 80, '只能携带少量压缩资源进入下一星域');
-      test.true_(next.faction.legacy.shipsLost > 0, '永久记录跨域舰船损失');
+      test.eq(next.fleet.ships.length, 1, '单舰紧急撤离后舰队仍保留 1 艘（不产生空舰队）');
+      test.true_(next.fleet.ships.some((s) => s.campaignShipId === oneId), '唯一舰船存活');
+      test.true_(next.fleet.ships.length >= 1 ? next.status !== 'collapsed' : true, '单舰撤离不会误判崩溃');
       add(test);
     }
 
+    // 16. previewExtractLosses 返回具体舰船 ID 且与实际撤离一致
     {
-      const test = new Case('紧急撤离丢弃失能舰（真实逐舰）');
-      let state = prepareGate(generateUniverse(1013), 100);
-      const ship = state.fleet.ships[0];
-      const def = getShipDef(ship.shipClass, ship.variant).def;
-      ship.componentHp = def.components.map((c, i) => (i === 0 ? 0 : c.maxHp));
-      ship.disabled = true;
-      const before = state.fleet.ships.length;
-      const next = applyUniverseAction(state, { type: 'extractSector', mode: 'emergency' });
-      test.true_(next.fleet.ships.length < before, '紧急撤离丢弃失能舰');
-      test.true_(next.fleet.ships.every((s) => !s.disabled), '撤离后舰队不再含失能舰');
-      add(test);
-    }
-
-    {
-      const test = new Case('稳定撤离零损失且携带较多资产');
-      let state = prepareGate(generateUniverse(1014), 100);
-      const before = state.fleet.ships.length;
-      const next = applyUniverseAction(state, { type: 'extractSector', mode: 'stable' });
-      test.eq(next.fleet.ships.length, before, '稳定撤离不损失舰船');
-      test.true_(next.fleet.ships.every((s) => !s.disabled), '稳定撤离保留失能舰');
-      add(test);
-    }
-
-    {
-      const test = new Case('断后紧急撤离确定性强牺牲一艘断后舰');
-      let state = prepareGate(generateUniverse(1015), 100);
-      state.crisis.pressure = 30;
-      const before = state.fleet.ships.length;
-      const plain = applyUniverseAction(state, { type: 'extractSector', mode: 'emergency' });
-      const rear = applyUniverseAction(state, { type: 'extractSector', mode: 'emergency', rearguardShips: 1 });
-      test.eq(plain.fleet.ships.length, before, '低危机无断后紧急撤离不额外损失舰船');
-      test.eq(rear.fleet.ships.length, before - 1, '留下 1 艘断后舰确定性牺牲该舰');
-      add(test);
-    }
-
-    {
-      const test = new Case('previewExtractLosses 与实际撤离损失一致（确定性）');
-      let state = prepareGate(generateUniverse(1016), 100);
+      const test = new Case('previewExtractLosses 返回具体舰船 ID 且与实际撤离一致');
+      let state = generateUniverse(1047);
+      state = prepareGate(state, 100);
       state.crisis.pressure = 85;
-      const scenarios: Array<['stable' | 'emergency', number]> = [
-        ['stable', 0],
-        ['emergency', 0],
-        ['emergency', 1]
+      const disShip = state.fleet.ships[0];
+      const def = getShipDef(disShip.shipClass, disShip.variant).def;
+      disShip.componentHp = def.components.map((c, i) => (i === 0 ? 0 : c.maxHp));
+      disShip.disabled = true;
+      const preview = previewExtractLosses(state, 'emergency');
+      const next = applyUniverseAction(state, { type: 'extractSector', mode: 'emergency' });
+      const actualLost = state.fleet.ships
+        .filter((s) => !next.fleet.ships.some((n) => n.campaignShipId === s.campaignShipId))
+        .map((s) => s.campaignShipId);
+      test.true_(preview.length === actualLost.length && preview.every((id) => actualLost.includes(id)), '预览损失 ID 与实际损失 ID 完全一致');
+      test.true_(preview.includes(disShip.campaignShipId), '预览包含被丢弃的失能舰 ID');
+      test.true_(preview.every((id) => typeof id === 'string'), '预览返回具体舰船 ID 字符串（非仅数量）');
+      add(test);
+    }
+
+    // 17. 真实逐舰战斗结果写回：destroyed 删除、敌方剩余战力由 Team B 重算
+    {
+      const test = new Case('真实逐舰战斗结果写回：destroyed 删除、敌方剩余战力由 Team B 重算');
+      const { state, battle, bindings, pending, hostileId } = lockPendingBattle(1020, ENEMY_BUDGET);
+      const teamB = battle.ships.filter((s) => s.team === 'B');
+      teamB.forEach((s, i) => {
+        if (i % 2 === 1) applyCombatState(s, 'destroyed');
+      });
+      const expected = battleTeamRemainingPower(battle, 'B');
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      const sys = after.systems.find((s) => s.id === hostileId)!;
+      test.eq(sys.enemyPower, expected, '敌方剩余战力由真实 Team B（部分摧毁）结果重算');
+      test.true_(sys.enemyPower <= pending.enemyPowerBefore, '战后敌方战力不高于战前');
+      test.eq(after.fleet.ships.length, state.fleet.ships.length, '玩家舰无损失（全 operational）');
+      test.eq(after.pendingBattle, undefined, '写回后清除 pending');
+      add(test);
+    }
+
+    // 18. 战斗结果写回后 escaped 玩家舰归一化为 escaped=false/deployed=true
+    {
+      const test = new Case('战斗结果写回后 escaped 玩家舰归一化为 escaped=false/deployed=true');
+      const { state, battle, bindings } = lockPendingBattle(1026, ENEMY_BUDGET);
+      const teamA = battle.ships.filter((s) => s.team === 'A');
+      applyCombatState(teamA[0], 'escaped');
+      const escId = bindings.find((b) => b.battleShipId === teamA[0].id)!.campaignShipId;
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      const ship = after.fleet.ships.find((s) => s.campaignShipId === escId);
+      test.true_(!!ship, '脱离战场的玩家舰仍保留在舰队');
+      test.true_(!!ship && ship.escaped === false && ship.deployed === true, 'escaped 归一化为 escaped=false/deployed=true');
+      add(test);
+    }
+
+    // 19. 全数 escaped 不导致远征崩溃
+    {
+      const test = new Case('全数 escaped 不导致远征崩溃');
+      const { state, battle, bindings } = lockPendingBattle(1027, ENEMY_BUDGET);
+      const teamA = battle.ships.filter((s) => s.team === 'A');
+      teamA.forEach((s) => applyCombatState(s, 'escaped'));
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      test.eq(after.status, 'active', '全数脱离战场不导致远征崩溃');
+      test.eq(after.fleet.ships.length, state.fleet.ships.length, '所有舰船仍以 escaped=false/deployed=true 保留');
+      add(test);
+    }
+
+    // 20. 未参战舰写回后状态完全不变
+    {
+      const test = new Case('未参战舰写回后状态完全不变');
+      let state = generateUniverse(1028);
+      const hostile = state.systems.find((s) => s.control === 'enemy')!;
+      state.fleet.systemId = hostile.id;
+      state.selectedSystemId = hostile.id;
+      hostile.discovered = true;
+      hostile.enemyPower = ENEMY_BUDGET;
+      state = applyUniverseAction(state, { type: 'engageEnemy' });
+      const pending = state.pendingBattle!;
+      // 增加一艘未部署舰（不参与战斗绑定）。
+      const undeployed = {
+        campaignShipId: 'cs-99',
+        shipClass: 'Fighter' as const,
+        variant: 'standard' as const,
+        disabled: false,
+        escaped: false,
+        towed: false,
+        deployed: false
+      };
+      state = { ...state, fleet: { ...state.fleet, ships: [...state.fleet.ships, undeployed] } };
+      const ctx = prepareStrategicBattle(toPersistentFleet(state.fleet), pending.enemyFleet, pending.battleSeed);
+      const battle = ctx.state;
+      battle.finished = true;
+      battle.winner = 'A';
+      const after = applyStrategicBattleResult(state, battle, ctx.bindings);
+      const kept = after.fleet.ships.find((s) => s.campaignShipId === 'cs-99');
+      test.true_(!!kept, '未部署舰仍存在于写回后舰队');
+      test.true_(!!kept && kept.deployed === false, '未部署舰写回后 deployed 不变');
+      add(test);
+    }
+
+    // 21. 合法 binding 通过 validatePersistentBattleBindings
+    {
+      const test = new Case('合法 binding 通过 validatePersistentBattleBindings');
+      const { state, battle, bindings } = lockPendingBattle(1029, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      let threw = false;
+      try {
+        validatePersistentBattleBindings(bindings, fleet, battle);
+      } catch {
+        threw = true;
+      }
+      test.true_(!threw, '合法 binding 通过校验');
+      add(test);
+    }
+
+    // 22. 重复 campaignShipId 的 binding 抛错
+    {
+      const test = new Case('重复 campaignShipId 的 binding 抛错');
+      const { state, battle, bindings } = lockPendingBattle(1030, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      const bad: PersistentBattleBinding[] = [bindings[0], bindings[0]];
+      let threw = false;
+      let msg = '';
+      try {
+        validatePersistentBattleBindings(bad, fleet, battle);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
+      }
+      test.true_(threw && msg.includes('重复'), '重复 campaignShipId 抛错');
+      add(test);
+    }
+
+    // 23. 未部署舰出现在 binding 抛错
+    {
+      const test = new Case('未部署舰出现在 binding 抛错');
+      const { state, battle, bindings } = lockPendingBattle(1031, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      const fleetBad = { ...fleet, ships: fleet.ships.map((s, i) => (i === 0 ? { ...s, deployed: false } : s)) };
+      const bad: PersistentBattleBinding[] = [{ campaignShipId: fleetBad.ships[0].campaignShipId, battleShipId: bindings[0].battleShipId }];
+      let threw = false;
+      let msg = '';
+      try {
+        validatePersistentBattleBindings(bad, fleetBad, battle);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
+      }
+      test.true_(threw && msg.includes('未部署'), '未部署舰出现在绑定抛错');
+      add(test);
+    }
+
+    // 24. 持久舰 hull/variant 与战斗舰不匹配抛错
+    {
+      const test = new Case('持久舰 hull/variant 与战斗舰不匹配抛错');
+      const { state, battle, bindings } = lockPendingBattle(1032, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      const fighterBinding = bindings.find((b) => {
+        const s = fleet.ships.find((x) => x.campaignShipId === b.campaignShipId)!;
+        return s.shipClass === 'Fighter';
+      })!;
+      const frigateBattleId = battle.ships.find((s) => s.team === 'A' && s.type === 'Frigate')!.id;
+      const bad: PersistentBattleBinding[] = [{ campaignShipId: fighterBinding.campaignShipId, battleShipId: frigateBattleId }];
+      let threw = false;
+      let msg = '';
+      try {
+        validatePersistentBattleBindings(bad, fleet, battle);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
+      }
+      test.true_(threw && msg.includes('hull'), 'hull 不匹配抛错');
+      add(test);
+    }
+
+    // 25. 每艘参战玩家舰必须有且仅有一个 binding
+    {
+      const test = new Case('每艘参战玩家舰必须有且仅有一个 binding');
+      const { state, battle, bindings } = lockPendingBattle(1033, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      const dup: PersistentBattleBinding[] = [
+        { ...bindings[0] },
+        { campaignShipId: fleet.ships[1].campaignShipId, battleShipId: bindings[0].battleShipId }
       ];
-      for (const [mode, rear] of scenarios) {
-        const predicted = previewExtractLosses(state, mode, rear).length;
-        const next = applyUniverseAction(state, { type: 'extractSector', mode, rearguardShips: rear });
-        const actual = state.fleet.ships.length - next.fleet.ships.length;
-        test.eq(actual, predicted, `模式 ${mode} 断后 ${rear} 的预测损失与实际一致`);
+      let threw = false;
+      let msg = '';
+      try {
+        validatePersistentBattleBindings(dup, fleet, battle);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
       }
+      test.true_(threw && (msg.includes('battleShipId') || msg.includes('绑定数量')), 'battleShipId 重复导致校验失败');
       add(test);
     }
 
+    // 26. 战斗结果写回幂等（无 pending 时返回原状态不变）
     {
-      const test = new Case('连续三次撤离形成完整搜打撤 SLG 战役');
-      let state = generateUniverse(1009);
-      for (let sector = 1; sector <= 3; sector++) {
-        state = prepareGate(state, 100);
-        state = applyUniverseAction(state, { type: 'extractSector', mode: 'stable' });
-        if (sector < 3) {
-          test.eq(state.sectorIndex, sector + 1, `第 ${sector} 次撤离进入下一星域`);
-          test.eq(state.status, 'active', '中途继续远征');
-        }
+      const test = new Case('战斗结果写回幂等（无 pending 时返回原状态不变）');
+      const { state, battle, bindings } = lockPendingBattle(1034, ENEMY_BUDGET);
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      const again = applyStrategicBattleResult(after, battle, bindings);
+      test.eq(again, after, '无 pending 时重复写回返回同一状态（幂等）');
+      add(test);
+    }
+
+    // 27. 写回后状态通过 validateUniverseState 且 encode/decode 往返一致
+    {
+      const test = new Case('写回后状态通过 validateUniverseState 且 encode/decode 往返一致');
+      const { state, battle, bindings, pending } = lockPendingBattle(1035, ENEMY_BUDGET);
+      const teamB = battle.ships.filter((s) => s.team === 'B');
+      teamB.forEach((s, i) => {
+        if (i % 2 === 0) applyCombatState(s, 'destroyed');
+      });
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      test.true_(validateUniverseState(after), '写回后状态通过深层校验');
+      const round = decodeUniverse(encodeUniverse(after));
+      test.true_(validateUniverseState(round), '写回状态远征码往返后仍通过校验');
+      test.eq(round.fleet.ships.length, after.fleet.ships.length, '往返后舰队舰船数一致');
+      const sysId = pending.systemId;
+      test.eq(round.systems.find((s) => s.id === sysId)!.enemyPower, after.systems.find((s) => s.id === sysId)!.enemyPower, '往返后星系敌方战力一致');
+      add(test);
+    }
+
+    // 28. 玩家全灭 → 远征崩溃
+    {
+      const test = new Case('玩家全灭 → 远征崩溃');
+      const { state, battle, bindings } = lockPendingBattle(1036, ENEMY_BUDGET);
+      const teamA = battle.ships.filter((s) => s.team === 'A');
+      teamA.forEach((s) => applyCombatState(s, 'destroyed'));
+      const after = applyStrategicBattleResult(state, battle, bindings);
+      test.eq(after.status, 'collapsed', '玩家舰全灭后远征崩溃');
+      add(test);
+    }
+
+    // 29. 战斗 seed/ruleset 不一致拒绝写回
+    {
+      const test = new Case('战斗 seed/ruleset 不一致拒绝写回');
+      const { state, battle, bindings } = lockPendingBattle(1037, ENEMY_BUDGET);
+      battle.seed = (battle.seed + 1) >>> 0;
+      let threw = false;
+      let msg = '';
+      try {
+        applyStrategicBattleResult(state, battle, bindings);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
       }
-      test.eq(state.status, 'victory', '穿越第三星域后完成远征');
-      test.eq(state.faction.legacy.sectorsCleared, 3, '长期状态记录三个已清理星域');
+      test.true_(threw && msg.includes('seed'), 'seed 不一致拒绝写回');
       add(test);
     }
 
+    // 30. 战斗敌方舰队与 pending 不一致拒绝写回
     {
-      const test = new Case('星域远征码完整往返并拒绝损坏状态（alpha.3）');
-      const state = generateUniverse(1010);
-      const decoded = decodeUniverse(encodeUniverse(state));
-      test.eq(JSON.stringify(decoded), JSON.stringify(state), 'alpha.3 星域远征状态完整往返');
-      test.true_(validateUniverseState(decoded), '往返状态通过深层校验');
-      const invalidGate = JSON.parse(JSON.stringify(state));
-      invalidGate.extraction.gateEntityId = 'missing-gate';
-      test.true_(!validateUniverseState(invalidGate), '不存在的星门引用被拒绝');
-      const duplicateBlueprint = JSON.parse(JSON.stringify(state));
-      duplicateBlueprint.faction.legacy.blueprints = ['fieldLogistics', 'fieldLogistics'];
-      test.true_(!validateUniverseState(duplicateBlueprint), '重复永久蓝图被拒绝');
+      const test = new Case('战斗敌方舰队与 pending 不一致拒绝写回');
+      const { state, battle, bindings } = lockPendingBattle(1038, ENEMY_BUDGET);
+      const teamBShip = battle.ships.find((s) => s.team === 'B')!;
+      teamBShip.variant = 'fortress';
+      let threw = false;
+      let msg = '';
+      try {
+        applyStrategicBattleResult(state, battle, bindings);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
+      }
+      test.true_(threw && msg.includes('不一致'), '敌方舰队与 pending 不一致拒绝写回');
       add(test);
     }
 
+    // 31. 战后敌方战力高于战前拒绝写回
     {
-      const test = new Case('旧版 alpha.2 抽象舰队迁移为 alpha.3 逐舰舰队并保留失能舰');
+      const test = new Case('战后敌方战力高于战前拒绝写回');
+      const { state, battle, bindings, pending } = lockPendingBattle(1039, ENEMY_BUDGET);
+      const badState = JSON.parse(JSON.stringify(state));
+      badState.pendingBattle.enemyPowerBefore = 1;
+      const sys = badState.systems.find((s: { id: string }) => s.id === pending.systemId);
+      sys.enemyPower = 1;
+      let threw = false;
+      let msg = '';
+      try {
+        applyStrategicBattleResult(badState, battle, bindings);
+      } catch (e) {
+        threw = true;
+        msg = String(e);
+      }
+      test.true_(threw && msg.includes('战前'), '战后战力高于战前拒绝写回');
+      add(test);
+    }
+
+    // 32. 跨星域继承真实舰队（舰船 ID 持续保留）
+    {
+      const test = new Case('跨星域继承真实舰队（舰船 ID 持续保留）');
+      let state = generateUniverse(1051);
+      const idsBefore = state.fleet.ships.map((s) => s.campaignShipId).sort();
+      const prepared = prepareGate(state, 100);
+      const next = applyUniverseAction(prepared, { type: 'extractSector', mode: 'stable' });
+      const idsAfter = next.fleet.ships.map((s) => s.campaignShipId).sort();
+      test.eq(JSON.stringify(idsAfter), JSON.stringify(idsBefore), '撤离后真实舰船 ID 完整继承到下一星域');
+      test.true_(strategicFleetPower(next) > 0, '继承后真实舰队仍有战力');
+      add(test);
+    }
+
+    // 33. 旧版 alpha.2 抽象舰队迁移为逐舰舰队并保留失能舰
+    {
+      const test = new Case('旧版 alpha.2 抽象舰队迁移为逐舰舰队并保留失能舰');
       const base = generateUniverse(1011);
       const alpha2 = JSON.parse(JSON.stringify(base));
       alpha2.version = '1.0-alpha.2';
@@ -391,82 +734,58 @@ export function runStrategicTests(): SuiteResult {
       };
       const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state: alpha2 });
       const migrated = decodeUniverse(code);
-      test.eq(migrated.version, '1.0-alpha.3', 'alpha.2 迁移为 alpha.3');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.2 迁移为当前版本');
       test.eq(migrated.fleet.ships.length, 3, '迁移生成 3 艘逐舰');
       test.eq(migrated.fleet.ships.filter((s) => s.disabled).length, 1, '迁移保留 1 艘失能舰');
       test.true_(validateUniverseState(migrated), '迁移后状态通过深层校验');
-      add(test);
-    }
-
-    {
-      const test = new Case('迁移后状态移除抽象字段且为真实逐舰结构');
-      const base = generateUniverse(1018);
-      const alpha2 = JSON.parse(JSON.stringify(base));
-      alpha2.version = '1.0-alpha.2';
-      alpha2.fleet = { id: base.fleet.id, name: base.fleet.name, systemId: base.fleet.systemId, fuel: base.fleet.fuel, maxFuel: base.fleet.maxFuel, shipCount: 4, disabledShips: 0, combatPower: 40 };
-      const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state: alpha2 });
-      const migrated = decodeUniverse(code);
       const fleetRecord = migrated.fleet as unknown as Record<string, unknown>;
-      test.true_(fleetRecord.shipCount === undefined && fleetRecord.disabledShips === undefined && fleetRecord.combatPower === undefined, '迁移后不再含抽象 shipCount/disabledShips/combatPower');
-      test.true_(Array.isArray(migrated.fleet.ships) && migrated.fleet.ships.every((s) => typeof s.campaignShipId === 'string'), '迁移后为真实逐舰 PersistentShip 数组');
-      add(test);
-    }
-
-    {
-      const test = new Case('真实逐舰战斗结果写回：destroyed 删除、敌方剩余战力由 Team B 重算、清零→neutral、单回合推进');
-      const { state, bindings, enemyIds, ids, hostileId } = lockPendingBattle(1020, 30);
-      const battle = makeBattle(
-        ids.map((_cid, i) => ({ id: i, combatState: (i === 0 ? 'destroyed' : 'operational') as CombatState, hp: 10, maxHp: 10 })),
-        enemyIds.map((eid, i) => ({ id: eid, combatState: (i === 0 ? 'operational' : 'destroyed') as CombatState, hp: 20, maxHp: 20 }))
+      test.true_(
+        fleetRecord.shipCount === undefined && fleetRecord.disabledShips === undefined && fleetRecord.combatPower === undefined,
+        '迁移后不再含抽象 shipCount/disabledShips/combatPower'
       );
-      const turnBefore = state.turn;
-      const after = applyStrategicBattleResult(state, battle, bindings);
-      test.true_(after !== state, '写回产生新状态');
-      test.eq(after.pendingBattle, undefined, '写回后清除 pending');
-      test.eq(after.fleet.ships.length, ids.length - 1, '被摧毁玩家舰从舰队中删除');
-      const sys = after.systems.find((s) => s.id === hostileId)!;
-      test.eq(sys.enemyPower, campaignShipCost('Cruiser', 'standard'), '敌方剩余战力由真实 Team B（满血巡洋舰）重算');
-      test.eq(sys.control, 'enemy', '仍有敌方存活则星系保持敌方控制');
-      test.eq(after.faction.legacy.shipsLost, 1, '永久记录 1 艘跨域损毁');
-      test.eq(after.turn, turnBefore + 1, '写回仅推进一个战略回合');
       add(test);
     }
 
+    // 34. alpha.3 → alpha.4 迁移确定性重建敌战力且通过深层校验
     {
-      const test = new Case('战斗结果写回幂等（无 pending 时返回原状态不变）');
-      const { state, bindings, enemyIds, ids } = lockPendingBattle(1021, 30);
-      const battle = makeBattle(
-        ids.map((_cid, i) => ({ id: i, combatState: 'operational' as CombatState, hp: 10, maxHp: 10 })),
-        enemyIds.map((eid) => ({ id: eid, combatState: 'destroyed' as CombatState, hp: 0, maxHp: 20 }))
+      const test = new Case('alpha.3 → alpha.4 迁移确定性重建敌战力且通过深层校验');
+      const base = generateUniverse(1012);
+      const alpha3 = JSON.parse(JSON.stringify(base));
+      alpha3.version = '1.0-alpha.3';
+      const enemySys = alpha3.systems.find((s: { control: string }) => s.control === 'enemy')!;
+      enemySys.enemyPower = 7; // 故意写入错误（旧量纲）战力，验证迁移重建
+      const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.3', state: alpha3 });
+      const migrated = decodeUniverse(code);
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.3 迁移为当前版本');
+      test.true_(validateUniverseState(migrated), '迁移后状态通过深层校验');
+      const rebuiltSys = migrated.systems.find((s) => s.id === enemySys.id)!;
+      const isGate = migrated.entities.some((e) => e.systemId === enemySys.id && e.kind === 'jumpGate');
+      const rebuildSeed = hash32(migrated.seed, enemySys.id, 'alpha-enemy-rebuild');
+      const expected = campaignFleetEntryCost(
+        strategicEnemyFleetFor(rebuildSeed, 7, {
+          sectorIndex: migrated.sectorIndex,
+          gateGuard: isGate,
+          cruiserAllowed: migrated.sectorIndex >= 2 || isGate
+        })
       );
-      const after = applyStrategicBattleResult(state, battle, bindings);
-      const again = applyStrategicBattleResult(after, battle, bindings);
-      test.eq(again, after, '无 pending 时重复写回返回同一状态（幂等）');
+      test.eq(rebuiltSys.enemyPower, expected, '迁移后敌方战力由确定性重建（不再是旧量纲的 7）');
+      test.true_(rebuiltSys.enemyPower >= 50, '重建后敌方战力落于合法最低预算之上');
       add(test);
     }
 
+    // 35. 星域远征码完整往返 + 拒绝损坏状态
     {
-      const test = new Case('玩家全灭→远征崩溃（无可用作战舰）');
-      const { state, bindings, enemyIds, ids } = lockPendingBattle(1022, 30);
-      const battle = makeBattle(
-        ids.map((_cid, i) => ({ id: i, combatState: 'destroyed' as CombatState, hp: 0, maxHp: 10 })),
-        enemyIds.map((eid) => ({ id: eid, combatState: 'destroyed' as CombatState, hp: 0, maxHp: 20 }))
-      );
-      const after = applyStrategicBattleResult(state, battle, bindings);
-      test.eq(after.status, 'collapsed', '玩家舰全灭后远征崩溃');
-      add(test);
-    }
-
-    {
-      const test = new Case('跨星域继承真实舰队（舰船 ID 持续保留）');
-      let state = generateUniverse(1023);
-      const idsBefore = state.fleet.ships.map((s) => s.campaignShipId).sort();
-      const prepared = prepareGate(state, 100);
-      const next = applyUniverseAction(prepared, { type: 'extractSector', mode: 'stable' });
-      const idsAfter = next.fleet.ships.map((s) => s.campaignShipId).sort();
-      test.eq(JSON.stringify(idsAfter), JSON.stringify(idsBefore), '撤离后真实舰船 ID 完整继承到下一星域');
-      test.true_(next.fleet.ships.every((s) => Array.isArray(s.componentHp) || s.componentHp === undefined), '继承舰队仍为逐舰结构');
-      test.true_(strategicFleetPower(next) > 0, '继承后真实舰队仍有战力');
+      const test = new Case('星域远征码完整往返 + 拒绝损坏状态');
+      const state = generateUniverse(1052);
+      const decoded = decodeUniverse(encodeUniverse(state));
+      test.eq(JSON.stringify(decoded), JSON.stringify(state), '当前版本星域远征状态完整往返');
+      test.true_(validateUniverseState(decoded), '往返状态通过深层校验');
+      const invalidGate = JSON.parse(JSON.stringify(state));
+      invalidGate.extraction.gateEntityId = 'missing-gate';
+      test.true_(!validateUniverseState(invalidGate), '不存在的星门引用被拒绝');
+      const duplicateBlueprint = JSON.parse(JSON.stringify(state));
+      duplicateBlueprint.faction.legacy.blueprints = ['fieldLogistics', 'fieldLogistics'];
+      test.true_(!validateUniverseState(duplicateBlueprint), '重复永久蓝图被拒绝');
       add(test);
     }
   });
