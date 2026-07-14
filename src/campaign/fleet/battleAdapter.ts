@@ -6,7 +6,8 @@ import { assertValidFleet } from '../../sim/fleetValidator';
 import { getShipDef } from '../../sim/shipVariants';
 import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
-import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, normalizeStrategicEnemyPower } from './campaignPower';
+import { DeploymentSelection, deploymentFleet } from '../deployment/deploymentSystem';
+import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, candidatePool, normalizeStrategicEnemyPower } from './campaignPower';
 
 /** 战役与战略战斗共用的绑定：持久舰 shipId ↔ 战斗舰 shipId。 */
 export interface PersistentBattleBinding { campaignShipId: string; battleShipId: number; }
@@ -36,29 +37,6 @@ function encounterRatio(sectorIndex: number, threatLevel: number, gateGuard: boo
 
 export function enemyBudgetFor(sectorIndex: number, threatLevel: number, gateGuard = false, playerPower = 155): number {
   return Math.round(Math.max(50, playerPower) * encounterRatio(sectorIndex, threatLevel, gateGuard));
-}
-
-function candidatePool(sectorIndex: number, threatLevel: number, gateGuard: boolean): FleetEntry[] {
-  const pool: FleetEntry[] = [
-    { shipClass: 'Fighter', variant: 'standard', count: 1 },
-    { shipClass: 'Fighter', variant: 'interceptor', count: 1 },
-    { shipClass: 'Fighter', variant: 'scout', count: 1 }
-  ];
-  if (threatLevel >= 1 || sectorIndex >= 2) pool.push({ shipClass: 'Frigate', variant: 'standard', count: 1 });
-  if (threatLevel >= 2) {
-    pool.push({ shipClass: 'Fighter', variant: 'bomber', count: 1 });
-    pool.push({ shipClass: 'Frigate', variant: 'escort', count: 1 });
-  }
-  if (threatLevel >= 3 || sectorIndex >= 2) {
-    pool.push({ shipClass: 'Frigate', variant: 'artillery', count: 1 });
-    pool.push({ shipClass: 'Frigate', variant: 'support', count: 1 });
-  }
-  if (threatLevel >= 4 || sectorIndex >= 3 || gateGuard) pool.push({ shipClass: 'Cruiser', variant: 'standard', count: 1 });
-  if (sectorIndex >= 3 || gateGuard) {
-    pool.push({ shipClass: 'Cruiser', variant: 'carrier', count: 1 });
-    pool.push({ shipClass: 'Cruiser', variant: 'fortress', count: 1 });
-  }
-  return pool;
 }
 
 export function enemyFleetFor(seed: number, sectorIndex: number, threatLevel: number, gateGuard = false, playerPower = 155): FleetEntry[] {
@@ -114,24 +92,27 @@ export function campaignBattleReplay(fleet: PersistentFleet, enemy: ReturnType<t
 }
 
 /**
- * 战略敌军舰队生成。
- * 以 StarSystem.enemyPower 为主要权威预算来源，相同 seed / 星域 / 星系 / enemyPower
- * 必须生成完全相同的敌方舰队（确定性）。不新增舰种、不改舰船参数。
- * 不采用战役式的"按玩家战力压缩"安全上限——敌方强度即设计强度。
+ * 战略敌军舰队装箱（确定性）：在给定候选池内，按"与预算差距最小"贪心选择，生成总
+ * 成本不超过 target 的合法舰队。装箱约束（由贪心循环保证，无需额外断言）：
+ * - fleetCost > 0（target > 0 时至少装入一艘最低候选舰）；
+ * - fleetCost <= target（每艘候选都必须满足 total + cost <= target）；
+ * - target - fleetCost < 最低候选成本（否则还能再装一艘，循环不会终止）。
+ * 若 target > 0 但候选池为空或无可装入候选，明确抛错说明预算/候选池/最低候选成本，
+ * 绝不静默返回标准战斗机补齐。
  */
-export function strategicEnemyFleetFor(
+export function boxStrategicEnemyFleet(
   seed: number,
-  enemyPower: number,
-  opts: { sectorIndex: number; gateGuard: boolean; cruiserAllowed: boolean }
+  target: number,
+  opts: { sectorIndex: number; gateGuard: boolean; cruiserAllowed: boolean },
+  pool: FleetEntry[]
 ): FleetEntry[] {
-  const threatLevel = Math.min(4, Math.max(0, opts.sectorIndex - 1) + (opts.gateGuard ? 2 : 0));
-  const pool = candidatePool(opts.sectorIndex, threatLevel, opts.gateGuard)
-    .filter((entry) => opts.cruiserAllowed || entry.shipClass !== 'Cruiser');
-  // 使用权威归一化：低于最低合法舰船成本的预算一律归零（转为 neutral），不再用魔法数字 50 兜底。
-  const target = normalizeStrategicEnemyPower(enemyPower);
+  if (target <= 0) return [];
+  const minCandidate = pool.length
+    ? Math.min(...pool.map((entry) => campaignShipCost(entry.shipClass, entry.variant)))
+    : 0;
   const result = new Map<string, FleetEntry>();
   let total = 0;
-  for (let slot = 0; slot < 24 && total < target; slot++) {
+  for (let slot = 0; slot < 32 && total < target; slot++) {
     const choices = pool
       .map((entry) => ({
         entry,
@@ -152,10 +133,47 @@ export function strategicEnemyFleetFor(
     else result.set(key, { ...picked.entry });
     total += picked.cost;
   }
-  if (!result.size) result.set('Fighter:standard', { shipClass: 'Fighter', variant: 'standard', count: 1 });
+  if (!result.size) {
+    const poolDesc = pool.map((entry) => `${entry.shipClass}:${entry.variant}`).join(',');
+    throw new Error(
+      `无法在预算 ${target} 内生成任何合法战略敌军舰船；候选池=[${poolDesc}]，` +
+        `最低候选成本=${minCandidate}，sectorIndex=${opts.sectorIndex}，` +
+        `gateGuard=${opts.gateGuard}，cruiserAllowed=${opts.cruiserAllowed}。`
+    );
+  }
   const fleet = [...result.values()];
+  const fleetCost = campaignFleetEntryCost(fleet);
+  if (fleetCost > target) {
+    throw new Error(`战略敌军舰队成本 ${fleetCost} 超过预算 ${target}（装箱逻辑异常）。`);
+  }
   assertValidFleet(fleet);
   return fleet;
+}
+
+/**
+ * 战略敌军舰队生成。
+ * 以 StarSystem.enemyPower 为主要权威预算来源，相同 seed / 星域 / 星系 / enemyPower
+ * 必须生成完全相同的敌方舰队（确定性）。不新增舰种、不改舰船参数。
+ * 不采用战役式的"按玩家战力压缩"安全上限——敌方强度即设计强度。
+ * 预算语义（统一使用权威函数）：
+ * - enemyPower <= 0           → 没有敌军，返回空 FleetEntry[]；
+ * - 0 < enemyPower < 最低合法舰船成本 → 归一化为 0，返回空 FleetEntry[]（不再静默膨胀为整舰）；
+ * - enemyPower >= 最低合法舰船成本   → 生成总成本为不超过预算的合法舰队；
+ *   若候选池因配置异常无法装入任何不超过预算的合法舰船，明确抛错（不静默补齐）。
+ */
+export function strategicEnemyFleetFor(
+  seed: number,
+  enemyPower: number,
+  opts: { sectorIndex: number; gateGuard: boolean; cruiserAllowed: boolean }
+): FleetEntry[] {
+  const threatLevel = Math.min(4, Math.max(0, opts.sectorIndex - 1) + (opts.gateGuard ? 2 : 0));
+  const pool = candidatePool(opts.sectorIndex, threatLevel, opts.gateGuard).filter(
+    (entry) => opts.cruiserAllowed || entry.shipClass !== 'Cruiser'
+  );
+  // 权威归一化：低于最低合法舰船成本的预算一律归零（转为 neutral），不再用魔法数字 50 兜底。
+  const target = normalizeStrategicEnemyPower(enemyPower);
+  if (target === 0) return [];
+  return boxStrategicEnemyFleet(seed, target, opts, pool);
 }
 
 function sameHull(a: PersistentShip, battle: BattleState['ships'][number]): boolean {
@@ -165,19 +183,41 @@ function sameHull(a: PersistentShip, battle: BattleState['ships'][number]): bool
 /**
  * 严格校验战略/战役战斗 binding：
  * - campaignShipId 唯一、battleShipId 唯一；
- * - 每个 binding 都能在持久舰队中找到对应舰，且未部署舰不得参战；
+ * - 每个 binding 都能在持久舰队中找到对应舰；**失能舰（disabled）与未部署舰（deployed===false）不得参战**；
  * - 每个 binding 都能在 Team A 战斗舰中找到对应舰；
  * - 持久舰 shipClass/variant 与 battle ship type/variant 一致（hull 与改型一致）；
  * - 组件数组长度与舰船定义一致（顺序由同一 ship 定义保证）；
  * - 组件 HP 有限且落在 [0, maxHp]；
- * - 每艘实际参战的玩家舰有且只有一个 binding（未参战舰不得被错误修改）。
+ * - 每艘实际参战的玩家舰有且只有一个 binding（未参战舰不得被错误修改）；
+ * - **绑定集合严格等于预期参战集合**：默认 = activeShips(fleet)；若提供 expectedDeployment，
+ *   则 = deployment.selectedShipIds 中存在于舰队、未 disabled、deployed!==false 的舰船。
+ *   多绑定（含非预期舰）、少绑定（缺预期舰）、ID 集合不同，均拒绝。
  * 任何一项不成立都抛出明确错误。
  */
 export function validatePersistentBattleBindings(
   bindings: ReadonlyArray<PersistentBattleBinding>,
   fleet: PersistentFleet,
-  battle: BattleState
+  battle: BattleState,
+  expectedDeployment?: DeploymentSelection
 ): void {
+  // —— 计算预期参战集合（持久 shipId）——
+  const expectedIds = new Set<string>();
+  if (expectedDeployment) {
+    const seen = new Set<string>();
+    if (expectedDeployment.selectedShipIds.length === 0) throw new Error('部署不能为空（至少须选择一艘参战舰）。');
+    for (const id of expectedDeployment.selectedShipIds) {
+      if (seen.has(id)) throw new Error(`部署包含重复舰船 ${id}。`);
+      seen.add(id);
+      const ship = fleet.ships.find((candidate) => candidate.campaignShipId === id);
+      if (!ship) throw new Error(`部署舰船 ${id} 不存在于舰队。`);
+      if (ship.disabled) throw new Error(`部署舰船 ${id} 是失能舰，不得参战。`);
+      if (ship.deployed === false) throw new Error(`部署舰船 ${id} 未部署，不得参战。`);
+      expectedIds.add(id);
+    }
+  } else {
+    for (const ship of activeShips(fleet)) expectedIds.add(ship.campaignShipId);
+  }
+
   const campaignIds = new Set<string>();
   const battleIds = new Set<number>();
   for (const binding of bindings) {
@@ -188,6 +228,8 @@ export function validatePersistentBattleBindings(
 
     const ship = fleet.ships.find((candidate) => candidate.campaignShipId === binding.campaignShipId);
     if (!ship) throw new Error(`绑定 campaignShipId ${binding.campaignShipId} 找不到对应的持久舰。`);
+    // 失能舰与未部署舰一律不得参战（即便被错误写入绑定）。
+    if (ship.disabled) throw new Error(`失能舰 ${binding.campaignShipId} 不得出现在战斗绑定中。`);
     if (ship.deployed === false) throw new Error(`未部署舰 ${binding.campaignShipId} 不应出现在战斗绑定中。`);
 
     const battleShip = battle.ships.find((candidate) => candidate.id === binding.battleShipId && candidate.team === 'A');
@@ -211,6 +253,19 @@ export function validatePersistentBattleBindings(
       }
     }
   }
+
+  // —— 绑定集合必须严格等于预期参战集合 ——
+  if (campaignIds.size !== expectedIds.size) {
+    throw new Error(`战斗绑定数量(${campaignIds.size})与预期参战舰数量(${expectedIds.size})不一致。`);
+  }
+  for (const id of campaignIds) {
+    if (!expectedIds.has(id)) throw new Error(`绑定包含非预期参战舰 ${id}（不在预期部署集合中）。`);
+  }
+  for (const id of expectedIds) {
+    if (!campaignIds.has(id)) throw new Error(`预期参战舰 ${id} 缺少对应绑定。`);
+  }
+
+  // 每艘 Team A 战斗舰有且只有一个绑定（多/少绑定已由上一步集合校验覆盖，此处再防御一层）。
   const participating = battle.ships.filter((candidate) => candidate.team === 'A');
   for (const battleShip of participating) {
     const count = bindings.filter((binding) => binding.battleShipId === battleShip.id).length;
@@ -249,12 +304,20 @@ export function prepareCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<
   return { origin: 'campaign', replay, state, rng, bindings, battleSeed: seed };
 }
 
-/** 战略战斗准备：不压缩敌军（敌方强度由 StarSystem.enemyPower 决定），其余与战役一致。 */
-export function prepareStrategicBattle(fleet: PersistentFleet, enemy: FleetEntry[], seed: number): StrategicBattleContext {
-  const replay = persistentBattleReplay(fleet, enemy, seed);
+/** 战略战斗准备：不压缩敌军（敌方强度由 StarSystem.enemyPower 决定），其余与战役一致。
+ *  若提供 deployment，则 Team A 仅包含该部署选中的、在舰队中且未失能/已部署的舰船；
+ *  binding 集合据此与 applyStrategicBattleResult 的 expectedDeployment 校验严格一致。 */
+export function prepareStrategicBattle(
+  fleet: PersistentFleet,
+  enemy: FleetEntry[],
+  seed: number,
+  deployment?: DeploymentSelection
+): StrategicBattleContext {
+  const teamFleet = deployment ? deploymentFleet(fleet, deployment) : fleet;
+  const replay = persistentBattleReplay(teamFleet, enemy, seed);
   const rng = createPRNG(seed);
   const state = createInitialState(replay, rng);
-  const bindings = bindPersistentBattle(state, fleet, '战略');
+  const bindings = bindPersistentBattle(state, teamFleet, '战略');
   return { origin: 'strategy', replay, state, rng, bindings, battleSeed: seed };
 }
 

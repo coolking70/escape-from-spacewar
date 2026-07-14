@@ -167,6 +167,21 @@ V1.0-B.2 makes the strategic battle result a fully self-consistent, reload-safe 
 
 The strategy suite grows from 35 to **55** cases covering low-residual writeback, escaped / migration, `BattleState` validation, UI lock, save round-trip, alpha.2 power monotonicity and real integration.
 
+## V1.0-B.3 low-budget enemy generation closure, persistent battle-binding integrity and test authenticity
+
+V1.0-B.3 closes the last correctness gaps in enemy-budget generation, persistent-battle binding and test honesty:
+
+- **Enemy-budget generation closure:** `strategicEnemyFleetFor(0)` and any sub-`minimumStrategicFleetCost()` budget (45, scout Fighter) no longer fall back to a standard fighter; a sub-minimum budget normalizes to an **empty** enemy fleet (cost 0), while a budget exactly at the minimum yields a non-empty legal fleet. "Low budget inflated into a legal ship" is redefined as a defect and is rejected by tests.
+- **alpha.4 sub-min-cost positive `enemyPower` migration fix:** a positive `enemyPower` that maps below one legal ship under alpha.4 is no longer revived into full ships on migration — it normalizes to `0` / `neutral`.
+- **Binding validation integrity:** `validatePersistentBattleBindings` now also rejects **disabled** persistent ships in a binding, and guarantees the binding set equals the actual participating ship set (every present ship has exactly one binding, no orphan bindings).
+- **Pending deployment participation:** Team A set validation now includes `pendingBattle.deployment` (selected ship ids), so a deployment-limited battle cannot bind ships that were not deployed.
+- **`BattleState` consistency hardening:** `destroyed` is now inconsistent with any `escapedTick` / `retreatStartedTick` (the simulator clears them on death); `disabled` is validated against **real component damage** (`expectedDisableFlags`) rather than trusted boolean flags alone; alpha.5 validation rejects `escaped=true` persistent ships to keep fleet counts consistent.
+- **alpha.2 power migration real calibration:** `migrateAlpha2Fleet` now compares against the real `campaignFleetPower` (binary-search calibration) instead of only monotonicity, so migrated power matches the core-v4 value within tolerance.
+- **Real-DOM UI lock test:** the strategy suite no longer asserts UI locking from raw-HTML regex alone — a real element tree (`FakeRoot` parses `innerHTML`) verifies `button.disabled===true`, that clicking a disabled button does not fire its `onclick`, and that "继续战斗" / 导出 / 返回 stay enabled.
+- **Real-simulator integration test:** the integration case no longer hand-calls `syncBattleCounts` before writeback or fabricates a `BattleState` via `as unknown as`; it consumes the simulator's authoritative `getState()` output directly.
+
+The strategy suite grows further to **57** cases covering low-budget enemy generation closure, alpha.4 sub-min migration, binding integrity (disabled + deployment + exact set), `BattleState` consistency (death / disable / escape), alpha.5 `escaped` rejection, alpha.2 real-power calibration and real-DOM UI-lock behavior.
+
 ## Verification matrix
 
 ```bash
@@ -180,7 +195,7 @@ npm run test:stress
 npm run build:static
 ```
 
-The V1.0-B.2 strategic suite (`runStrategicTests`, 55 cases, no `as unknown as` fabricated `BattleState`) covers:
+The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` fabricated `BattleState`) covers:
 
 - deterministic nine-system generation and connectivity
 - gate, relic and hostile-system generation
@@ -210,6 +225,12 @@ The V1.0-B.2 strategic suite (`runStrategicTests`, 55 cases, no `as unknown as` 
 - **alpha.2 abstract power monotonic migration** (higher `combatPower` → no lower migrated power, disabled key components zeroed)
 - **UI lock** (single `disabled` attribute, no `disableddisabled`; `can*` logic + UI lock under pending battle)
 - **real-integration writeback** (full `prepareStrategicBattle` → `createSimulator` run-to-finish → `applyStrategicBattleResult`, self-consistent and save-round-trippable)
+- **V1.0-B.3 low-budget enemy generation closure** (`strategicEnemyFleetFor(0)` / sub-min budgets → empty fleet, not a standard-fighter fallback; minimum budget → non-empty legal fleet; the "low budget inflated to a legal ship" case is rejected)
+- **V1.0-B.3 alpha.4 sub-min `enemyPower` migration** (positive power below one legal ship normalizes to `0` / `neutral`, never revived into full ships)
+- **V1.0-B.3 binding integrity** (disabled persistent ships rejected; binding set equals the exact participating ship set; pending `deployment` selection included in Team A validation)
+- **V1.0-B.3 `BattleState` consistency** (`destroyed` clears `escapedTick` / `retreatStartedTick`; `disabled` validated against real component damage via `expectedDisableFlags`; alpha.5 rejects `escaped=true` persistent ships)
+- **V1.0-B.3 alpha.2 real-power calibration** (binary-search against real `campaignFleetPower`, within `max(8, 5%)` tolerance)
+- **V1.0-B.3 real-DOM UI lock** (parsed element tree: `button.disabled===true`, clicking a disabled button does not fire `onclick`, "继续战斗" / 导出 / 返回 stay enabled, no `disableddisabled`)
 
 ## Next milestone: V1.0-B/C
 

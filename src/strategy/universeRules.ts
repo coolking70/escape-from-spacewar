@@ -15,7 +15,7 @@ import {
 } from '../campaign/fleet/battleAdapter';
 import { RULESET_V4, SIM_VERSION_V5 } from '../sim/battleConfig';
 import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
-import { isPresentOnBattlefield } from '../sim/shipFlags';
+import { isPresentOnBattlefield, isStructurallyDestroyed, expectedDisableFlags } from '../sim/shipFlags';
 import type { BattleState, FleetEntry } from '../sim/battleTypes';
 import type {
   ConstructionOrder,
@@ -796,7 +796,7 @@ export function applyStrategicBattleResult(
   if (!teamBMatchesPending(battle, pending.enemyFleet)) {
     throw new Error('战斗敌方舰队（Team B）与待处理战斗的 enemyFleet 不一致。');
   }
-  validatePersistentBattleBindings(bindings, toPersistentFleet(state.fleet), battle);
+  validatePersistentBattleBindings(bindings, toPersistentFleet(state.fleet), battle, pending.deployment);
   // 深层结构校验：版本 / ruleset / seed / 队伍计数 / 舰 id 唯一 / 有限数值 / 每舰组件与状态机一致性 / Team B 与 pending 一致。
   validateFinishedStrategicBattle(battle, { battleSeed: pending.battleSeed, enemyFleet: pending.enemyFleet });
 
@@ -872,9 +872,15 @@ function teamBMatchesPending(battle: BattleState, enemyFleet: ReadonlyArray<{ sh
  * - ship.type / ship.variant 与权威 ShipDef（getShipDef）一致；
  * - 组件数量、类型（按序）、maxHp 与权威 ShipDef 完全一致；
  * - 每个组件 hp 为有限值、0 <= hp <= maxHp、destroyed === (hp <= 0)；
- * - core 组件 hp <= 0 时 combatState 必须为 'destroyed'（不得是 operational/escaped 等）；
- * - disabled 规则：combatState === 'disabled' 必须有 mobility/weapons/sensors 失能之一；
- *   combatState === 'escaped' 必须有 escapedTick；operational 类状态必须有正 core hp。
+ * - **结构死亡双向一致**：combatState === 'destroyed' ⇔ 核心已毁或全组件摧毁；
+ * - **失能标志与真实组件损伤一致**：mobilityDisabled / weaponsDisabled / sensorsDisabled 必须分别等于
+ *   对应系统组件是否全部摧毁（与模拟器 recomputeDerivedV4 同一套规则）；combatState === 'disabled'
+ *   必须由至少一个关键系统真实失能支撑；
+ * - **alive 与 combatState 一致**：destroyed ⇒ alive=false；其余状态（含 escaped）⇒ alive=true（与模拟器一致）；
+ * - **escaped / retreating**：escaped 必须有有限非负整数的 escapedTick；retreating 必须有有限非负整数的 retreatStartedTick；
+ *   二者 tick 必须合法；destroyed 不得残留 escapedTick / retreatStartedTick；
+ * - **数值字段**：id 为有限非负整数；shield / maxShield 有限且 0 <= shield <= maxShield；pos / heading 有限；
+ *   escapedTick / retreatStartedTick 有值时为有限非负整数；combatState 属于合法枚举。
  */
 export function validateBattleShipAgainstDefinition(ship: BattleState['ships'][number]): void {
   const canonical = getShipDef(ship.type, ship.variant).def;
@@ -901,14 +907,62 @@ export function validateBattleShipAgainstDefinition(ship: BattleState['ships'][n
       throw new Error(`战斗舰 ${ship.id} 组件 destroyed 标记与 hp 不一致。`);
     }
   }
-  if (core && core.hp <= 0 && ship.combatState !== 'destroyed') {
-    throw new Error(`战斗舰 ${ship.id} 核心已损毁但 combatState(${ship.combatState})不是 destroyed。`);
+
+  // —— 结构死亡双向一致性（与模拟器 dealDamage 规则一致）——
+  const structurallyDead = isStructurallyDestroyed(ship);
+  if (ship.combatState === 'destroyed' && !structurallyDead) {
+    throw new Error(`战斗舰 ${ship.id} 标记 destroyed 但核心与全组件均存活（结构未死亡）。`);
+  }
+  if (structurallyDead && ship.combatState !== 'destroyed') {
+    throw new Error(`战斗舰 ${ship.id} 核心或全组件已摧毁，但 combatState(${ship.combatState})不是 destroyed。`);
+  }
+
+  // —— 失能标志与真实组件损伤一致（与模拟器 recomputeDerivedV4 同一套规则）——
+  const expected = expectedDisableFlags(ship);
+  if (ship.mobilityDisabled !== expected.mobilityDisabled) {
+    throw new Error(
+      `战斗舰 ${ship.id} mobilityDisabled(${ship.mobilityDisabled})与引擎真实损毁(${expected.mobilityDisabled})不一致。`
+    );
+  }
+  if (ship.weaponsDisabled !== expected.weaponsDisabled) {
+    throw new Error(
+      `战斗舰 ${ship.id} weaponsDisabled(${ship.weaponsDisabled})与武器真实损毁(${expected.weaponsDisabled})不一致。`
+    );
+  }
+  if (ship.sensorsDisabled !== expected.sensorsDisabled) {
+    throw new Error(
+      `战斗舰 ${ship.id} sensorsDisabled(${ship.sensorsDisabled})与传感器真实损毁(${expected.sensorsDisabled})不一致。`
+    );
   }
   if (ship.combatState === 'disabled' && !(ship.mobilityDisabled || ship.weaponsDisabled || ship.sensorsDisabled)) {
-    throw new Error(`战斗舰 ${ship.id} 标记 disabled 但无任何关键系统失能。`);
+    throw new Error(`战斗舰 ${ship.id} 标记 disabled 但无任何关键系统真实失能。`);
   }
-  if (ship.combatState === 'escaped' && ship.escapedTick === undefined) {
-    throw new Error(`战斗舰 ${ship.id} 标记 escaped 但缺少 escapedTick。`);
+
+  // —— alive 与 combatState 一致（模拟器仅在结构死亡时置 alive=false）——
+  if (ship.alive !== (ship.combatState !== 'destroyed')) {
+    throw new Error(`战斗舰 ${ship.id} alive(${ship.alive})与 combatState(${ship.combatState})不一致。`);
+  }
+
+  // —— escaped / retreating 的 tick 合法性 ——
+  if (ship.combatState === 'escaped') {
+    if (ship.escapedTick === undefined) throw new Error(`战斗舰 ${ship.id} 标记 escaped 但缺少 escapedTick。`);
+    if (!Number.isInteger(ship.escapedTick) || !Number.isFinite(ship.escapedTick) || (ship.escapedTick as number) < 0) {
+      throw new Error(`战斗舰 ${ship.id} escapedTick(${ship.escapedTick})非法（须为有限非负整数）。`);
+    }
+  }
+  if (ship.combatState === 'retreating') {
+    if (ship.retreatStartedTick === undefined) throw new Error(`战斗舰 ${ship.id} 标记 retreating 但缺少 retreatStartedTick。`);
+    if (!Number.isInteger(ship.retreatStartedTick) || !Number.isFinite(ship.retreatStartedTick) || (ship.retreatStartedTick as number) < 0) {
+      throw new Error(`战斗舰 ${ship.id} retreatStartedTick(${ship.retreatStartedTick})非法（须为有限非负整数）。`);
+    }
+  }
+  // destroyed 不得残留 escaped / retreating 状态字段（避免状态机冲突）。
+  if (ship.combatState === 'destroyed' && (ship.escapedTick !== undefined || ship.retreatStartedTick !== undefined)) {
+    throw new Error(`战斗舰 ${ship.id} 已 destroyed 却残留 escapedTick / retreatStartedTick。`);
+  }
+
+  if (core && core.hp <= 0 && ship.combatState !== 'destroyed') {
+    throw new Error(`战斗舰 ${ship.id} 核心已损毁但 combatState(${ship.combatState})不是 destroyed。`);
   }
   if (
     (ship.combatState === 'normal' || ship.combatState === 'damaged' || ship.combatState === 'critical' || ship.combatState === 'retreating') &&
@@ -939,6 +993,12 @@ export function validateFinishedStrategicBattle(
     throw new Error(`战斗 seed（${battle.seed}）与待处理战斗（${pending.battleSeed}）不一致。`);
   }
   if (!Number.isFinite(battle.tick) || !Number.isFinite(battle.maxTicks)) throw new Error('BattleState 时间字段非法。');
+  if (!Number.isInteger(battle.tick) || (battle.tick as number) < 0) throw new Error('BattleState.tick 须为非负整数。');
+  if (!Number.isInteger(battle.maxTicks) || (battle.maxTicks as number) < 0) throw new Error('BattleState.maxTicks 须为非负整数。');
+  // 胜利方与结束状态一致：finished 时必须明确为 'A' / 'B' / null（平局或超时无胜者）。
+  if (battle.winner !== null && battle.winner !== 'A' && battle.winner !== 'B') {
+    throw new Error(`BattleState.winner（${String(battle.winner)}）非法。`);
+  }
   // teamACount / teamBCount 与模拟器保持一致：仅统计仍在场（未摧毁、未脱离）的舰，
   // 因为模拟器在每 tick 会据此重算（escaped 舰已离场不算入内）。
   const teamA = battle.ships.filter((ship) => ship.team === 'A' && isPresentOnBattlefield(ship));
@@ -946,11 +1006,24 @@ export function validateFinishedStrategicBattle(
   if (teamA.length !== battle.teamACount) throw new Error(`BattleState.teamACount(${battle.teamACount}) 与真实 Team A 在场舰数(${teamA.length})不一致。`);
   if (teamB.length !== battle.teamBCount) throw new Error(`BattleState.teamBCount(${battle.teamBCount}) 与真实 Team B 在场舰数(${teamB.length})不一致。`);
   const ids = new Set<number>();
+  const validTeams: ReadonlyArray<string> = ['A', 'B'];
+  const validCombatStates: ReadonlyArray<string> = [
+    'normal', 'damaged', 'critical', 'disabled', 'retreating', 'escaped', 'destroyed'
+  ];
   for (const ship of battle.ships) {
-    if (!Number.isFinite(ship.id)) throw new Error('战斗舰 id 非法。');
+    if (!Number.isFinite(ship.id) || !Number.isInteger(ship.id) || (ship.id as number) < 0) {
+      throw new Error(`战斗舰 id(${ship.id})非法（须为非负整数）。`);
+    }
     if (ids.has(ship.id)) throw new Error('战斗舰 id 重复。');
     ids.add(ship.id);
+    if (!validTeams.includes(ship.team)) throw new Error(`战斗舰 ${ship.id} team(${ship.team})非法。`);
+    if (!validCombatStates.includes(ship.combatState)) throw new Error(`战斗舰 ${ship.id} combatState(${ship.combatState})非法。`);
     if (!Number.isFinite(ship.shield) || !Number.isFinite(ship.maxShield)) throw new Error(`战斗舰 ${ship.id} 护盾数值非法。`);
+    if (ship.shield < 0 || ship.shield > ship.maxShield) throw new Error(`战斗舰 ${ship.id} shield(${ship.shield})越界（须 0<=shield<=maxShield=${ship.maxShield}）。`);
+    if (!Number.isFinite(ship.pos.x) || !Number.isFinite(ship.pos.y) || !Number.isFinite(ship.pos.z)) {
+      throw new Error(`战斗舰 ${ship.id} pos 坐标非法。`);
+    }
+    if (!Number.isFinite(ship.heading)) throw new Error(`战斗舰 ${ship.id} heading 非法。`);
     validateBattleShipAgainstDefinition(ship);
   }
   if (pending && !teamBMatchesPending(battle, pending.enemyFleet)) {

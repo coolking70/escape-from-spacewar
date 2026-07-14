@@ -3,10 +3,10 @@ import { FACILITY_DEFINITIONS, RESEARCH_DEFINITIONS } from './universeRules';
 import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import { validateFleet } from '../sim/fleetValidator';
 import { strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
-import { campaignFleetEntryCost, campaignShipCost, minimumStrategicFleetCost, normalizeStrategicEnemyPower } from '../campaign/fleet/campaignPower';
+import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, minimumStrategicFleetCost, normalizeStrategicEnemyPower } from '../campaign/fleet/campaignPower';
 import { createStarterFleet } from '../campaign/fleet/persistentFleet';
 import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
-import type { PersistentShip } from '../campaign/fleet/persistentFleet';
+import type { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import {
   SECTOR_EXPEDITION_VERSION,
   type SectorExpeditionVersion
@@ -100,7 +100,9 @@ function validateStrategicShips(ships: unknown): ships is PersistentShip[] {
     if (!VARIANTS_BY_CLASS[record.shipClass as ShipClass].includes(record.variant as ShipVariant)) return false;
     if (typeof record.disabled !== 'boolean' || typeof record.escaped !== 'boolean' || typeof record.towed !== 'boolean') return false;
     if (record.deployed !== undefined && typeof record.deployed !== 'boolean') return false;
-    if (record.disabled === true && record.escaped === true) return false;
+    // alpha.5 语义：escaped 仅表示"脱离本次战斗"，属于战斗运行时状态，不得长期持久化。
+    // 任何 escaped===true 的持久舰都拒绝（直接导入的损坏存档拒绝，而非静默修复）。
+    if (record.escaped !== false) return false;
     if (record.componentHp !== undefined) {
       if (!Array.isArray(record.componentHp)) return false;
       const def = getShipDef(record.shipClass as ShipClass, record.variant as ShipVariant).def;
@@ -146,13 +148,14 @@ function validatePendingBattle(pending: unknown, state: UniverseState): boolean 
 }
 
 /**
- * 将 alpha.2 / alpha.3 中各星系的敌战力（旧量纲）确定性重建为对应敌舰的真实 core-v4 总成本。
- * 对每个 control=enemy 且 enemyPower>0 的星系，用与生成时一致的 `strategicEnemyFleetFor`
- * 重建该版本理论上会生成的敌方舰队，并取其真实成本作为 alpha.4 的新 enemyPower；
- * 若已存在待处理战斗，则保留其 enemyFleet，并将 enemyPowerBefore 与对应星系 enemyPower
- * 同步为该舰队真实成本。确定性：同一存档重复迁移得到完全相同的状态。
+ * 将 alpha.3（旧量纲）各星系敌战力确定性重建为对应敌舰的真实 core-v4 总成本。
+ * 旧量纲敌战力较小（多为 1..70），低于最低合法舰船成本（45）的残余会被归一化为 0 并转 neutral
+ * （不可代表一艘合法舰船，也不应被恢复成完整舰船）。
+ * 若已存在待处理战斗，则保留其 enemyFleet（不重抽），并将 enemyPowerBefore 与对应星系 enemyPower
+ * 同步为该舰队真实成本；若 pending enemyFleet 为空或成本为 0，则清除 pending 并将对应星系复位为 neutral。
+ * 确定性：同一存档重复迁移得到完全相同的状态。
  */
-function recomputeEnemyPowers(state: UniverseState): void {
+function rebuildLegacyAlpha3EnemyPowers(state: UniverseState): void {
   for (const system of state.systems) {
     if (system.control !== 'enemy' || system.enemyPower <= 0) continue;
     const isGate = state.entities.some((entity) => entity.systemId === system.id && entity.kind === 'jumpGate');
@@ -162,14 +165,56 @@ function recomputeEnemyPowers(state: UniverseState): void {
       gateGuard: isGate,
       cruiserAllowed: state.sectorIndex >= 2 || isGate
     });
-    system.enemyPower = campaignFleetEntryCost(fleet);
+    const cost = campaignFleetEntryCost(fleet);
+    system.enemyPower = cost;
+    if (cost === 0) system.control = 'neutral';
   }
-  if (state.pendingBattle) {
-    const pending = state.pendingBattle;
-    pending.enemyPowerBefore = campaignFleetEntryCost(pending.enemyFleet);
-    const system = state.systems.find((candidate) => candidate.id === pending.systemId);
-    if (system && system.control === 'enemy') system.enemyPower = pending.enemyPowerBefore;
+  normalizePendingBattleForAlpha5(state);
+}
+
+/**
+ * alpha.4 敌战力归一化：alpha.4 已使用 core-v4 量纲，不应再交给敌军生成器重建（否则低残余会被重抽成整舰）。
+ * - enemyPower === 0 → 保持 0；
+ * - 0 < enemyPower < 最低合法舰船成本 → 归一化为 0 并转 neutral；
+ * - enemyPower >= 最低合法舰船成本 → 保留原值（不再重抽）。
+ */
+function normalizeAlpha4EnemyPowers(state: UniverseState): void {
+  for (const system of state.systems) {
+    if (system.control !== 'enemy') continue;
+    const normalized = normalizeStrategicEnemyPower(system.enemyPower);
+    if (normalized === 0) {
+      system.enemyPower = 0;
+      system.control = 'neutral';
+    } else {
+      system.enemyPower = normalized;
+    }
   }
+  normalizePendingBattleForAlpha5(state);
+}
+
+/**
+ * alpha.5 待处理战斗归一化：保留 pending 的 enemyFleet（不重新抽取），
+ * 将 enemyPowerBefore 与该星系 enemyPower 同步为敌舰真实成本；
+ * 若 pending enemyFleet 为空或成本为 0（无效空敌军 / 迁移后无法组成合法敌军的低残余），
+ * 则清除 pending 并将对应星系复位为 neutral，并写入迁移日志。
+ */
+function normalizePendingBattleForAlpha5(state: UniverseState): void {
+  const pending = state.pendingBattle;
+  if (!pending) return;
+  const system = state.systems.find((candidate) => candidate.id === pending.systemId);
+  if (!system) {
+    state.pendingBattle = undefined;
+    return;
+  }
+  const fleetCost = campaignFleetEntryCost(pending.enemyFleet);
+  if (fleetCost <= 0) {
+    state.pendingBattle = undefined;
+    system.enemyPower = 0;
+    system.control = 'neutral';
+    return;
+  }
+  pending.enemyPowerBefore = fleetCost;
+  system.enemyPower = fleetCost;
 }
 
 /**
@@ -197,24 +242,24 @@ function buildAbstractTemplate(shipCount: number): Array<{ shipClass: ShipClass;
 }
 
 /**
- * 为 alpha.2 舰队构建真实逐舰 PersistentShip[]：用目标 core-v4 价值按舰种/改型确定性分配
- * 组件 HP；disabled 舰优先将 core/engine/weapon 之一降至 0，体现真实关键组件损毁。
+ * 为 alpha.2 舰队构建真实逐舰 PersistentShip[]：用真实 `campaignFleetPower`（cost × (0.35 + 完整度 × 0.65)）
+ * 做二分搜索校准统一完整度，使迁移后真实战力尽可能接近目标 core-v4 预算 `legacyAbstractPowerToCoreBudget`，
+ * 而非简单按 cost × 完整度 比例（后者与真实战力公式不一致）。
+ * - disabled 舰的关键组件（core/engine/weapon）确定性归零，体现真实关键组件损毁，且其战力恒为 0（不计入目标）；
+ * - operational 舰经二分搜索得到最接近目标的统一完整度；离散取整误差有界（单舰完整度取整步长）；
+ * - 极低 combatPower 不会得到近满血舰队（r 收敛到接近 0，组件 hp 接近 0）。
+ * 全程确定性：相同输入得到完全相同的舰船组件 HP。
  */
 function migrateAlpha2Fleet(shipCount: number, disabledShips: number, combatPower: number): PersistentShip[] {
   const template = buildAbstractTemplate(shipCount);
   const targetPower = legacyAbstractPowerToCoreBudget(shipCount, combatPower);
-  const templateFull = template.reduce((sum, entry) => sum + campaignShipCost(entry.shipClass, entry.variant), 0);
-  const integrity = templateFull > 0 ? targetPower / templateFull : 0;
   const disabledSet = new Set(
-    Array.from({ length: disabledShips }, (_, i) => shipCount - 1 - i)
+    Array.from({ length: Math.min(shipCount - 1, Math.max(0, disabledShips)) }, (_, i) => shipCount - 1 - i)
   );
-  return template.map((entry, index) => {
+  const ships: PersistentShip[] = template.map((entry, index) => {
     const def = getShipDef(entry.shipClass, entry.variant).def;
     const forceKeyZero = disabledSet.has(index);
-    const componentHp = def.components.map((component) => {
-      const hp = Math.max(0, Math.round(component.maxHp * integrity));
-      return hp;
-    });
+    const componentHp = def.components.map((component) => component.maxHp);
     if (forceKeyZero) {
       const keyIndex = def.components.findIndex(
         (component) => component.type === 'core' || component.type === 'engine' || component.type === 'weapon'
@@ -232,6 +277,43 @@ function migrateAlpha2Fleet(shipCount: number, disabledShips: number, combatPowe
       componentHp
     };
   });
+  const persistent: PersistentFleet = {
+    ships,
+    formation: 'line',
+    doctrine: 'balanced'
+  };
+  const applyIntegrity = (r: number): void => {
+    for (let i = 0; i < ships.length; i++) {
+      if (!ships[i].componentHp) ships[i].componentHp = getShipDef(ships[i].shipClass, ships[i].variant).def.components.map((c) => c.maxHp);
+      const def = getShipDef(ships[i].shipClass, ships[i].variant).def;
+      for (let c = 0; c < def.components.length; c++) {
+        if (disabledSet.has(i) && (def.components[c].type === 'core' || def.components[c].type === 'engine' || def.components[c].type === 'weapon')) {
+          ships[i].componentHp![c] = 0;
+        } else {
+          ships[i].componentHp![c] = Math.max(0, Math.min(def.components[c].maxHp, Math.round(def.components[c].maxHp * r)));
+        }
+      }
+    }
+  };
+  // 二分搜索统一完整度 r，使真实 campaignFleetPower 最接近目标预算（仅 operational 舰贡献战力）。
+  let bestErr = Math.abs(campaignFleetPower(persistent) - targetPower);
+  let bestLevel = ships.map((ship) => (ship.componentHp ? ship.componentHp.slice() : []));
+  let lo = 0;
+  let hi = 1;
+  for (let iter = 0; iter < 48; iter++) {
+    const mid = (lo + hi) / 2;
+    applyIntegrity(mid);
+    const power = campaignFleetPower(persistent);
+    const err = Math.abs(power - targetPower);
+    if (err < bestErr) {
+      bestErr = err;
+      bestLevel = ships.map((ship) => (ship.componentHp ? ship.componentHp.slice() : []));
+    }
+    if (power < targetPower) lo = mid;
+    else hi = mid;
+  }
+  for (let i = 0; i < ships.length; i++) ships[i].componentHp = bestLevel[i];
+  return ships;
 }
 
 /** 旧版存档（alpha.2/3/4）逐舰语义归一化：
@@ -272,7 +354,7 @@ function migrateAlpha2(raw: any): UniverseState | null {
     formation: 'line',
     doctrine: 'balanced'
   };
-  recomputeEnemyPowers(migrated);
+  rebuildLegacyAlpha3EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
   migrated.log.unshift({
     turn: 0,
@@ -288,7 +370,7 @@ function migrateAlpha3(raw: any): UniverseState | null {
   migrated.version = SECTOR_EXPEDITION_VERSION;
   normalizeLegacyFleet(migrated.fleet);
   migrated.pendingBattle = raw.pendingBattle ? JSON.parse(JSON.stringify(raw.pendingBattle)) : undefined;
-  recomputeEnemyPowers(migrated);
+  rebuildLegacyAlpha3EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
   migrated.log.unshift({
     turn: 0,
@@ -304,7 +386,7 @@ function migrateAlpha4(raw: any): UniverseState | null {
   migrated.version = SECTOR_EXPEDITION_VERSION;
   normalizeLegacyFleet(migrated.fleet);
   migrated.pendingBattle = raw.pendingBattle ? JSON.parse(JSON.stringify(raw.pendingBattle)) : undefined;
-  recomputeEnemyPowers(migrated);
+  normalizeAlpha4EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
   migrated.log.unshift({
     turn: 0,

@@ -150,7 +150,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（55 项，无 `as unknown as` 伪造 BattleState）：
+`npm run test:strategy` 覆盖（57 项，无 `as unknown as` 伪造 BattleState）：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；
@@ -181,13 +181,23 @@ npm run build:static
 - **`1.0-alpha.4` → `1.0-alpha.5` 迁移**：`escaped` 归一化为 `false`、缺失 `deployed` 补全为 `true`、缺失 `towed` 补全为 `false`，并断言 `operational` 计数等于 `activeShips` 长度（escaped 语义统一），失能舰保留；
 - **alpha.2 抽象战力单调迁移**：`combatPower` 越高迁移战力不下降、失能关键组件归零；
 - **UI 锁定**：单一 `disabled` 属性（无 `disableddisabled` 重复）、`can*` 逻辑层与 UI 层在待处理战斗时共同锁定；
-- **真实集成写回**：完整 `prepareStrategicBattle` → `createSimulator` 跑完 → `applyStrategicBattleResult`，结果自洽且可远征码往返（无 `as unknown as` 伪造）。
+- **真实集成写回**：完整 `prepareStrategicBattle` → `createSimulator` 跑完 → `applyStrategicBattleResult`，结果自洽且可远征码往返（无 `as unknown as` 伪造，且不再手工 `syncBattleCounts` 回写，直接消费模拟器权威 `getState()`）。
+
+### V1.0-B.3 低预算敌军生成闭环、持久战斗绑定完整性与测试真实性
+
+- **低预算敌军生成闭环**：`strategicEnemyFleetFor(0)` 与任意低于 `minimumStrategicFleetCost()`（=45，侦察型 Fighter）的预算不再回退为标准战斗机——低于最低成本归一化为**空敌舰队**（成本 0），恰好等于最低成本则生成非空合法舰队；「低预算被膨胀成整舰」被重新定义为缺陷并由测试拒绝。
+- **alpha.4 子最低成本正 `enemyPower` 迁移修复**：alpha.4 下映射到不足一艘合法舰的正 `enemyPower` 不再在迁移中被复活为整舰，而是归一化为 `0` / `neutral`。
+- **绑定完整性**：`validatePersistentBattleBindings` 现在同时拒绝**失能**持久舰参战，并保证绑定集合等于实际参战舰集合（每艘在场舰恰好一个绑定，无孤儿绑定）。
+- **待处理部署参与**：Team A 集合校验现在纳入 `pendingBattle.deployment` 选中舰，部署受限的战斗不会绑定未部署舰。
+- **`BattleState` 一致性硬化**：`destroyed` 与任何 `escapedTick` / `retreatStartedTick` 互斥（模拟器在死亡时清空）；`disabled` 依据**真实组件损毁**（`expectedDisableFlags`）校验而非仅信任布尔标志；alpha.5 校验拒绝 `escaped=true` 持久舰以保持舰队计数一致。
+- **alpha.2 战力迁移真实校准**：`migrateAlpha2Fleet` 现在对照真实 `campaignFleetPower`（二分校准），而不只校验单调性，迁移战力在容差 `max(8, 5%)` 内逼近目标。
+- **真实 DOM UI 锁定测试**：策略套件不再仅靠原始 HTML 正则断言 UI 锁定——解析出的真实元素树验证 `button.disabled===true`、点击禁用按钮不触发 `onclick`、「继续战斗」/导出/返回保持可用、且无 `disableddisabled`。
 
 > V1.0-B.1 修复了一处真实写回缺陷：`applyStrategicBattleResult` 原先将战后 `enemyPower` / `control` 写到了原始 `state` 的星系对象上，而返回值是深拷贝的 `next`，导致敌方剩余战力从未真正生效、星系清零逻辑失效；现改为写入克隆后的 `target` 星系。
 
 ## 当前边界
 
-V1.0-B 已用 V0.7 真实逐舰持久舰队与组件 HP 替代抽象舰船数量 / 战力，并将战略交战接入 `core-v4` 真实战斗（共享模拟 / 渲染 / HUD / 绑定路径，`BattleOrigin = 'strategy'`）。V1.0-B.1 进一步统一战力量纲（战略 / 战役敌军、战后剩余战力、存档迁移均改用 core-v4 舰船成本）、强化战斗写回的安全校验与 UI 待处理战斗锁定，并修复了战后敌方战力写回失效的真实缺陷。V1.0-B.2 将战略战斗结果闭环为完全自洽、可重载的状态机：引入深度 `BattleState` 校验、低残余敌战力归一化、`1.0-alpha.4`→`1.0-alpha.5` 存档迁移硬化与 UI 锁定加固，策略测试套件扩展至 55 例（含真实集成写回）。以下内容仍属于 V1.0-C：
+V1.0-B 已用 V0.7 真实逐舰持久舰队与组件 HP 替代抽象舰船数量 / 战力，并将战略交战接入 `core-v4` 真实战斗（共享模拟 / 渲染 / HUD / 绑定路径，`BattleOrigin = 'strategy'`）。V1.0-B.1 进一步统一战力量纲（战略 / 战役敌军、战后剩余战力、存档迁移均改用 core-v4 舰船成本）、强化战斗写回的安全校验与 UI 待处理战斗锁定，并修复了战后敌方战力写回失效的真实缺陷。V1.0-B.2 将战略战斗结果闭环为完全自洽、可重载的状态机：引入深度 `BattleState` 校验、低残余敌战力归一化、`1.0-alpha.4`→`1.0-alpha.5` 存档迁移硬化与 UI 锁定加固。V1.0-B.3 进一步闭合低预算敌军生成、持久战斗绑定完整性（失能舰/部署/精确集合）与 `BattleState` 一致性（死亡清 tick、失能按真实组件损毁、alpha.5 拒绝 escaped），并将 UI 锁定升级为真实 DOM 行为测试、集成测试直接消费模拟器权威输出。策略测试套件扩展至 57 例。以下内容仍属于 V1.0-C：
 
 - 将 V0.8 指挥官与候补系统接入新模式；
 - 多据点与真实运输航线；

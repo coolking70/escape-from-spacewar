@@ -26,6 +26,7 @@ import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
 import { encodeCampaignLog } from './campaign/campaignLog';
 import { CampaignBattleContext, PersistentBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle, prepareStrategicBattle } from './campaign/fleet/battleAdapter';
+import { defaultDeployment } from './campaign/deployment/deploymentSystem';
 import { StrategicUniversePanel } from './ui/strategicUniversePanel';
 import { generateUniverse } from './strategy/universeGenerator';
 import { applyUniverseAction, applyStrategicBattleResult, toPersistentFleet } from './strategy/universeRules';
@@ -633,7 +634,8 @@ export class App {
   private launchStrategicBattle(state: UniverseState): void {
     if (!state.pendingBattle) return;
     const persistentFleet = toPersistentFleet(state.fleet);
-    const context = prepareStrategicBattle(persistentFleet, state.pendingBattle.enemyFleet, state.pendingBattle.battleSeed);
+    const deployment = state.pendingBattle.deployment ?? defaultDeployment(persistentFleet);
+    const context = prepareStrategicBattle(persistentFleet, state.pendingBattle.enemyFleet, state.pendingBattle.battleSeed, deployment);
     this.beginWithReplay(context.replay, context);
   }
 

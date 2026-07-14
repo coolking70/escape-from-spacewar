@@ -11,6 +11,7 @@
 
 import { Ship, CombatState } from './battleTypes';
 import { isCombatCapable as _isCombatCapable } from './combatState';
+import { engineRatioFrom, weaponSystemFrom, sensorSystemFrom } from './derivedStats';
 
 /** 结构完整：核心未摧毁、未 escaped。
  *  = 既有 `alive` 字段的权威定义。destroyed / escaped 都为 false。 */
@@ -79,4 +80,34 @@ export function combatStatePriority(cs: CombatState): number {
     default:
       return 1;
   }
+}
+
+/**
+ * 结构死亡判定（与模拟器 dealDamage 的权威规则完全一致）：
+ * 核心组件已摧毁 或 全部组件已摧毁 ⇒ 该舰结构死亡，combatState 必须为 'destroyed'。
+ * 供模拟器（可选复用）与校验器共同使用，避免两套不一致的死亡判定。
+ */
+export function isStructurallyDestroyed(ship: Ship): boolean {
+  const core = ship.components.find((component) => component.def.type === 'core');
+  const coreDead = core ? core.destroyed : true;
+  const allDead = ship.components.length > 0 && ship.components.every((component) => component.destroyed);
+  return coreDead || allDead;
+}
+
+/** 由组件真实损毁推导的失能标志（与模拟器 recomputeDerivedV4 的引擎/武器/传感器规则一致）。 */
+export interface DisableFlags {
+  mobilityDisabled: boolean;
+  weaponsDisabled: boolean;
+  sensorsDisabled: boolean;
+}
+
+export function expectedDisableFlags(ship: Ship): DisableFlags {
+  const eng = engineRatioFrom(ship.components.filter((component) => component.def.type === 'engine'));
+  const wpn = weaponSystemFrom(ship.components.filter((component) => component.def.type === 'weapon'));
+  const sen = sensorSystemFrom(ship.components.filter((component) => component.def.type === 'sensor'));
+  return {
+    mobilityDisabled: eng.mobilityDisabled,
+    weaponsDisabled: wpn.weaponsDisabled,
+    sensorsDisabled: sen.sensorsDisabled
+  };
 }

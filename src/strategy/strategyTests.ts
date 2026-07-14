@@ -1,6 +1,6 @@
 import { Case, runSuite, SuiteResult } from '../sim/testHarness';
 import { generateUniverse, hash32 } from './universeGenerator';
-import { decodeUniverse, encodeUniverse, validateUniverseState } from './universePersistence';
+import { decodeUniverse, encodeUniverse, legacyAbstractPowerToCoreBudget, validateUniverseState } from './universePersistence';
 import {
   FACILITY_DEFINITIONS,
   RESEARCH_DEFINITIONS,
@@ -119,14 +119,25 @@ function lockPendingBattle(seed: number, enemyPower: number) {
   return { state, battle, bindings: ctx.bindings, pending, hostileId: hostile.id };
 }
 
-/** 直接修改战斗舰的 combatState 及其组件 HP（无需伪造 BattleState 结构），并补齐状态机相关字段使其通过深层校验。 */
+/** 直接修改战斗舰的 combatState 及其组件 HP（无需伪造 BattleState 结构），并补齐状态机相关字段使其通过深层校验。
+ *  修饰后的状态与真实模拟器 recomputeDerivedV4 / 死亡规则完全一致：
+ *  - destroyed：全组件摧毁 ⇒ alive=false 且三个失能标志均为 true，且不残留 tick；
+ *  - disabled：至少摧毁一个关键系统（引擎/武器）⇒ 对应失能标志为 true、alive=true；
+ *  - escaped/retreating：组件满血未摧毁 ⇒ 三个失能标志均为 false、alive=true，且仅保留对应 tick；
+ *  - 其余状态：组件满血未摧毁 ⇒ 失能标志均为 false、alive=true。 */
 function applyCombatState(ship: Ship, state: CombatState): void {
   ship.combatState = state;
+  ship.escapedTick = undefined;
+  ship.retreatStartedTick = undefined;
   if (state === 'destroyed') {
     for (const component of ship.components) {
       component.hp = 0;
       component.destroyed = true;
     }
+    ship.alive = false;
+    ship.mobilityDisabled = true;
+    ship.weaponsDisabled = true;
+    ship.sensorsDisabled = true;
   } else if (state === 'disabled') {
     // 优先摧毁引擎或武器（而非核心），并置对应失能标志，使 disabled 状态机一致（validateBattleShipAgainstDefinition 要求）。
     const index = ship.components.findIndex(
@@ -139,23 +150,37 @@ function applyCombatState(ship: Ship, state: CombatState): void {
       if (type === 'engine') ship.mobilityDisabled = true;
       else if (type === 'weapon') ship.weaponsDisabled = true;
     }
+    ship.alive = true;
+    ship.sensorsDisabled = false;
   } else if (state === 'escaped') {
     ship.escapedTick = 1;
     for (const component of ship.components) {
       component.hp = component.maxHp;
       component.destroyed = false;
     }
+    ship.alive = true;
+    ship.mobilityDisabled = false;
+    ship.weaponsDisabled = false;
+    ship.sensorsDisabled = false;
   } else if (state === 'retreating') {
     ship.retreatStartedTick = 1;
     for (const component of ship.components) {
       component.hp = component.maxHp;
       component.destroyed = false;
     }
+    ship.alive = true;
+    ship.mobilityDisabled = false;
+    ship.weaponsDisabled = false;
+    ship.sensorsDisabled = false;
   } else {
     for (const component of ship.components) {
       component.hp = component.maxHp;
       component.destroyed = false;
     }
+    ship.alive = true;
+    ship.mobilityDisabled = false;
+    ship.weaponsDisabled = false;
+    ship.sensorsDisabled = false;
   }
 }
 
@@ -185,15 +210,133 @@ function withPending(state: ReturnType<typeof generateUniverse>, systemId: strin
 }
 
 /**
- * test:strategy 在 Node 下运行（无 jsdom）。为 StrategicUniversePanel.render 提供最小 DOM 桩：
- * 仅捕获 innerHTML，querySelectorAll/querySelector 返回空（按钮 onclick 绑定为空操作）。
- * 真实 DOM 测试通过解析 innerHTML 中的 <button> 标签断言 disabled 属性（含"非法 disableddisabled"检测）。
+ * test:strategy 在 Node 下运行（无 jsdom）。为 StrategicUniversePanel.render 提供"真实 DOM 行为"桩：
+ * innerHTML setter 会把整段 HTML 解析为元素树，querySelector/querySelectorAll 在树上按 `#id` 与 `[data-*]` 选择，
+ * 返回的元素具备真实的 `disabled` 属性与 `onclick` 绑定，并提供 `click()`：
+ * 当 `disabled===true` 时 click() 不触发 onAction（与真实 <button disabled> 一致），从而把"UI 锁定"从字符串正则升级为真实行为断言。
  */
+class FakeNode {
+  tagName: string;
+  id = '';
+  attributes: Record<string, string> = {};
+  dataset: Record<string, string> = {};
+  children: FakeNode[] = [];
+  onclick: (() => void) | null = null;
+  private _disabled = false;
+  constructor(tagName: string) {
+    this.tagName = tagName.toLowerCase();
+  }
+  get disabled(): boolean {
+    return this._disabled;
+  }
+  set disabled(v: boolean) {
+    this._disabled = !!v;
+  }
+  /** 真实 DOM 语义：disabled 按钮不触发激活行为。 */
+  click(): void {
+    if (this._disabled) return;
+    if (this.onclick) this.onclick();
+  }
+  querySelector(sel: string): FakeNode | null {
+    const all = queryAll(this, sel);
+    return all.length ? all[0] : null;
+  }
+  querySelectorAll(sel: string): FakeNode[] {
+    return queryAll(this, sel);
+  }
+}
+
+function applyAttribute(node: FakeNode, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  if (lower === 'disabled') {
+    node.disabled = true;
+    node.attributes['disabled'] = '';
+  } else if (lower === 'id') {
+    node.id = value;
+    node.attributes['id'] = value;
+  } else if (lower.startsWith('data-')) {
+    node.attributes[lower] = value;
+    const key = lower.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+    node.dataset[key] = value;
+  } else {
+    node.attributes[lower] = value;
+  }
+}
+
+function parseAttributes(attrStr: string, node: FakeNode): void {
+  const re = /([a-zA-Z_][a-zA-Z0-9_:-]*)(?:\s*=\s*("([^"]*)"|'([^']*)'))?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(attrStr))) {
+    const name = m[1];
+    const value = m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : '';
+    applyAttribute(node, name, value);
+  }
+}
+
+/** 极简 HTML 解析器：仅用于支撑面板 render 输出的查询；不处理实体/脚本，标签需良好闭合。 */
+function parseHtml(html: string): FakeNode {
+  const root = new FakeNode('#root');
+  const stack: FakeNode[] = [root];
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*?)\s*(\/?)>/g;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html))) {
+    const isClose = m[1] === '/';
+    const tag = m[2].toLowerCase();
+    const attrStr = m[3] ?? '';
+    const selfClose = m[4] === '/';
+    if (isClose) {
+      for (let i = stack.length - 1; i >= 1; i--) {
+        if (stack[i].tagName === tag) {
+          stack.length = i;
+          break;
+        }
+      }
+      continue;
+    }
+    const node = new FakeNode(tag);
+    parseAttributes(attrStr, node);
+    stack[stack.length - 1].children.push(node);
+    if (!selfClose) stack.push(node);
+  }
+  return root;
+}
+
+function selectorMatches(node: FakeNode, sel: string): boolean {
+  if (sel.startsWith('#')) return node.id === sel.slice(1);
+  if (sel.startsWith('[') && sel.endsWith(']')) {
+    return node.attributes[sel.slice(1, -1)] !== undefined;
+  }
+  return node.tagName === sel.toLowerCase();
+}
+
+function queryAll(rootNode: FakeNode, sel: string): FakeNode[] {
+  const out: FakeNode[] = [];
+  const walk = (n: FakeNode): void => {
+    for (const c of n.children) {
+      if (selectorMatches(c, sel)) out.push(c);
+      walk(c);
+    }
+  };
+  walk(rootNode);
+  return out;
+}
+
 class FakeRoot {
-  innerHTML = '';
-  querySelectorAll(_sel: string): any[] { return []; }
-  // 返回一个最小桩对象，避免 render 中未加 null 守卫的 `querySelector('#...').onclick = ...` 在 Node 下崩溃。
-  querySelector(_sel: string): any { return { onclick: undefined }; }
+  private _html = '';
+  private _tree: FakeNode = new FakeNode('#root');
+  set innerHTML(v: string) {
+    this._html = v;
+    this._tree = parseHtml(v);
+  }
+  get innerHTML(): string {
+    return this._html;
+  }
+  querySelector(sel: string): any {
+    return this._tree.querySelector(sel);
+  }
+  querySelectorAll(sel: string): any[] {
+    return this._tree.querySelectorAll(sel);
+  }
 }
 
 function parseStrategyButtons(html: string): Array<{ id: string; disabled: boolean; data: string }> {
@@ -246,9 +389,9 @@ function simulateStrategicBattle(seed: number, enemyPower: number) {
     sim.step();
     guard++;
   }
-  // 使用模拟器权威的最终状态（与 ctx.state 同源，确保 teamACount/teamBCount 等字段一致）。
-  const finalState = (sim as unknown as { state: BattleState }).state;
-  return { state, battle: finalState, bindings: ctx.bindings, pending, guard };
+  // 直接使用模拟器权威输出：getState() 返回与传入 ctx.state 同一引用（构造时 this.state = state），
+  // 模拟器已在每 tick 末维护 teamACount/teamBCount 等字段，无需 syncBattleCounts 手工回写，也不经 as unknown as 伪造。
+  return { state, battle: sim.getState(), bindings: ctx.bindings, pending, guard };
 }
 
 /** 在 Node（无 jsdom）下渲染 StrategicUniversePanel 并返回捕获的 innerHTML。 */
@@ -257,6 +400,29 @@ function renderPanel(state: ReturnType<typeof generateUniverse>): string {
   const panel = new StrategicUniversePanel(root as unknown as HTMLElement, { onAction: () => {}, onExport: () => {}, onExit: () => {} });
   panel.render(state);
   return root.innerHTML;
+}
+
+/** 真实 DOM 渲染：返回可查询的 FakeRoot 与回调计数器，用于断言"禁用按钮点击不触发回调"等行为。 */
+function renderPanelToRoot(state: ReturnType<typeof generateUniverse>): {
+  root: FakeRoot;
+  html: string;
+  calls: { actions: number; exports: number; exits: number };
+} {
+  const root = new FakeRoot();
+  const calls = { actions: 0, exports: 0, exits: 0 };
+  const panel = new StrategicUniversePanel(root as unknown as HTMLElement, {
+    onAction: () => {
+      calls.actions++;
+    },
+    onExport: () => {
+      calls.exports++;
+    },
+    onExit: () => {
+      calls.exits++;
+    },
+  });
+  panel.render(state);
+  return { root, html: root.innerHTML, calls };
 }
 
 /** 真实同量纲敌方预算（>= 最低合法舰船成本），用于战斗写回测试，保证 enemyPowerBefore 与生成的敌舰队成本一致。 */
@@ -374,7 +540,7 @@ export function runStrategicTests(): SuiteResult {
         systemEnemyBudget(0, false), systemEnemyBudget(1, false), systemEnemyBudget(2, false),
         systemEnemyBudget(0, true), systemEnemyBudget(1, true), systemEnemyBudget(2, true)
       ];
-      test.true_(budgets.every((b) => b >= 50), '所有敌方预算不低于最低合法舰船成本');
+      test.true_(budgets.every((b) => b >= minimumStrategicFleetCost()), '所有敌方预算不低于最低合法舰船成本');
       // 离散装箱一致性：预算必须等于“用该预算生成的真实敌舰队成本”（容差 = 最便宜舰船成本）。
       const tolerance = 60;
       const cases: Array<[number, boolean]> = [[0, false], [1, false], [2, false], [0, true], [1, true], [2, true]];
@@ -400,7 +566,7 @@ export function runStrategicTests(): SuiteResult {
       const strongTotal = strong.reduce((sum, e) => sum + e.count, 0);
       test.true_(strongTotal > weakTotal, '强敌生成更多舰船（不采用战役式压缩安全上限）');
       const weakPower = weak.reduce((sum, e) => sum + e.count * campaignShipCost(e.shipClass, e.variant), 0);
-      test.true_(weakPower >= 50, '敌方强度由预算决定而非被低估');
+      test.true_(weakPower >= minimumStrategicFleetCost(), '敌方强度由预算决定（不低于最低合法舰船成本）而非被低估');
       add(test);
     }
 
@@ -450,7 +616,7 @@ export function runStrategicTests(): SuiteResult {
       state.fleet.systemId = hostile.id;
       state.selectedSystemId = hostile.id;
       hostile.discovered = true;
-      hostile.enemyPower = 18;
+      hostile.enemyPower = minimumStrategicFleetCost();
       const before = hostile.enemyPower;
       state = applyUniverseAction(state, { type: 'engageEnemy' });
       const updated = state.systems.find((system) => system.id === hostile.id)!;
@@ -893,7 +1059,8 @@ export function runStrategicTests(): SuiteResult {
         })
       );
       test.eq(rebuiltSys.enemyPower, expected, '迁移后敌方战力由确定性重建（不再是旧量纲的 7）');
-      test.true_(rebuiltSys.enemyPower >= 50, '重建后敌方战力落于合法最低预算之上');
+      test.eq(rebuiltSys.enemyPower, 0, '低于最低合法成本的旧战力（7）归一化为 0，不再膨胀成整舰');
+      test.eq(rebuiltSys.control, 'neutral', '归一化为 0 后系统转为 neutral（无敌军）');
       add(test);
     }
 
@@ -1036,7 +1203,9 @@ export function runStrategicTests(): SuiteResult {
         threw = true;
         msg = String(e);
       }
-      test.true_(threw && msg.includes('disabled'), 'disabled 但无关键系统失能被拒绝');
+      // applyCombatState('disabled') 已制造真实关键系统损毁并置对应失能标志；此处再手动清掉标志，
+      // 构造"标记 disabled 却与真实组件损毁不一致"的状态——校验层必须拒绝（两种拒绝口径任一均可）。
+      test.true_(threw && (msg.includes('disabled') || msg.includes('不一致')), 'disabled 但无关键系统失能（或与真实损毁不一致）被拒绝');
 
       const esc = battle.ships.find((s) => s.team === 'B')!;
       applyCombatState(esc, 'escaped');
@@ -1188,6 +1357,70 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
+    // 46b. UI 锁定（真实 DOM 行为）：禁用按钮真实 disabled===true 且 click() 不触发回调；继续战斗/导出/返回真实可用
+    {
+      const test = new Case('UI 锁定：真实 DOM——禁用按钮 disabled 且不触发回调、继续/导出/返回可用');
+      let gate = prepareGate(generateUniverse(1071), 100);
+      const enabled = establishStartingBase(gate);
+      const hostile = enabled.systems.find((s) => s.control === 'enemy')!;
+      const locked = withPending(enabled, hostile.id, 999);
+      const { root, html, calls } = renderPanelToRoot(locked);
+      // 禁用按钮：推进一回合
+      const next = root.querySelector('#strategy-next-turn');
+      test.true_(!!next, '存在"推进一回合"按钮');
+      if (next) {
+        test.true_(next.disabled === true, '待处理战斗时"推进一回合"真实 disabled===true');
+        const before = calls.actions;
+        next.click();
+        test.eq(calls.actions, before, '点击禁用按钮不触发 onAction 回调');
+      }
+      // 继续战斗：保持可用且点击触发 onAction
+      const engage = root.querySelector('#strategy-engage');
+      test.true_(!!engage, '存在"继续战斗"按钮');
+      if (engage) {
+        test.true_(engage.disabled === false, '待处理战斗时"继续战斗"真实 disabled===false');
+        const before = calls.actions;
+        engage.click();
+        test.eq(calls.actions, before + 1, '点击"继续战斗"触发 onAction 回调');
+      }
+      // 导出/返回：真实可用且点击触发各自回调
+      const exportBtn = root.querySelector('#strategy-export');
+      test.true_(!!exportBtn && exportBtn.disabled === false, '导出按钮真实可用');
+      if (exportBtn) {
+        const before = calls.exports;
+        exportBtn.click();
+        test.eq(calls.exports, before + 1, '点击"导出"触发 onExport 回调');
+      }
+      const exitBtn = root.querySelector('#strategy-exit');
+      test.true_(!!exitBtn && exitBtn.disabled === false, '返回按钮真实可用');
+      if (exitBtn) {
+        const before = calls.exits;
+        exitBtn.click();
+        test.eq(calls.exits, before + 1, '点击"返回"触发 onExit 回调');
+      }
+      // 选择系统按钮真实可用（未被锁定）
+      const systemBtns = root.querySelectorAll('[data-strategy-system]');
+      test.true_(systemBtns.length > 0, '存在可选系统按钮');
+      test.true_(systemBtns.every((b: any) => b.disabled === false), '可选系统按钮均未被禁用');
+      test.true_(!html.includes('disableddisabled'), '不存在非法"disableddisabled"重复属性');
+      add(test);
+    }
+
+    // 47b. UI 无锁定（真实 DOM 行为）：推进一回合真实可用且 click() 触发 onAction
+    {
+      const test = new Case('UI 无锁定：真实 DOM——推进一回合可用且点击触发 onAction');
+      const { root, calls } = renderPanelToRoot(generateUniverse(1072));
+      const next = root.querySelector('#strategy-next-turn');
+      test.true_(!!next && next.disabled === false, '无待处理战斗时"推进一回合"真实 disabled===false');
+      if (next) {
+        const before = calls.actions;
+        next.click();
+        test.eq(calls.actions, before + 1, '点击"推进一回合"触发 onAction 回调');
+      }
+      test.true_(!root.innerHTML.includes('disableddisabled'), '活跃状态不存在非法"disableddisabled"重复属性');
+      add(test);
+    }
+
     // 48. 低残余写回状态可编码/解码往返且 enemyPower 一致为 0
     {
       const test = new Case('低残余写回状态远征码往返：enemyPower 0 + neutral 一致');
@@ -1227,17 +1460,25 @@ export function runStrategicTests(): SuiteResult {
         };
         return b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state: a2 });
       };
-      const m20 = decodeUniverse(makeAlpha2(20, 4, 1));
-      const m40 = decodeUniverse(makeAlpha2(40, 4, 1));
-      const m60 = decodeUniverse(makeAlpha2(60, 4, 1));
-      const m80 = decodeUniverse(makeAlpha2(80, 4, 1));
-      const p20 = campaignFleetPower(toPersistentFleet(m20.fleet));
-      const p40 = campaignFleetPower(toPersistentFleet(m40.fleet));
-      const p60 = campaignFleetPower(toPersistentFleet(m60.fleet));
-      const p80 = campaignFleetPower(toPersistentFleet(m80.fleet));
-      test.true_(p20 <= p40 && p40 <= p60 && p60 <= p80, 'combatPower 越高迁移战力不下降（单调递增）');
-      test.true_(p80 > p20, '高 combatPower 迁移战力显著更高');
-      const disabledShip = m40.fleet.ships.find((s) => s.disabled)!;
+      const m35 = decodeUniverse(makeAlpha2(35, 4, 1));
+      const m55 = decodeUniverse(makeAlpha2(55, 4, 1));
+      const m75 = decodeUniverse(makeAlpha2(75, 4, 1));
+      const m90 = decodeUniverse(makeAlpha2(90, 4, 1));
+      const p35 = campaignFleetPower(toPersistentFleet(m35.fleet));
+      const p55 = campaignFleetPower(toPersistentFleet(m55.fleet));
+      const p75 = campaignFleetPower(toPersistentFleet(m75.fleet));
+      const p90 = campaignFleetPower(toPersistentFleet(m90.fleet));
+      test.true_(p35 <= p55 && p55 <= p75 && p75 <= p90, 'combatPower 越高迁移战力不下降（单调递增）');
+      test.true_(p90 > p35, '高 combatPower 迁移战力显著更高');
+      // 真实 campaignFleetPower 校准：迁移后舰队真实战力应逼近 legacyAbstractPowerToCoreBudget 目标（离散取整误差有界）。
+      // 采用中段 combatPower，使目标落在"可作战舰 35% 下限 ~ 满血上限"的可达区间内（极_low/极_high 会被钳到下限/上限，属正常）。
+      const calTarget = (cp: number) => legacyAbstractPowerToCoreBudget(4, cp);
+      const calTol = (exp: number) => Math.max(8, Math.round(exp * 0.05));
+      test.true_(Math.abs(p35 - calTarget(35)) <= calTol(calTarget(35)), 'combatPower=35 迁移战力经真实 campaignFleetPower 校准逼近目标');
+      test.true_(Math.abs(p55 - calTarget(55)) <= calTol(calTarget(55)), 'combatPower=55 迁移战力经真实 campaignFleetPower 校准逼近目标');
+      test.true_(Math.abs(p75 - calTarget(75)) <= calTol(calTarget(75)), 'combatPower=75 迁移战力经真实 campaignFleetPower 校准逼近目标');
+      test.true_(Math.abs(p90 - calTarget(90)) <= calTol(calTarget(90)), 'combatPower=90 迁移战力经真实 campaignFleetPower 校准逼近目标');
+      const disabledShip = m55.fleet.ships.find((s) => s.disabled)!;
       const def = getShipDef(disabledShip.shipClass, disabledShip.variant).def;
       const keyIdx = def.components.findIndex((c) => c.type === 'core' || c.type === 'engine' || c.type === 'weapon');
       test.true_(disabledShip.componentHp![keyIdx] === 0, '失能舰关键组件 HP 归零');
@@ -1248,7 +1489,6 @@ export function runStrategicTests(): SuiteResult {
     {
       const test = new Case('真实集成：core-v4 模拟跑完 + 写回产出可保存可往返状态');
       const { state, battle, bindings, guard } = simulateStrategicBattle(1095, ENEMY_BUDGET);
-      syncBattleCounts(battle);
       test.true_(battle.finished, '真实 core-v4 模拟运行至结束');
       test.true_(guard < 200000, `模拟在有限步数内结束（${guard} ticks）`);
       test.true_(typeof battle.winner === 'string', '产生明确胜负');
@@ -1313,15 +1553,18 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
-    // 54. strategicEnemyFleetFor 低预算阈值：不低于最低合法成本，且不产生空敌舰队
+    // 54. strategicEnemyFleetFor 低预算阈值：等于最低合法成本生成最小合法舰队；低于最低成本归一化为 0 → 空舰队（不再膨胀成整舰）
     {
-      const test = new Case('strategicEnemyFleetFor 低预算阈值：不低于最低合法成本、不生成空舰队');
+      const test = new Case('strategicEnemyFleetFor 低预算阈值：等于最低成本生成最小舰队、低于最低成本归一化为空舰队');
       const min = minimumStrategicFleetCost();
       const fleetMin = strategicEnemyFleetFor(1234, min, { sectorIndex: 0, gateGuard: false, cruiserAllowed: false });
       test.true_(campaignFleetEntryCost(fleetMin) >= min, '最低合法预算生成的敌舰队成本 >= 最低成本（同量纲，无 50 魔法兜底）');
+      test.true_(fleetMin.length >= 1, '最低合法预算生成非空敌舰队');
       const fleetLow = strategicEnemyFleetFor(1234, min - 10, { sectorIndex: 0, gateGuard: false, cruiserAllowed: false });
-      test.true_(campaignFleetEntryCost(fleetLow) >= min, '低于最低成本的预算被归一化，仍生成 >= 最低成本的合法敌舰队');
-      test.true_(fleetLow.length >= 1, '低预算不生成空敌舰队');
+      test.eq(fleetLow.length, 0, '低于最低成本的预算归一化为 0 → 空敌舰队（不再膨胀成整舰 / 标准战斗机兜底）');
+      test.eq(campaignFleetEntryCost(fleetLow), 0, '低于最低成本的预算生成舰队成本为 0');
+      const fleetZero = strategicEnemyFleetFor(1234, 0, { sectorIndex: 0, gateGuard: false, cruiserAllowed: false });
+      test.eq(fleetZero.length, 0, '零预算也生成空敌舰队');
       add(test);
     }
 
