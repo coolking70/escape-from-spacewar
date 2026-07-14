@@ -1,4 +1,4 @@
-import { runStrategicTests } from '../src/strategy/strategicTests';
+import { runStrategicTests } from '../src/strategy/strategyTests';
 
 const suite = runStrategicTests();
 console.log(suite.messages.join('\n'));
