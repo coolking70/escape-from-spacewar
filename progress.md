@@ -125,9 +125,9 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.4` (real per-ship fleet; enemy power uses the core-v4 ship-cost dimension). `1.0-alpha.2` (abstract fleet) and `1.0-alpha.3` (old-dimension enemy power) are migrated deterministically in place.
+- Current version: `1.0-alpha.5` (real per-ship fleet; enemy power uses the core-v4 ship-cost dimension). `1.0-alpha.2` (abstract fleet), `1.0-alpha.3` (old-dimension enemy power) and `1.0-alpha.4` (per-ship, old escaped semantics) are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state (per-ship) and inherited assets.
-- `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.1` resets into a fresh first strategic sector.
+- `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
 
 ## V1.0-B real persistent fleet and core-v4 strategic battle
@@ -153,6 +153,20 @@ V1.0-B.1 closes the gaps left after the real-fleet wiring:
 - **Pending-battle UI + logic lock:** `StrategicUniversePanel` disables every action (travel, survey, extract, base, build, research, calibrate, next-turn) and shows a banner while a `pendingBattle` exists; the `can*` predicates gain the same `state.pendingBattle` guard as defense-in-depth. Loss preview now lists concrete ship IDs.
 - **Save upgrade to `1.0-alpha.4`:** `decodeUniverse` / `loadUniverse` branch on `1.0-alpha.2` (abstract → per-ship via `legacyAbstractPowerToCoreBudget` + `recomputeEnemyPowers`) and `1.0-alpha.3` (`recomputeEnemyPowers` rebuilds enemy power in the core-v4 dimension). `validateUniverseState` enforces `version === 1.0-alpha.4`, enemy/control consistency and `fleet.ships.length >= 1`.
 
+## V1.0-B.2 strategic battle-result closure, legacy-save compatibility and UI-lock hardening
+
+V1.0-B.2 makes the strategic battle result a fully self-consistent, reload-safe state machine and tightens legacy-save migration and UI locking:
+
+- **Deep `BattleState` validation (`validateFinishedStrategicBattle` / `validateBattleShipAgainstDefinition`):** a finished core-v4 `BattleState` is now rejected unless `version === 0.5`, `ruleset === spacewar-core-v4`, `seed` finite, `teamACount` / `teamBCount` match the ships actually present (`isPresentOnBattlefield`, the same predicate the simulator uses each tick), ship ids unique, every numeric field finite, and every ship's `def.type` / component count / type / `maxHp` / `hp` range / `core` integrity matches `getShipDef`. State-machine rules are enforced: `destroyed` requires `hp<=0`, `disabled` requires a critical-system disable flag, `escaped` requires `escapedTick`, operational states require positive core hp. `Team B` must equal `pending.enemyFleet`.
+- **Low-residual enemy power normalization:** `normalizeStrategicEnemyPower` floors any residual below the cheapest legal ship cost to 0 and clears the system to `neutral`. The floor is a single authority — `minimumStrategicFleetCost()` (= lowest `VARIANTS` cost = 45, scout Fighter) — used by `systemEnemyBudget` and `strategicEnemyFleetFor` so no enemy fleet is ever below one legal ship. This fixes "heavily damaged but alive" enemy ships producing a sub-minimum residual that could not be saved, and prevents a low residual from inflating into a full ship next fight.
+- **Legacy-save migration hardening:**
+  - `1.0-alpha.4` → `1.0-alpha.5`: `escaped` normalized to `false`, missing `deployed` completed to `true`, missing `towed` completed to `false`, and `strategicFleetCounts.operational` is asserted to equal `activeShips(...).length` (escaped semantics unified); disabled ships are preserved.
+  - `1.0-alpha.2` abstract power migrates monotonically: higher `combatPower` never yields lower migrated fleet power, and disabled key components are zeroed.
+- **UI lock hardening:** `StrategicUniversePanel` emits a single `disabled` attribute with no duplicate `disableddisabled` token; the `can*` predicates and action handlers share the `state.pendingBattle` guard so a pending battle locks travel / survey / extract / base / build / research / calibrate / next-turn at both UI and logic layers.
+- **Real-integration coverage:** the strategy suite now runs a full `prepareStrategicBattle` → `createSimulator` (run-to-finish) → `applyStrategicBattleResult` writeback and asserts the result is self-consistent and save-round-trippable, exercising the genuine closure end-to-end with no `as unknown as BattleState` fabrication.
+
+The strategy suite grows from 35 to **55** cases covering low-residual writeback, escaped / migration, `BattleState` validation, UI lock, save round-trip, alpha.2 power monotonicity and real integration.
+
 ## Verification matrix
 
 ```bash
@@ -166,7 +180,7 @@ npm run test:stress
 npm run build:static
 ```
 
-The V1.0-B.1 strategic suite (`runStrategicTests`, 35 cases, no `as unknown as` fabricated `BattleState`) covers:
+The V1.0-B.2 strategic suite (`runStrategicTests`, 55 cases, no `as unknown as` fabricated `BattleState`) covers:
 
 - deterministic nine-system generation and connectivity
 - gate, relic and hostile-system generation
@@ -190,6 +204,12 @@ The V1.0-B.1 strategic suite (`runStrategicTests`, 35 cases, no `as unknown as` 
 - `1.0-alpha.2` → `1.0-alpha.4` migration (abstract power converted, disabled preserved)
 - `1.0-alpha.3` → `1.0-alpha.4` migration (deterministic enemy-power rebuild)
 - `1.0-alpha.4` code round-trip and corrupted-state rejection
+- **V1.0-B.2 `BattleState` deep validation** (version / ruleset / seed / `teamACount`·`teamBCount` present-count match / unique ids / finite fields / per-ship def·component·state-machine consistency / `Team B` === pending)
+- **low-residual enemy power normalization** (sub-minimum residual → 0 + `neutral`; `minimumStrategicFleetCost()` authority)
+- **`1.0-alpha.4` → `1.0-alpha.5` migration** (escaped → `false`, missing `deployed`/`towed` completion, operational-count conservation, disabled preserved)
+- **alpha.2 abstract power monotonic migration** (higher `combatPower` → no lower migrated power, disabled key components zeroed)
+- **UI lock** (single `disabled` attribute, no `disableddisabled`; `can*` logic + UI lock under pending battle)
+- **real-integration writeback** (full `prepareStrategicBattle` → `createSimulator` run-to-finish → `applyStrategicBattleResult`, self-consistent and save-round-trippable)
 
 ## Next milestone: V1.0-B/C
 

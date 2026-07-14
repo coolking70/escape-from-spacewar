@@ -3,6 +3,7 @@ import {
   battleTeamRemainingPower,
   campaignFleetEntryCost,
   campaignFleetPower,
+  normalizeStrategicEnemyPower,
   systemEnemyBudget
 } from '../campaign/fleet/campaignPower';
 import { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
@@ -12,9 +13,10 @@ import {
   strategicEnemyFleetFor,
   validatePersistentBattleBindings
 } from '../campaign/fleet/battleAdapter';
-import { RULESET_V4 } from '../sim/battleConfig';
+import { RULESET_V4, SIM_VERSION_V5 } from '../sim/battleConfig';
 import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
-import type { BattleState } from '../sim/battleTypes';
+import { isPresentOnBattlefield } from '../sim/shipFlags';
+import type { BattleState, FleetEntry } from '../sim/battleTypes';
 import type {
   ConstructionOrder,
   CrisisPhase,
@@ -291,7 +293,7 @@ function enemyExpansion(state: UniverseState): void {
   target.control = 'enemy';
   target.enemyPower = Math.max(
     target.enemyPower,
-    Math.max(50, Math.round(systemEnemyBudget(state.sectorIndex, false) * 0.5))
+    normalizeStrategicEnemyPower(systemEnemyBudget(state.sectorIndex, false) * 0.5)
   );
   appendLog(state, `敌方势力扩张至${target.name}，当地出现战力 ${target.enemyPower} 的守军。`);
 }
@@ -342,7 +344,7 @@ export function travelFuelCost(state: UniverseState): number {
 export function canEstablishBase(state: UniverseState, entityId: string): boolean {
   const entity = state.entities.find((candidate) => candidate.id === entityId);
   const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
-  return state.status === 'active' && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
+  return state.status === 'active' && !state.pendingBattle && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
     entity.surveyed && entity.systemId === state.fleet.systemId && !entity.ownerId &&
     (system?.enemyPower ?? 0) === 0 && state.faction.resources.minerals >= 10 &&
     state.faction.resources.energy >= 5 && state.faction.resources.supplies >= 4;
@@ -378,7 +380,7 @@ export function canRepairFleet(state: UniverseState): boolean {
 export function canRepairShip(state: UniverseState, campaignShipId: string): boolean {
   const base = baseEntity(state);
   const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
-  return state.status === 'active' && !!base && state.fleet.systemId === base.systemId &&
+  return state.status === 'active' && !state.pendingBattle && !!base && state.fleet.systemId === base.systemId &&
     facilityCount(base, 'repairDock') > 0 && !!ship && ship.disabled &&
     state.faction.resources.supplies >= 5 && state.faction.resources.minerals >= 4;
 }
@@ -795,6 +797,8 @@ export function applyStrategicBattleResult(
     throw new Error('战斗敌方舰队（Team B）与待处理战斗的 enemyFleet 不一致。');
   }
   validatePersistentBattleBindings(bindings, toPersistentFleet(state.fleet), battle);
+  // 深层结构校验：版本 / ruleset / seed / 队伍计数 / 舰 id 唯一 / 有限数值 / 每舰组件与状态机一致性 / Team B 与 pending 一致。
+  validateFinishedStrategicBattle(battle, { battleSeed: pending.battleSeed, enemyFleet: pending.enemyFleet });
 
   const next = cloneState(state);
   const target = next.systems.find((candidate) => candidate.id === pending.systemId)!;
@@ -812,7 +816,9 @@ export function applyStrategicBattleResult(
   next.fleet.ships = standardizedShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
   const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
 
-  const enemyRemaining = enemyRemainingPower(battle);
+  // 战后敌方残余战力归一化：低于最低合法舰船成本（无法代表一艘合法舰船）一律归零并转为 neutral，
+  // 既修复"严重受损但存活的敌舰产生低于最低成本的残余战力导致无法保存"，也防止"低残余被下一战膨胀成整舰"。
+  const enemyRemaining = normalizeStrategicEnemyPower(enemyRemainingPower(battle));
   // 无增援 / 敌方恢复 / 新单位生成时，战后战力不得高于战前（离散装箱误差已在共享函数层归整）。
   if (enemyRemaining > pending.enemyPowerBefore) {
     throw new Error(`敌方战后战力 ${enemyRemaining} 高于战前 ${pending.enemyPowerBefore}，拒绝写回。`);
@@ -827,7 +833,7 @@ export function applyStrategicBattleResult(
     next,
     `战斗结束于${system.name}（battleId ${pending.battleId} / seed ${pending.battleSeed}）：` +
       `玩家损毁 [${destroyedIds.join(', ')}]，失能 [${disabledIds.join(', ')}]，脱离 [${escapedIds.size ? [...escapedIds].sort().join(', ') : '无'}]；` +
-      `敌方战力 ${pending.enemyPowerBefore} → ${system.enemyPower}${system.enemyPower === 0 ? '；星系已清除' : ''}。`
+      `敌方战力 ${pending.enemyPowerBefore} → ${target.enemyPower}${target.enemyPower === 0 ? '；星系已清除' : ''}。`
   );
 
   next.pendingBattle = undefined;
@@ -859,4 +865,95 @@ function teamBMatchesPending(battle: BattleState, enemyFleet: ReadonlyArray<{ sh
     if (counts.get(key) !== value) return false;
   }
   return true;
+}
+
+/**
+ * 校验单艘战斗舰与其 (舰体, 改型) 定义的深层一致性（拒绝被篡改的 BattleState）：
+ * - ship.type / ship.variant 与权威 ShipDef（getShipDef）一致；
+ * - 组件数量、类型（按序）、maxHp 与权威 ShipDef 完全一致；
+ * - 每个组件 hp 为有限值、0 <= hp <= maxHp、destroyed === (hp <= 0)；
+ * - core 组件 hp <= 0 时 combatState 必须为 'destroyed'（不得是 operational/escaped 等）；
+ * - disabled 规则：combatState === 'disabled' 必须有 mobility/weapons/sensors 失能之一；
+ *   combatState === 'escaped' 必须有 escapedTick；operational 类状态必须有正 core hp。
+ */
+export function validateBattleShipAgainstDefinition(ship: BattleState['ships'][number]): void {
+  const canonical = getShipDef(ship.type, ship.variant).def;
+  if (!ship.def || ship.def.type !== ship.type) {
+    throw new Error(`战斗舰 ${ship.id} 的 def.type 与 type(${ship.type}) 不一致。`);
+  }
+  if (ship.components.length !== canonical.components.length) {
+    throw new Error(`战斗舰 ${ship.id} 的组件数量与定义不一致。`);
+  }
+  const core = ship.components.find((component) => component.def.type === 'core');
+  for (let i = 0; i < canonical.components.length; i++) {
+    const component = ship.components[i];
+    const def = canonical.components[i];
+    if (component.def.type !== def.type) {
+      throw new Error(`战斗舰 ${ship.id} 第 ${i} 个组件类型(${component.def.type})与定义(${def.type})不一致。`);
+    }
+    if (component.maxHp !== def.maxHp) {
+      throw new Error(`战斗舰 ${ship.id} 第 ${i} 个组件 maxHp(${component.maxHp})与定义(${def.maxHp})不一致。`);
+    }
+    if (!Number.isFinite(component.hp) || component.hp < 0 || component.hp > component.maxHp) {
+      throw new Error(`战斗舰 ${ship.id} 组件 hp(${component.hp})非法（应为有限值且 0<=hp<=maxHp）。`);
+    }
+    if (component.destroyed !== (component.hp <= 0)) {
+      throw new Error(`战斗舰 ${ship.id} 组件 destroyed 标记与 hp 不一致。`);
+    }
+  }
+  if (core && core.hp <= 0 && ship.combatState !== 'destroyed') {
+    throw new Error(`战斗舰 ${ship.id} 核心已损毁但 combatState(${ship.combatState})不是 destroyed。`);
+  }
+  if (ship.combatState === 'disabled' && !(ship.mobilityDisabled || ship.weaponsDisabled || ship.sensorsDisabled)) {
+    throw new Error(`战斗舰 ${ship.id} 标记 disabled 但无任何关键系统失能。`);
+  }
+  if (ship.combatState === 'escaped' && ship.escapedTick === undefined) {
+    throw new Error(`战斗舰 ${ship.id} 标记 escaped 但缺少 escapedTick。`);
+  }
+  if (
+    (ship.combatState === 'normal' || ship.combatState === 'damaged' || ship.combatState === 'critical' || ship.combatState === 'retreating') &&
+    core && core.hp <= 0
+  ) {
+    throw new Error(`战斗舰 ${ship.id} combatState(${ship.combatState})要求正 core hp，但核心已损毁。`);
+  }
+}
+
+/**
+ * 校验一份已结束的 core-v4 战略战斗 BattleState 的深层结构（拒绝任意不匹配的结果）：
+ * - 必须 finished 且 ruleset === RULESET_V4、version === SIM_VERSION_V5；
+ * - seed 为有限整数；与 pending.battleSeed 一致（若提供）；
+ * - teamACount / teamBCount 与真实舰数一致；ship id 唯一；数值字段有限；
+ * - 每艘舰通过 validateBattleShipAgainstDefinition；
+ * - 若提供 pending，则 Team B 必须与 pending.enemyFleet 完全一致。
+ */
+export function validateFinishedStrategicBattle(
+  battle: BattleState,
+  pending?: { battleSeed: number; enemyFleet: ReadonlyArray<FleetEntry> }
+): void {
+  if (!battle || typeof battle !== 'object') throw new Error('BattleState 缺失或非法。');
+  if (typeof battle.finished !== 'boolean' || !battle.finished) throw new Error('战斗尚未结束（finished 不为 true）。');
+  if (battle.version !== SIM_VERSION_V5) throw new Error(`BattleState.version（${String(battle.version)}）不是预期的 ${SIM_VERSION_V5}。`);
+  if (battle.ruleset !== RULESET_V4) throw new Error(`BattleState.ruleset（${String(battle.ruleset)}）不是预期的 ${RULESET_V4}。`);
+  if (!Number.isInteger(battle.seed) || !Number.isFinite(battle.seed)) throw new Error('BattleState.seed 非法。');
+  if (pending && battle.seed !== pending.battleSeed) {
+    throw new Error(`战斗 seed（${battle.seed}）与待处理战斗（${pending.battleSeed}）不一致。`);
+  }
+  if (!Number.isFinite(battle.tick) || !Number.isFinite(battle.maxTicks)) throw new Error('BattleState 时间字段非法。');
+  // teamACount / teamBCount 与模拟器保持一致：仅统计仍在场（未摧毁、未脱离）的舰，
+  // 因为模拟器在每 tick 会据此重算（escaped 舰已离场不算入内）。
+  const teamA = battle.ships.filter((ship) => ship.team === 'A' && isPresentOnBattlefield(ship));
+  const teamB = battle.ships.filter((ship) => ship.team === 'B' && isPresentOnBattlefield(ship));
+  if (teamA.length !== battle.teamACount) throw new Error(`BattleState.teamACount(${battle.teamACount}) 与真实 Team A 在场舰数(${teamA.length})不一致。`);
+  if (teamB.length !== battle.teamBCount) throw new Error(`BattleState.teamBCount(${battle.teamBCount}) 与真实 Team B 在场舰数(${teamB.length})不一致。`);
+  const ids = new Set<number>();
+  for (const ship of battle.ships) {
+    if (!Number.isFinite(ship.id)) throw new Error('战斗舰 id 非法。');
+    if (ids.has(ship.id)) throw new Error('战斗舰 id 重复。');
+    ids.add(ship.id);
+    if (!Number.isFinite(ship.shield) || !Number.isFinite(ship.maxShield)) throw new Error(`战斗舰 ${ship.id} 护盾数值非法。`);
+    validateBattleShipAgainstDefinition(ship);
+  }
+  if (pending && !teamBMatchesPending(battle, pending.enemyFleet)) {
+    throw new Error('战斗敌方舰队（Team B）与待处理战斗的 enemyFleet 不一致。');
+  }
 }

@@ -6,7 +6,7 @@ import { assertValidFleet } from '../../sim/fleetValidator';
 import { getShipDef } from '../../sim/shipVariants';
 import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
-import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost } from './campaignPower';
+import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, normalizeStrategicEnemyPower } from './campaignPower';
 
 /** 战役与战略战斗共用的绑定：持久舰 shipId ↔ 战斗舰 shipId。 */
 export interface PersistentBattleBinding { campaignShipId: string; battleShipId: number; }
@@ -127,7 +127,8 @@ export function strategicEnemyFleetFor(
   const threatLevel = Math.min(4, Math.max(0, opts.sectorIndex - 1) + (opts.gateGuard ? 2 : 0));
   const pool = candidatePool(opts.sectorIndex, threatLevel, opts.gateGuard)
     .filter((entry) => opts.cruiserAllowed || entry.shipClass !== 'Cruiser');
-  const target = Math.max(50, Math.round(enemyPower));
+  // 使用权威归一化：低于最低合法舰船成本的预算一律归零（转为 neutral），不再用魔法数字 50 兜底。
+  const target = normalizeStrategicEnemyPower(enemyPower);
   const result = new Map<string, FleetEntry>();
   let total = 0;
   for (let slot = 0; slot < 24 && total < target; slot++) {

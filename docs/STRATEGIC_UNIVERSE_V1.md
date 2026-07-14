@@ -4,7 +4,8 @@
 > V1.0-B 已将战略层接入真实逐舰持久舰队与 `core-v4` 实战，存档升级为 `1.0-alpha.3`，
 > 抽象字段（`shipCount` / `disabledShips` / `combatPower`）已移除。
 > V1.0-B.1 进一步将战略 / 战役敌军、战后剩余战力、存档迁移统一到 core-v4 舰船成本量纲，存档升级为 `1.0-alpha.4`。
-> 当前实现与进度请以 `progress.md` 的「V1.0-B real persistent fleet and core-v4 strategic battle」一节为准。
+> V1.0-B.2 将战略战斗结果闭环为完全自洽、可重载的状态机（深度 `BattleState` 校验、低残余敌战力归一化、`1.0-alpha.4`→`1.0-alpha.5` 迁移硬化、UI 锁定加固），存档升级为 `1.0-alpha.5`，策略测试套件扩展至 55 例（含真实集成写回）。
+> 当前实现与进度请以 `progress.md` 的「V1.0-B real persistent fleet and core-v4 strategic battle」与「V1.0-B.2 strategic battle-result closure, legacy-save compatibility and UI-lock hardening」两节为准。
 
 ## Purpose
 

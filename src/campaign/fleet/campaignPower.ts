@@ -1,5 +1,5 @@
 import { BattleState, FleetEntry, ShipClass, ShipVariant, Team } from '../../sim/battleTypes';
-import { getShipDef, getVariantDef } from '../../sim/shipVariants';
+import { getShipDef, getVariantDef, VARIANTS } from '../../sim/shipVariants';
 import { DeploymentSelection } from '../deployment/deploymentSystem';
 import { PersistentFleet, PersistentShip, createStarterFleet } from './persistentFleet';
 
@@ -8,6 +8,29 @@ const STANDARD_COST: Record<ShipClass, number> = {
   Frigate: 150,
   Cruiser: 360
 };
+
+/**
+ * 战略敌军实际可用的最低合法舰船成本（= 所有舰种/改型中的最小成本）。
+ * 当前为侦察型 Fighter（45）。任何低于此值的"残余敌方战力"无法代表一艘合法舰船，
+ * 必须归零并转为 neutral，否则会导致存档无法满足"敌方控制 → 合法正预算"的校验（无法保存）。
+ * 所有相关模块（strategicEnemyFleetFor / validateUniverseState / 战后残余归一化 / 存档迁移 /
+ * enemyExpansion / 测试）都必须复用此权威值，不得散落魔法数字 45 / 50。
+ */
+const MINIMUM_STRATEGIC_FLEET_COST = Math.min(...Object.values(VARIANTS).map((variant) => variant.cost));
+
+export function minimumStrategicFleetCost(): number {
+  return MINIMUM_STRATEGIC_FLEET_COST;
+}
+
+/**
+ * 敌军战力归一化：任何低于最低合法舰船成本的残余战力一律归零（转为 neutral），
+ * 否则既不能代表一艘合法舰船，又会使存档无法通过校验（无法保存）。
+ * 对于合法预算（>= 最低成本）原样保留其四舍五入后的值。
+ */
+export function normalizeStrategicEnemyPower(rawPower: number): number {
+  const value = Math.max(0, Math.round(rawPower));
+  return value < minimumStrategicFleetCost() ? 0 : value;
+}
 
 export type EncounterDanger = 'favorable' | 'even' | 'dangerous' | 'overwhelming';
 
@@ -85,7 +108,8 @@ export function systemEnemyBudget(sectorIndex: number, gateGuard: boolean): numb
   const baseline = strategicBaselineFleetPower();
   const index = Math.min(2, Math.max(0, Math.floor(sectorIndex) - 1));
   const factor = gateGuard ? GATE_FACTORS[index] : OUTPOST_FACTORS[index];
-  return Math.max(50, Math.round(baseline * factor));
+  // 下限使用权威最低合法舰船成本（不再使用与舰船成本无关的魔法数字 50）。
+  return Math.max(minimumStrategicFleetCost(), Math.round(baseline * factor));
 }
 
 function componentIntegrity(ship: PersistentShip): number {
