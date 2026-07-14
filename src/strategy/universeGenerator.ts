@@ -1,5 +1,7 @@
 import { createPRNG } from '../sim/prng';
 import type {
+  PermanentBlueprintId,
+  SectorLegacy,
   SpaceEntity,
   SpaceEntityKind,
   StarSystem,
@@ -9,15 +11,28 @@ import type {
 
 const STAR_TYPES: StarType[] = ['yellowDwarf', 'redDwarf', 'blueGiant', 'whiteDwarf', 'binary'];
 const SYSTEM_PREFIX = ['阿尔法', '塞勒涅', '奥尔特', '赫利俄斯', '织女', '卡戎', '天苑', '伊卡洛斯', '苍穹', '远岬'];
+const BLUEPRINTS: PermanentBlueprintId[] = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
 const ENTITY_SUFFIX: Record<SpaceEntityKind, string[]> = {
   planet: ['主星', '新陆', '荒原', '云海', '赤土'],
   moon: ['伴月', '冰月', '灰月'],
   station: ['轨道站', '中继站', '废弃站'],
   asteroidField: ['矿带', '碎星带', '残骸带'],
-  jumpGate: ['跃迁门', '古门', '航路锚点']
+  relicSite: ['先驱遗迹', '失落档案库', '古代观测站'],
+  jumpGate: ['星门', '古门', '跃迁锚点']
 };
 
-function hash32(...values: Array<number | string>): number {
+export interface SectorGenerationOptions {
+  sectorIndex?: number;
+  targetSectorCount?: number;
+  legacy?: SectorLegacy;
+  fleet?: {
+    shipCount: number;
+    disabledShips: number;
+    combatPower: number;
+  };
+}
+
+export function hash32(...values: Array<number | string>): number {
   let hash = 2166136261;
   for (const value of values) {
     for (const char of String(value)) {
@@ -51,13 +66,27 @@ function connectSystems(systems: StarSystem[], seed: number): void {
     addRoute(best.left, best.right);
     connected.add(best.right.id);
   }
-  for (let index = 0; index < systems.length; index++) {
-    const left = systems[index];
+  for (const left of systems) {
     const candidates = systems
       .filter((candidate) => candidate.id !== left.id && !left.neighbors.includes(candidate.id))
       .sort((a, b) => distanceSq(left, a) - distanceSq(left, b));
-    if (candidates[0] && hash32(seed, left.id, 'extra-route') % 2 === 0) addRoute(left, candidates[0]);
+    if (candidates[0] && hash32(seed, left.id, 'extra-route') % 3 !== 0) addRoute(left, candidates[0]);
   }
+}
+
+function graphDistances(systems: StarSystem[], originId: string): Map<string, number> {
+  const distances = new Map<string, number>([[originId, 0]]);
+  const queue = [originId];
+  while (queue.length) {
+    const id = queue.shift()!;
+    const system = systems.find((candidate) => candidate.id === id)!;
+    for (const neighbor of system.neighbors) {
+      if (distances.has(neighbor)) continue;
+      distances.set(neighbor, (distances.get(id) ?? 0) + 1);
+      queue.push(neighbor);
+    }
+  }
+  return distances;
 }
 
 function makeEntity(
@@ -66,8 +95,7 @@ function makeEntity(
   serial: number,
   kind: SpaceEntityKind,
   orbit: number,
-  discovered: boolean,
-  ownerId?: string
+  discovered: boolean
 ): SpaceEntity {
   const rng = createPRNG(hash32(seed, system.id, serial, kind));
   const entity: SpaceEntity = {
@@ -77,92 +105,170 @@ function makeEntity(
     name: `${system.name}${ENTITY_SUFFIX[kind][rng.int(ENTITY_SUFFIX[kind].length)]}`,
     orbit,
     discovered,
-    surveyed: discovered && kind === 'station',
-    ownerId
+    surveyed: discovered && kind === 'station'
   };
   if (kind === 'planet' || kind === 'moon') {
     entity.habitability = kind === 'planet' ? 20 + rng.int(76) : rng.int(46);
     entity.deposits = { minerals: 25 + rng.int(76), energy: 10 + rng.int(51) };
   }
   if (kind === 'asteroidField') {
-    entity.deposits = { minerals: 60 + rng.int(121), energy: rng.int(31) };
+    entity.deposits = { minerals: 55 + rng.int(126), energy: rng.int(31) };
   }
   if (kind === 'station') {
-    entity.deposits = { minerals: 0, energy: 0 };
+    entity.facilitySlots = 3 + (serial % 2);
     entity.facilities = [];
     entity.constructionQueue = [];
+  }
+  if (kind === 'relicSite') {
+    entity.blueprint = BLUEPRINTS[rng.int(BLUEPRINTS.length)];
   }
   return entity;
 }
 
-export function generateUniverse(seed: number, factionName = '深空开拓局'): UniverseState {
+function defaultLegacy(): SectorLegacy {
+  return {
+    sectorsCleared: 0,
+    portableMaterials: 0,
+    reserveSupplies: 0,
+    blueprints: [],
+    shipsLost: 0
+  };
+}
+
+export function generateUniverse(
+  seed: number,
+  factionName = '深空远征团',
+  options: SectorGenerationOptions = {}
+): UniverseState {
   const normalizedSeed = seed >>> 0;
-  const rng = createPRNG(hash32(normalizedSeed, 'strategic-universe-v1'));
+  const sectorIndex = Math.max(1, Math.floor(options.sectorIndex ?? 1));
+  const targetSectorCount = Math.max(sectorIndex, Math.floor(options.targetSectorCount ?? 3));
+  const legacy = options.legacy ? JSON.parse(JSON.stringify(options.legacy)) as SectorLegacy : defaultLegacy();
+  const rng = createPRNG(hash32(normalizedSeed, sectorIndex, 'strategic-sector-v2'));
   const systems: StarSystem[] = [];
-  for (let index = 0; index < 7; index++) {
+
+  for (let index = 0; index < 9; index++) {
     systems.push({
-      id: `sys-${index}`,
+      id: `s${sectorIndex}-sys-${index}`,
       name: `${SYSTEM_PREFIX[(index + rng.int(SYSTEM_PREFIX.length)) % SYSTEM_PREFIX.length]}-${String.fromCharCode(65 + index)}`,
-      x: 10 + rng.int(81),
+      x: index === 0 ? 8 : 16 + rng.int(77),
       y: 10 + rng.int(81),
       starType: STAR_TYPES[rng.int(STAR_TYPES.length)],
       entityIds: [],
       neighbors: [],
       discovered: index === 0,
-      surveyed: index === 0
+      surveyed: index === 0,
+      control: index === 0 ? 'neutral' : 'unknown',
+      enemyPower: 0
     });
   }
-  connectSystems(systems, normalizedSeed);
-  const factionId = `faction-${normalizedSeed}`;
+
+  connectSystems(systems, hash32(normalizedSeed, sectorIndex));
+  const start = systems[0];
+  const distances = graphDistances(systems, start.id);
+  const orderedByDistance = [...systems].sort((left, right) =>
+    (distances.get(right.id) ?? 0) - (distances.get(left.id) ?? 0)
+  );
+  const gateSystem = orderedByDistance[0];
+  const enemyOutpost = orderedByDistance.find((system) => system.id !== gateSystem.id && system.id !== start.id)!;
+  gateSystem.control = 'enemy';
+  gateSystem.enemyPower = 42 + sectorIndex * 10;
+  enemyOutpost.control = 'enemy';
+  enemyOutpost.enemyPower = 20 + sectorIndex * 6;
+
   const entities: SpaceEntity[] = [];
-  for (let systemIndex = 0; systemIndex < systems.length; systemIndex++) {
-    const system = systems[systemIndex];
-    const home = systemIndex === 0;
+  let gateEntityId = '';
+  for (let index = 0; index < systems.length; index++) {
+    const system = systems[index];
+    const home = system.id === start.id;
     const kinds: SpaceEntityKind[] = home
-      ? ['station', 'planet', 'asteroidField', 'jumpGate']
-      : ['planet', rng.int(2) ? 'moon' : 'asteroidField', 'asteroidField', 'jumpGate'];
-    if (!home && rng.int(3) === 0) kinds.push('station');
+      ? ['station', 'planet', 'asteroidField']
+      : ['planet', rng.int(2) ? 'moon' : 'asteroidField', 'asteroidField'];
+    if (!home && (index === 3 || index === 6 || system.id === gateSystem.id)) kinds.push('station');
+    if (index === 4) kinds.push('relicSite');
+    if (system.id === gateSystem.id) kinds.push('jumpGate');
     kinds.forEach((kind, entityIndex) => {
-      const entity = makeEntity(normalizedSeed, system, entityIndex, kind, entityIndex + 1, home, home && kind === 'station' ? factionId : undefined);
+      const entity = makeEntity(normalizedSeed, system, entityIndex, kind, entityIndex + 1, home);
+      if (home && kind === 'station') {
+        entity.name = `${factionName}可用前进站`;
+        entity.facilitySlots = 4;
+      }
+      if (kind === 'jumpGate') gateEntityId = entity.id;
       entities.push(entity);
       system.entityIds.push(entity.id);
     });
   }
-  const base = entities.find((entity) => entity.systemId === systems[0].id && entity.kind === 'station')!;
-  base.name = `${factionName}轨道基地`;
-  base.facilities = [
-    { id: `${base.id}-solar-0`, type: 'solarArray', level: 1 },
-    { id: `${base.id}-lab-0`, type: 'researchLab', level: 1 }
-  ];
-  base.constructionQueue = [];
-  for (const neighborId of systems[0].neighbors) {
+
+  for (const neighborId of start.neighbors) {
     const neighbor = systems.find((system) => system.id === neighborId)!;
     neighbor.discovered = true;
+    if (neighbor.control === 'unknown') neighbor.control = 'neutral';
   }
+
+  const inheritedShips = Math.max(1, options.fleet?.shipCount ?? 3);
+  const inheritedDisabled = Math.min(inheritedShips - 1, Math.max(0, options.fleet?.disabledShips ?? 0));
+  const blueprintPower = legacy.blueprints.includes('hardenedBulkheads') ? inheritedShips * 4 : 0;
+  const combatPower = Math.max(
+    inheritedShips * 20,
+    options.fleet?.combatPower ?? inheritedShips * 28 + blueprintPower
+  );
+
   return {
-    version: '1.0-alpha.1',
+    version: '1.0-alpha.2',
     seed: normalizedSeed,
+    sectorIndex,
+    targetSectorCount,
     turn: 0,
     status: 'active',
     systems,
     entities,
     faction: {
-      id: factionId,
-      name: factionName.trim() || '深空开拓局',
-      resources: { minerals: 60, energy: 45, science: 12 },
-      researched: [],
+      id: `faction-${normalizedSeed}`,
+      name: factionName.trim() || '深空远征团',
+      resources: {
+        minerals: 32 + legacy.portableMaterials,
+        energy: 24,
+        science: 10,
+        supplies: 18 + legacy.reserveSupplies
+      },
+      localResearch: [],
       researchQueue: [],
       knownSystemIds: systems.filter((system) => system.discovered).map((system) => system.id),
-      baseEntityId: base.id
+      recoveredBlueprints: [],
+      legacy
     },
     fleet: {
-      id: `strategic-fleet-${normalizedSeed}`,
-      name: '第一远征舰队',
-      systemId: systems[0].id,
+      id: `strategic-fleet-${normalizedSeed}-${sectorIndex}`,
+      name: '远征舰队',
+      systemId: start.id,
       fuel: 8,
-      maxFuel: 8
+      maxFuel: legacy.blueprints.includes('fieldLogistics') ? 10 : 8,
+      shipCount: inheritedShips,
+      disabledShips: inheritedDisabled,
+      combatPower
     },
-    selectedSystemId: systems[0].id,
-    log: [{ turn: 0, text: `${factionName}在${systems[0].name}建立长期战略基地。` }]
+    crisis: {
+      phase: 'foothold',
+      pressure: 8 + sectorIndex * 4,
+      finalTurn: Math.max(12, 17 - Math.min(4, sectorIndex - 1))
+    },
+    extraction: {
+      gateEntityId,
+      discovered: false,
+      calibration: 0,
+      requiredCalibration: 100,
+      emergencyThreshold: 40
+    },
+    selectedSystemId: start.id,
+    log: [
+      {
+        turn: 0,
+        text: `进入第 ${sectorIndex} 星域。必须在第 ${Math.max(12, 17 - Math.min(4, sectorIndex - 1))} 回合前找到并启动星门。`
+      },
+      {
+        turn: 0,
+        text: '本星域设施与临时科研无法直接带走；舰船、蓝图和压缩物资可在撤离时继承。'
+      }
+    ]
   };
 }
