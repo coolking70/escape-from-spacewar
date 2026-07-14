@@ -4,6 +4,7 @@ import './v081.css';
 import './v09.css';
 import './v10.css';
 import './v10menu.css';
+import './v10-sector.css';
 import { App } from './App';
 import { installCampaignRuntimeControls } from './campaign/fleet/campaignRuntimeControls';
 import { runDeterministicTest, runBalanceTest } from './sim/deterministicTest';
