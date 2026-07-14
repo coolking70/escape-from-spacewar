@@ -1,11 +1,11 @@
 import { BattleState } from '../../sim/battleTypes';
 import { PersistentFleet } from './persistentFleet';
-import { CampaignBattleBinding } from './battleAdapter';
+import { PersistentBattleBinding } from './battleAdapter';
 
 export function importBattleResult(
   fleet: PersistentFleet,
   state: BattleState,
-  bindings: CampaignBattleBinding[]
+  bindings: ReadonlyArray<PersistentBattleBinding>
 ): PersistentFleet {
   const boundIds = new Set(bindings.map((binding) => binding.campaignShipId));
   if (boundIds.size !== bindings.length) {

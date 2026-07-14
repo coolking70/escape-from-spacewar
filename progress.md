@@ -102,15 +102,14 @@ Recovered blueprints enter long-term inheritance only after a successful extract
 
 ### Fleet operations
 
-The V1.0-A fleet is still an abstract strategic placeholder, but now tracks:
+V1.0-B replaces the abstract placeholder with a real per-ship persistent fleet (`PersistentShip[]`):
 
-- ship count
-- disabled ships
-- combat power
-- strategic fuel
-- cumulative ship losses
+- each ship carries a stable `campaignShipId`, ship class, variant, `disabled` / `escaped` / `towed` flags and optional per-component `componentHp`;
+- strategic fleet tallies (`strategicFleetCounts`) derive operational / disabled / escaped / total from the real ships;
+- strategic combat power derives from the real fleet via `campaignFleetPower`;
+- strategic fuel and cumulative cross-sector ship losses are retained.
 
-Strategic combat can permanently reduce enemy power, disable ships or destroy ships. A repair dock can restore disabled ships at a material and supply cost.
+Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `PendingStrategicBattle` (enemy fleet generated from `StarSystem.enemyPower`, never compressed); the actual fight runs on the shared simulator / renderer / HUD; the finished `BattleState` is written back (`applyStrategicBattleResult`) so destroyed ships are deleted, disabled / escaped / operational ships keep their component HP, and enemy remaining power is recomputed solely from real Team B. A repair dock restores one specific disabled ship (`repairShip`) at a material and supply cost.
 
 ### Gate and extraction
 
@@ -126,10 +125,22 @@ Strategic combat can permanently reduce enemy power, disable ships or destroy sh
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- New version: `1.0-alpha.2`.
-- Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state and inherited assets.
-- The earlier `1.0-alpha.1` permanent-universe experiment migrates by resetting into a new first strategic sector.
+- Current version: `1.0-alpha.3` (real per-ship fleet); `1.0-alpha.2` (abstract fleet) is migrated in place.
+- Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state (per-ship) and inherited assets.
+- `1.0-alpha.2` abstract fleets migrate deterministically into three real starter ships with disabled flags preserved; `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
+
+## V1.0-B real persistent fleet and core-v4 strategic battle
+
+V1.0-B removes the last abstract fields from the strategic layer and wires it to the frozen `core-v4` battle engine:
+
+- `StrategicFleet` now holds `ships: PersistentShip[]` plus `formation` / `doctrine`; `shipCount` / `disabledShips` / `combatPower` are gone.
+- `UniverseState` gains a serializable `PendingStrategicBattle` so an in-progress strategic fight survives reloads.
+- Strategic enemy fleets are generated deterministically from `StarSystem.enemyPower` via `strategicEnemyFleetFor` — no campaign-style compression of strong enemies.
+- `App` routes `BattleOrigin = 'strategy'` through the same `prepareStrategicBattle` / simulator / `ThreeScene` / HUD / binding path as the campaign, with HUD returning to the strategic map.
+- Battle results write back idempotently: destroyed deleted, disabled / escaped kept with component HP, enemy power recomputed from real Team B, system cleared to `neutral` on zero, single-turn advance.
+- Cross-sector extraction carries the real ships (disabled dropped on emergency), and `repairFleet` is replaced by per-ship `repairShip`.
+- `StrategicUniversePanel` renders a per-ship roster with status, component integrity, key-component destruction warnings and per-ship repair buttons.
 
 ## Verification matrix
 
@@ -144,7 +155,7 @@ npm run test:stress
 npm run build:static
 ```
 
-The V1.0-A strategic suite covers:
+The V1.0-B strategic suite (`runStrategicTests`, 22 cases) covers:
 
 - deterministic nine-system generation and connectivity
 - gate, relic and hostile-system generation
@@ -152,11 +163,17 @@ The V1.0-A strategic suite covers:
 - temporary construction and turn income
 - local research and cross-sector reset
 - crisis phase progression and timeout defeat
-- enemy-power reduction and system clearing
-- disabled-ship repair
-- emergency extraction losses
+- `engageEnemy` only locks a `PendingStrategicBattle` and does not immediately reduce enemy power
+- pending battle locks travel / advance-turn while allowing system selection
+- deterministic `strategicEnemyFleetFor` that does not compress strong enemies
+- per-ship disabled-ship repair and `canRepairShip` preconditions
+- emergency / stable / rearguard extraction losses (real per-ship, deterministic)
+- `previewExtractLosses` matching actual extraction losses
 - three-sector completion
-- `1.0-alpha.2` code round-trip and invalid-state rejection
+- `1.0-alpha.3` code round-trip and invalid-state rejection
+- `1.0-alpha.2` → `1.0-alpha.3` migration into real ships with abstract fields removed
+- real `core-v4` battle-result writeback: destroyed deletion, enemy power from Team B, clear-to-neutral, single-turn advance
+- idempotent writeback and player-wipe → collapsed
 
 ## Next milestone: V1.0-B/C
 

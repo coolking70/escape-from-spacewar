@@ -25,10 +25,10 @@ import { applyCampaignAction, applyCampaignBattleResult } from './campaign/campa
 import { loadCampaign, saveCampaign } from './campaign/campaignPersistence';
 import { encodeCampaign, decodeCampaign } from './campaign/campaignCode';
 import { encodeCampaignLog } from './campaign/campaignLog';
-import { CampaignBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle } from './campaign/fleet/battleAdapter';
+import { CampaignBattleContext, PersistentBattleContext, deriveBattleSeed, enemyFleetFor, prepareCampaignBattle, prepareStrategicBattle } from './campaign/fleet/battleAdapter';
 import { StrategicUniversePanel } from './ui/strategicUniversePanel';
 import { generateUniverse } from './strategy/universeGenerator';
-import { applyUniverseAction } from './strategy/universeRules';
+import { applyUniverseAction, applyStrategicBattleResult, toPersistentFleet } from './strategy/universeRules';
 import { decodeUniverse, encodeUniverse, loadUniverse, saveUniverse } from './strategy/universePersistence';
 import type { UniverseAction, UniverseState } from './strategy/universeTypes';
 
@@ -50,8 +50,8 @@ export class App {
   private strategyPanel!: StrategicUniversePanel;
   private campaign: CampaignState | null = null;
   private universe: UniverseState | null = null;
-  private battleOrigin: 'single' | 'campaign' = 'single';
-  private campaignBattleContext: CampaignBattleContext | null = null;
+  private battleOrigin: 'single' | 'campaign' | 'strategy' = 'single';
+  private battleContext: PersistentBattleContext | null = null;
   private balanceWorker: Worker | null = null;
 
   private scene: ThreeScene | null = null;
@@ -328,8 +328,14 @@ export class App {
 
   private strategicAction(action: UniverseAction): void {
     if (!this.universe) return;
+    const wasInBattle = this.battleOrigin === 'strategy';
     this.universe = applyUniverseAction(this.universe, action);
     saveUniverse(this.universe);
+    // 点击攻击（首次生成或重复点击“继续战斗”）且存在待处理战斗时，进入真实 core-v4 作战。
+    if (action.type === 'engageEnemy' && this.universe.pendingBattle && !wasInBattle) {
+      this.launchStrategicBattle(this.universe);
+      return;
+    }
     this.showStrategicUniverse();
   }
 
@@ -405,15 +411,15 @@ export class App {
     }
   }
 
-  private beginWithReplay(replay: ReplayConfig, campaignContext?: CampaignBattleContext): void {
+  private beginWithReplay(replay: ReplayConfig, context?: PersistentBattleContext): void {
     this.replay = replay;
     // 关闭可能仍打开的配置期覆盖层（舰队库 / 战前分析），避免盖住战斗画面
     this.fleetLibrary?.hide();
     this.analysisPanel?.hide();
-    this.battleOrigin = campaignContext ? 'campaign' : 'single';
-    this.campaignBattleContext = campaignContext ?? null;
-    this.rng = campaignContext?.rng ?? createPRNG(replay.seed);
-    this.state = campaignContext?.state ?? createInitialState(replay, this.rng);
+    this.battleOrigin = context ? context.origin : 'single';
+    this.battleContext = context ?? null;
+    this.rng = context?.rng ?? createPRNG(replay.seed);
+    this.state = context?.state ?? createInitialState(replay, this.rng);
     this.sim = createSimulator(this.state, this.rng);
 
     if (!this.scene) {
@@ -447,32 +453,32 @@ export class App {
     this.rafId = requestAnimationFrame(this.frame);
   }
 
-  private configureBattleControls(origin: 'single' | 'campaign'): void {
-    const campaign = origin === 'campaign';
+  private configureBattleControls(origin: 'single' | 'campaign' | 'strategy'): void {
+    const persistent = origin === 'campaign' || origin === 'strategy';
     const seek = this.hudRoot.querySelector('#hudSeek') as HTMLInputElement | null;
     const timeline = this.hudRoot.querySelector('#hudTimeline') as HTMLElement | null;
     const share = this.hudRoot.querySelector('#hudShare') as HTMLButtonElement | null;
     const back = this.hudRoot.querySelector('#hudBack') as HTMLButtonElement | null;
     const exit = this.hudRoot.querySelector('#hudExit') as HTMLButtonElement | null;
-    const reason = '战役战斗包含跨战斗继承损伤，V0.6 暂不支持进度跳转或分享 Replay。';
+    const reason = '战役 / 战略战斗包含跨战斗继承损伤，暂不支持进度跳转或分享 Replay。';
 
     if (seek) {
-      seek.disabled = campaign;
-      seek.title = campaign ? reason : '';
+      seek.disabled = persistent;
+      seek.title = persistent ? reason : '';
     }
     if (timeline) {
-      timeline.style.pointerEvents = campaign ? 'none' : '';
-      timeline.title = campaign ? reason : '';
+      timeline.style.pointerEvents = persistent ? 'none' : '';
+      timeline.title = persistent ? reason : '';
     }
-    if (share) share.style.display = campaign ? 'none' : '';
-    if (back) back.textContent = campaign ? '返回星域' : '返回设置';
-    if (exit) exit.textContent = campaign ? '返回星域' : '返回设置';
+    if (share) share.style.display = persistent ? 'none' : '';
+    if (back) back.textContent = origin === 'strategy' ? '返回战略星图' : persistent ? '返回星域' : '返回设置';
+    if (exit) exit.textContent = origin === 'strategy' ? '返回战略星图' : persistent ? '返回星域' : '返回设置';
   }
 
-  /** 单场战斗由 replay 生成时间线。战役战斗的继承 HP 不在 ReplayConfig 中，因此禁用重模拟。 */
+  /** 单场战斗由 replay 生成时间线。战役 / 战略战斗的继承 HP 不在 ReplayConfig 中，因此禁用重模拟。 */
   private generateTimeline(): void {
     if (!this.replay || !this.state) return;
-    if (this.battleOrigin === 'campaign') {
+    if (this.battleOrigin === 'campaign' || this.battleOrigin === 'strategy') {
       this.hud.setTimeline([], this.state.maxTicks);
       return;
     }
@@ -486,9 +492,9 @@ export class App {
     }
   }
 
-  /** 进度条跳转仅用于普通 Replay；战役战斗禁用以保持继承损伤和 binding。 */
+  /** 进度条跳转仅用于普通 Replay；战役 / 战略战斗禁用以保持继承损伤和 binding。 */
   private seek(targetTick: number): void {
-    if (this.battleOrigin === 'campaign') return;
+    if (this.battleOrigin === 'campaign' || this.battleOrigin === 'strategy') return;
     if (!this.replay || !this.scene) return;
     this.rng = createPRNG(this.replay.seed);
     this.state = createInitialState(this.replay, this.rng);
@@ -570,8 +576,8 @@ export class App {
       this.winnerShown = true;
       if (this.replay) this.hud.showWinner(this.state.winner, this.state, this.replay);
       this.running = false;
-      if (this.battleOrigin === 'campaign') {
-        setTimeout(() => this.completeCampaignBattle(), 800);
+      if (this.battleOrigin === 'campaign' || this.battleOrigin === 'strategy') {
+        setTimeout(() => this.completePersistentBattle(), 800);
       }
     }
 
@@ -581,15 +587,20 @@ export class App {
   };
 
   private exitBattle(): void {
-    if (this.battleOrigin === 'campaign') {
+    if (this.battleOrigin === 'campaign' || this.battleOrigin === 'strategy') {
       if (!this.state?.finished) {
-        alert('战役战斗必须完成后才能返回星域地图。');
+        alert(this.battleOrigin === 'strategy' ? '战略战斗必须完成后才能返回星图。' : '战役战斗必须完成后才能返回星域地图。');
         return;
       }
-      this.completeCampaignBattle();
+      this.completePersistentBattle();
       return;
     }
     this.exitToSetup();
+  }
+
+  private completePersistentBattle(): void {
+    if (this.battleOrigin === 'campaign') this.completeCampaignBattle();
+    else if (this.battleOrigin === 'strategy') this.completeStrategicBattle();
   }
 
   private completeCampaignBattle(): void {
@@ -597,14 +608,14 @@ export class App {
       this.battleOrigin !== 'campaign' ||
       !this.campaign ||
       !this.state?.finished ||
-      !this.campaignBattleContext
+      !this.battleContext
     ) {
       return;
     }
     this.campaign = applyCampaignBattleResult(
       this.campaign,
       this.state,
-      this.campaignBattleContext.bindings
+      this.battleContext.bindings
     );
     saveCampaign(this.campaign);
     this.running = false;
@@ -614,9 +625,43 @@ export class App {
     this.sim = null;
     this.state = null;
     this.rng = null;
-    this.campaignBattleContext = null;
+    this.battleContext = null;
     this.battleOrigin = 'single';
     this.showCampaign();
+  }
+
+  private launchStrategicBattle(state: UniverseState): void {
+    if (!state.pendingBattle) return;
+    const persistentFleet = toPersistentFleet(state.fleet);
+    const context = prepareStrategicBattle(persistentFleet, state.pendingBattle.enemyFleet, state.pendingBattle.battleSeed);
+    this.beginWithReplay(context.replay, context);
+  }
+
+  private completeStrategicBattle(): void {
+    if (
+      this.battleOrigin !== 'strategy' ||
+      !this.universe ||
+      !this.state?.finished ||
+      !this.battleContext
+    ) {
+      return;
+    }
+    this.universe = applyStrategicBattleResult(
+      this.universe,
+      this.state,
+      this.battleContext.bindings
+    );
+    saveUniverse(this.universe);
+    this.running = false;
+    cancelAnimationFrame(this.rafId);
+    this.scene?.dispose();
+    this.scene = null;
+    this.sim = null;
+    this.state = null;
+    this.rng = null;
+    this.battleContext = null;
+    this.battleOrigin = 'single';
+    this.showStrategicUniverse();
   }
 
   private exitToSetup(): void {

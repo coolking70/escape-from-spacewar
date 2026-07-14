@@ -1,3 +1,7 @@
+import type { PersistentFleet } from '../campaign/fleet/persistentFleet';
+import type { DeploymentSelection } from '../campaign/deployment/deploymentSystem';
+import type { FleetEntry } from '../sim/battleTypes';
+
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
 export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid';
@@ -68,15 +72,34 @@ export interface StarSystem {
   enemyPower: number;
 }
 
+/**
+ * 真实逐舰战略舰队。
+ * 不再保存 shipCount / disabledShips / combatPower 等易与舰船数组失同步的抽象计数字段；
+ * 舰船数量、失能数量与总战力全部由 `ships`（与战役 PersistentShip 同构）动态计算。
+ * ships / formation / doctrine 与 PersistentFleet 结构兼容，可直接转换。
+ */
 export interface StrategicFleet {
   id: string;
   name: string;
   systemId: string;
   fuel: number;
   maxFuel: number;
-  shipCount: number;
-  disabledShips: number;
-  combatPower: number;
+  ships: PersistentFleet['ships'];
+  formation: PersistentFleet['formation'];
+  doctrine: PersistentFleet['doctrine'];
+}
+
+/**
+ * 一次待处理战略战斗。点击攻击时由 applyUniverseAction 生成并持久化；
+ * 刷新页面 / 重新读取存档 / 重复点击"继续战斗"都不会重新抽取敌军。
+ */
+export interface PendingStrategicBattle {
+  battleId: string;
+  systemId: string;
+  battleSeed: number;
+  enemyPowerBefore: number;
+  enemyFleet: FleetEntry[];
+  deployment?: DeploymentSelection;
 }
 
 export interface SectorLegacy {
@@ -126,7 +149,7 @@ export interface UniverseLogEntry {
  * temporary strategic sector rather than a permanent galaxy.
  */
 export interface UniverseState {
-  version: '1.0-alpha.2';
+  version: '1.0-alpha.3';
   seed: number;
   sectorIndex: number;
   targetSectorCount: number;
@@ -139,6 +162,7 @@ export interface UniverseState {
   crisis: CrisisState;
   extraction: ExtractionState;
   selectedSystemId: string;
+  pendingBattle?: PendingStrategicBattle;
   log: UniverseLogEntry[];
 }
 
@@ -151,7 +175,7 @@ export type UniverseAction =
   | { type: 'queueConstruction'; facilityType: FacilityType }
   | { type: 'queueResearch'; projectId: ResearchProjectId }
   | { type: 'engageEnemy' }
-  | { type: 'repairFleet' }
+  | { type: 'repairShip'; campaignShipId: string }
   | { type: 'calibrateGate' }
   | { type: 'extractSector'; mode: ExtractionMode; rearguardShips?: number }
   | { type: 'advanceTurn' };

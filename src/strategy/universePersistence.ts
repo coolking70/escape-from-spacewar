@@ -1,5 +1,9 @@
 import { generateUniverse } from './universeGenerator';
 import { FACILITY_DEFINITIONS, RESEARCH_DEFINITIONS } from './universeRules';
+import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
+import { validateFleet } from '../sim/fleetValidator';
+import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
+import type { PersistentShip } from '../campaign/fleet/persistentFleet';
 import type {
   CrisisPhase,
   FacilityType,
@@ -22,7 +26,7 @@ const CRISIS_PHASES: CrisisPhase[] = ['foothold', 'contest', 'collapse', 'evacua
 
 interface UniverseEnvelope {
   type: 'spacewar-sector-expedition';
-  v: '1.0-alpha.2';
+  v: '1.0-alpha.3';
   state: UniverseState;
 }
 
@@ -52,6 +56,110 @@ function uniqueValid<T>(items: unknown, allowed: readonly T[]): items is T[] {
   return Array.isArray(items) && new Set(items).size === items.length && items.every((item) => allowed.includes(item as T));
 }
 
+const SHIP_CLASSES: ShipClass[] = ['Fighter', 'Frigate', 'Cruiser'];
+const ALL_VARIANTS: ShipVariant[] = Object.keys(VARIANTS) as ShipVariant[];
+/** 旧抽象舰队迁移用的确定性初始舰船模板（前 3 艘保留新游戏的初始舰种/改型）。 */
+const STRATEGIC_STARTER_TEMPLATE: Array<{ shipClass: ShipClass; variant: ShipVariant }> = [
+  { shipClass: 'Fighter', variant: 'standard' },
+  { shipClass: 'Fighter', variant: 'interceptor' },
+  { shipClass: 'Frigate', variant: 'standard' }
+];
+
+function validShipClass(value: unknown): value is ShipClass {
+  return typeof value === 'string' && (SHIP_CLASSES as string[]).includes(value);
+}
+
+function validVariant(value: unknown): value is ShipVariant {
+  return typeof value === 'string' && (ALL_VARIANTS as string[]).includes(value);
+}
+
+function validateStrategicShips(ships: unknown): ships is PersistentShip[] {
+  if (!Array.isArray(ships) || ships.length === 0) return false;
+  const ids = new Set<string>();
+  for (const ship of ships) {
+    if (!ship || typeof ship !== 'object') return false;
+    const record = ship as Record<string, unknown>;
+    if (typeof record.campaignShipId !== 'string' || !record.campaignShipId) return false;
+    if (ids.has(record.campaignShipId)) return false;
+    ids.add(record.campaignShipId);
+    if (!validShipClass(record.shipClass)) return false;
+    if (!validVariant(record.variant)) return false;
+    if (!VARIANTS_BY_CLASS[record.shipClass as ShipClass].includes(record.variant as ShipVariant)) return false;
+    if (typeof record.disabled !== 'boolean' || typeof record.escaped !== 'boolean' || typeof record.towed !== 'boolean') return false;
+    if (record.deployed !== undefined && typeof record.deployed !== 'boolean') return false;
+    if (record.componentHp !== undefined) {
+      if (!Array.isArray(record.componentHp)) return false;
+      const def = getShipDef(record.shipClass as ShipClass, record.variant as ShipVariant).def;
+      if (record.componentHp.length !== def.components.length) return false;
+      for (let i = 0; i < def.components.length; i++) {
+        const hp = record.componentHp[i];
+        if (typeof hp !== 'number' || !Number.isFinite(hp) || hp < 0 || hp > def.components[i].maxHp) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function validatePendingBattle(pending: unknown, systemIds: Set<string>): boolean {
+  if (!pending || typeof pending !== 'object') return false;
+  const record = pending as Record<string, unknown>;
+  if (typeof record.battleId !== 'string' || !record.battleId) return false;
+  if (typeof record.systemId !== 'string' || !systemIds.has(record.systemId)) return false;
+  if (!nonNegativeInteger(record.battleSeed)) return false;
+  if (!nonNegativeInteger(record.enemyPowerBefore)) return false;
+  if (!Array.isArray(record.enemyFleet)) return false;
+  if (!validateFleet(record.enemyFleet).valid) return false;
+  if (record.deployment !== undefined) {
+    const dep = record.deployment as Record<string, unknown>;
+    if (!dep || typeof dep !== 'object' || !Array.isArray(dep.selectedShipIds)) return false;
+    if (!dep.selectedShipIds.every((id) => typeof id === 'string')) return false;
+  }
+  return true;
+}
+
+/** 旧抽象舰队（alpha.2）→ 真实逐舰舰队（alpha.3）的确定性迁移。 */
+function migrateAlpha2(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.2' || !nonNegativeInteger(raw.seed)) return null;
+  const fleet = raw.fleet;
+  if (!fleet || !positiveInteger(fleet.shipCount) || !nonNegativeInteger(fleet.disabledShips) || !positiveInteger(fleet.combatPower)) {
+    return null;
+  }
+  const shipCount = fleet.shipCount as number;
+  const disabledShips = Math.min(shipCount - 1, Math.max(0, fleet.disabledShips as number));
+  const ships: PersistentShip[] = [];
+  for (let i = 0; i < shipCount; i++) {
+    const template = STRATEGIC_STARTER_TEMPLATE[i] ?? { shipClass: 'Fighter' as ShipClass, variant: 'standard' as ShipVariant };
+    ships.push({
+      campaignShipId: `cs-${i}`,
+      shipClass: template.shipClass,
+      variant: template.variant,
+      disabled: i >= shipCount - disabledShips,
+      escaped: false,
+      towed: false,
+      deployed: true
+    });
+  }
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = '1.0-alpha.3';
+  migrated.pendingBattle = undefined;
+  migrated.fleet = {
+    id: fleet.id,
+    name: fleet.name,
+    systemId: fleet.systemId,
+    fuel: fleet.fuel,
+    maxFuel: fleet.maxFuel,
+    ships,
+    formation: 'line',
+    doctrine: 'balanced'
+  };
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({
+    turn: 0,
+    text: `旧版抽象舰队已转换为逐舰状态（${shipCount} 艘，其中 ${disabledShips} 艘失能）。`
+  });
+  return migrated as UniverseState;
+}
+
 function migrateAlpha1(raw: any): UniverseState | null {
   if (!raw || raw.version !== '1.0-alpha.1' || !nonNegativeInteger(raw.seed)) return null;
   const factionName = typeof raw.faction?.name === 'string' ? raw.faction.name : '深空远征团';
@@ -62,11 +170,10 @@ function migrateAlpha1(raw: any): UniverseState | null {
   });
   return migrated;
 }
-
 export function validateUniverseState(value: unknown): value is UniverseState {
   const state = value as UniverseState;
   if (
-    !state || state.version !== '1.0-alpha.2' || !nonNegativeInteger(state.seed) ||
+    !state || state.version !== '1.0-alpha.3' || !nonNegativeInteger(state.seed) ||
     !positiveInteger(state.sectorIndex) || !positiveInteger(state.targetSectorCount) ||
     state.sectorIndex > state.targetSectorCount || !nonNegativeInteger(state.turn)
   ) return false;
@@ -178,17 +285,19 @@ export function validateUniverseState(value: unknown): value is UniverseState {
   }
 
   if (
-    !state.fleet.id || !state.fleet.name || !positiveInteger(state.fleet.shipCount) ||
-    !nonNegativeInteger(state.fleet.disabledShips) || state.fleet.disabledShips >= state.fleet.shipCount ||
-    !positiveInteger(state.fleet.combatPower) || !nonNegativeInteger(state.fleet.fuel) ||
-    !positiveInteger(state.fleet.maxFuel) || state.fleet.fuel > state.fleet.maxFuel
+    !state.fleet.id || !state.fleet.name || !nonNegativeInteger(state.fleet.fuel) ||
+    !positiveInteger(state.fleet.maxFuel) || state.fleet.fuel > state.fleet.maxFuel ||
+    !['line', 'wedge', 'wall', 'swarm', 'random'].includes(state.fleet.formation) ||
+    !['balanced', 'aggressive', 'defensive', 'kite', 'focusFire', 'antiCapital', 'screen'].includes(state.fleet.doctrine) ||
+    !validateStrategicShips(state.fleet.ships)
   ) return false;
+  if (state.pendingBattle && !validatePendingBattle(state.pendingBattle, systemIds)) return false;
   return true;
 }
 
 export function encodeUniverse(state: UniverseState): string {
   if (!validateUniverseState(state)) throw new Error('星域战略远征状态无效。');
-  const envelope: UniverseEnvelope = { type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state };
+  const envelope: UniverseEnvelope = { type: 'spacewar-sector-expedition', v: '1.0-alpha.3', state };
   return b64(JSON.stringify(envelope));
 }
 
@@ -203,8 +312,12 @@ export function decodeUniverse(code: string): UniverseState {
     const migrated = migrateAlpha1(envelope.state);
     if (migrated) return migrated;
   }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.2') {
+    const migrated = migrateAlpha2(envelope.state);
+    if (migrated) return migrated;
+  }
   if (
-    envelope?.type !== 'spacewar-sector-expedition' || envelope?.v !== '1.0-alpha.2' ||
+    envelope?.type !== 'spacewar-sector-expedition' || envelope?.v !== '1.0-alpha.3' ||
     !validateUniverseState(envelope.state)
   ) throw new Error('星域远征码版本或结构无效。');
   return envelope.state;
@@ -220,10 +333,18 @@ export function loadUniverse(): UniverseState | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    const state = validateUniverseState(parsed) ? parsed : migrateAlpha1(parsed);
-    if (!state) throw new Error('结构无效');
-    if (parsed.version === '1.0-alpha.1') localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    return state;
+    if (validateUniverseState(parsed)) return parsed;
+    if (parsed && parsed.version === '1.0-alpha.2') {
+      const migrated = migrateAlpha2(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    const migrated = migrateAlpha1(parsed);
+    if (!migrated) throw new Error('结构无效');
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    return migrated;
   } catch {
     throw new Error('星域战略远征存档损坏或不兼容。');
   }

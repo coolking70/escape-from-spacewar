@@ -1,5 +1,10 @@
 # V1.0 Strategic Universe Vertical Slice
 
+> ⚠️ 历史文档：本文件记录 V1.0-A 的初版设计（抽象舰队占位、`1.0-alpha.2` 存档）。
+> V1.0-B 已将战略层接入真实逐舰持久舰队与 `core-v4` 实战，存档升级为 `1.0-alpha.3`，
+> 抽象字段（`shipCount` / `disabledShips` / `combatPower`）已移除。
+> 当前实现与进度请以 `progress.md` 的「V1.0-B real persistent fleet and core-v4 strategic battle」一节为准。
+
 ## Purpose
 
 This milestone begins the transition from an FTL-style route campaign to a persistent strategic universe without deleting the existing campaign. The two modes remain separate while the strategic data model stabilizes.

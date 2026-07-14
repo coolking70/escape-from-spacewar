@@ -7,8 +7,22 @@ import { hash32 } from '../sector/sectorGenerator';
 import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
 import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost } from './campaignPower';
 
-export interface CampaignBattleBinding { campaignShipId: string; battleShipId: number; }
-export interface CampaignBattleContext { origin: 'campaign'; replay: ReplayConfig; state: BattleState; rng: PRNG; bindings: CampaignBattleBinding[]; battleSeed: number; }
+/** 战役与战略战斗共用的绑定：持久舰 shipId ↔ 战斗舰 shipId。 */
+export interface PersistentBattleBinding { campaignShipId: string; battleShipId: number; }
+
+/** 战役 / 战略共用的持久战斗上下文。 */
+export interface PersistentBattleContext {
+  origin: 'campaign' | 'strategy';
+  replay: ReplayConfig;
+  state: BattleState;
+  rng: PRNG;
+  bindings: PersistentBattleBinding[];
+  battleSeed: number;
+}
+
+export type CampaignBattleBinding = PersistentBattleBinding;
+export type CampaignBattleContext = PersistentBattleContext & { origin: 'campaign' };
+export type StrategicBattleContext = PersistentBattleContext & { origin: 'strategy' };
 
 export function deriveBattleSeed(campaignSeed: number, sectorIndex: number, nodeId: string, battleIndex: number): number {
   return hash32(campaignSeed, sectorIndex, nodeId, battleIndex);
@@ -87,26 +101,72 @@ function capEnemyToFleet(enemy: FleetEntry[], playerPower: number): FleetEntry[]
   return filtered.length ? filtered : [{ shipClass: 'Fighter', variant: 'standard', count: 1 }];
 }
 
-export function campaignBattleReplay(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): ReplayConfig {
+/** 战役与战略战斗共用的 replay 构造（不压缩敌军，敌军强度由调用方决定）。 */
+export function persistentBattleReplay(fleet: PersistentFleet, enemy: FleetEntry[], seed: number): ReplayConfig {
   const teamA: TeamConfig = { fleet: fleetEntries(fleet), formation: fleet.formation, doctrine: fleet.doctrine };
   const teamB: TeamConfig = { fleet: enemy, formation: 'line', doctrine: 'balanced' };
   return { v: SIM_VERSION_V5, ruleset: RULESET_V4, seed, budget: { mode: 'unlimited', limit: 999999 }, teamA, teamB };
+}
+
+export function campaignBattleReplay(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): ReplayConfig {
+  return persistentBattleReplay(fleet, capEnemyToFleet(enemy, campaignFleetPower(fleet)), seed);
+}
+
+/**
+ * 战略敌军舰队生成。
+ * 以 StarSystem.enemyPower 为主要权威预算来源，相同 seed / 星域 / 星系 / enemyPower
+ * 必须生成完全相同的敌方舰队（确定性）。不新增舰种、不改舰船参数。
+ * 不采用战役式的"按玩家战力压缩"安全上限——敌方强度即设计强度。
+ */
+export function strategicEnemyFleetFor(
+  seed: number,
+  enemyPower: number,
+  opts: { sectorIndex: number; gateGuard: boolean; cruiserAllowed: boolean }
+): FleetEntry[] {
+  const threatLevel = Math.min(4, Math.max(0, opts.sectorIndex - 1) + (opts.gateGuard ? 2 : 0));
+  const pool = candidatePool(opts.sectorIndex, threatLevel, opts.gateGuard)
+    .filter((entry) => opts.cruiserAllowed || entry.shipClass !== 'Cruiser');
+  const target = Math.max(50, Math.round(enemyPower));
+  const result = new Map<string, FleetEntry>();
+  let total = 0;
+  for (let slot = 0; slot < 24 && total < target; slot++) {
+    const choices = pool
+      .map((entry) => ({
+        entry,
+        cost: campaignShipCost(entry.shipClass, entry.variant),
+        tie: hash32(seed, 'strategic', opts.sectorIndex, slot, entry.shipClass, entry.variant)
+      }))
+      .filter(({ cost }) => total + cost <= target + 0.001)
+      .sort((a, b) => {
+        const aGap = Math.abs(target - (total + a.cost));
+        const bGap = Math.abs(target - (total + b.cost));
+        return aGap - bGap || a.tie - b.tie;
+      });
+    const picked = choices[0];
+    if (!picked) break;
+    const key = `${picked.entry.shipClass}:${picked.entry.variant}`;
+    const existing = result.get(key);
+    if (existing) existing.count++;
+    else result.set(key, { ...picked.entry });
+    total += picked.cost;
+  }
+  if (!result.size) result.set('Fighter:standard', { shipClass: 'Fighter', variant: 'standard', count: 1 });
+  const fleet = [...result.values()];
+  assertValidFleet(fleet);
+  return fleet;
 }
 
 function sameHull(a: PersistentShip, battle: BattleState['ships'][number]): boolean {
   return a.shipClass === battle.type && a.variant === battle.variant;
 }
 
-export function prepareCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): CampaignBattleContext {
-  const balancedEnemy = capEnemyToFleet(enemy, campaignFleetPower(fleet));
-  const replay = campaignBattleReplay(fleet, balancedEnemy, seed);
-  const rng = createPRNG(seed);
-  const state = createInitialState(replay, rng);
+/** 将持久舰队的已部署未失能舰与战斗 Team A 舰建成稳定绑定，并注入组件 HP。缺失/重复/结构不匹配立即报错。 */
+function bindPersistentBattle(state: BattleState, fleet: PersistentFleet, label: string): PersistentBattleBinding[] {
   const remaining = [...activeShips(fleet)].sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
-  const bindings: CampaignBattleBinding[] = [];
+  const bindings: PersistentBattleBinding[] = [];
   for (const battleShip of state.ships.filter((ship) => ship.team === 'A').sort((a, b) => a.id - b.id)) {
     const index = remaining.findIndex((ship) => sameHull(ship, battleShip));
-    if (index < 0) throw new Error(`无法为战斗舰船 #${battleShip.id} 建立战役绑定。`);
+    if (index < 0) throw new Error(`无法为战斗舰船 #${battleShip.id} 建立${label}绑定。`);
     const persistent = remaining.splice(index, 1)[0];
     if (persistent.componentHp) {
       if (persistent.componentHp.length !== battleShip.components.length) throw new Error(`舰船 ${persistent.campaignShipId} 的组件结构不匹配。`);
@@ -118,8 +178,26 @@ export function prepareCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<
     }
     bindings.push({ campaignShipId: persistent.campaignShipId, battleShipId: battleShip.id });
   }
-  if (remaining.length) throw new Error('存在未绑定的可参战战役舰船。');
+  if (remaining.length) throw new Error(`存在未绑定的可参战${label}舰船。`);
+  return bindings;
+}
+
+export function prepareCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number): CampaignBattleContext {
+  const balancedEnemy = capEnemyToFleet(enemy, campaignFleetPower(fleet));
+  const replay = campaignBattleReplay(fleet, balancedEnemy, seed);
+  const rng = createPRNG(seed);
+  const state = createInitialState(replay, rng);
+  const bindings = bindPersistentBattle(state, fleet, '战役');
   return { origin: 'campaign', replay, state, rng, bindings, battleSeed: seed };
+}
+
+/** 战略战斗准备：不压缩敌军（敌方强度由 StarSystem.enemyPower 决定），其余与战役一致。 */
+export function prepareStrategicBattle(fleet: PersistentFleet, enemy: FleetEntry[], seed: number): StrategicBattleContext {
+  const replay = persistentBattleReplay(fleet, enemy, seed);
+  const rng = createPRNG(seed);
+  const state = createInitialState(replay, rng);
+  const bindings = bindPersistentBattle(state, fleet, '战略');
+  return { origin: 'strategy', replay, state, rng, bindings, battleSeed: seed };
 }
 
 export function runCampaignBattle(fleet: PersistentFleet, enemy: ReturnType<typeof enemyFleetFor>, seed: number) {

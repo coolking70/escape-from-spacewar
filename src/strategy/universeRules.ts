@@ -1,12 +1,20 @@
 import { generateUniverse, hash32 } from './universeGenerator';
+import { campaignFleetPower, campaignShipCost } from '../campaign/fleet/campaignPower';
+import { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
+import { importBattleResult } from '../campaign/fleet/battleResultImporter';
+import { PersistentBattleBinding, strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
+import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
+import type { BattleState } from '../sim/battleTypes';
 import type {
   ConstructionOrder,
   CrisisPhase,
   ExtractionMode,
   FacilityType,
+  PendingStrategicBattle,
   PermanentBlueprintId,
   ResearchProjectId,
   SpaceEntity,
+  StrategicFleet,
   StrategicResources,
   UniverseAction,
   UniverseState
@@ -144,6 +152,70 @@ function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType)
   };
 }
 
+// ---------------- 真实逐舰舰队派生量（不再依赖抽象计数字段） ----------------
+
+/** 战略舰队 → 战役 PersistentFleet（结构兼容，仅取 ships/formation/doctrine）。 */
+export function toPersistentFleet(fleet: StrategicFleet): PersistentFleet {
+  return {
+    ships: fleet.ships.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined })),
+    formation: fleet.formation,
+    doctrine: fleet.doctrine
+  };
+}
+
+export interface StrategicFleetCounts {
+  total: number;
+  operational: number;
+  disabled: number;
+  escaped: number;
+  towed: number;
+}
+
+export function strategicFleetCounts(fleet: StrategicFleet): StrategicFleetCounts {
+  let operational = 0;
+  let disabled = 0;
+  let escaped = 0;
+  let towed = 0;
+  for (const ship of fleet.ships) {
+    if (ship.disabled) disabled++;
+    else if (ship.escaped) escaped++;
+    else operational++;
+    if (ship.towed) towed++;
+  }
+  return { total: fleet.ships.length, operational, disabled, escaped, towed };
+}
+
+/** 动态计算的真实舰队战力。 */
+export function strategicFleetPower(state: UniverseState): number {
+  return campaignFleetPower(toPersistentFleet(state.fleet));
+}
+
+// ---------------- 战略战斗回写辅助 ----------------
+
+/** 敌方剩余战力：仅由真实 Team B 结果计算（destroyed/disabled 不贡献，escaped/operational 按成本×组件完整度）。 */
+function enemyRemainingPower(battle: BattleState): number {
+  let total = 0;
+  for (const ship of battle.ships.filter((candidate) => candidate.team === 'B')) {
+    if (ship.combatState === 'destroyed' || ship.combatState === 'disabled') continue;
+    const cost = campaignShipCost(ship.type, ship.variant);
+    const max = ship.components.reduce((sum, component) => sum + component.maxHp, 0);
+    const current = ship.components.reduce((sum, component) => sum + Math.max(0, Math.min(component.maxHp, component.hp)), 0);
+    const integrity = max > 0 ? current / max : 0;
+    total += cost * integrity;
+  }
+  return Math.max(0, Math.round(total));
+}
+
+function teamACombatIds(battle: BattleState, bindings: ReadonlyArray<PersistentBattleBinding>, combatState: string): string[] {
+  return bindings
+    .filter((binding) => {
+      const ship = battle.ships.find((candidate) => candidate.id === binding.battleShipId && candidate.team === 'A');
+      return ship?.combatState === combatState;
+    })
+    .map((binding) => binding.campaignShipId)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 export function crisisPhaseForTurn(turn: number, finalTurn: number): CrisisPhase {
   const ratio = finalTurn > 0 ? turn / finalTurn : 1;
   if (ratio < 0.3) return 'foothold';
@@ -204,7 +276,14 @@ function enemyExpansion(state: UniverseState): void {
     const defense = facilityCount(base, 'defenseGrid');
     const supplyLoss = Math.max(0, 7 + state.sectorIndex * 2 - defense * 5);
     state.faction.resources.supplies = Math.max(0, state.faction.resources.supplies - supplyLoss);
-    if (supplyLoss >= 5 && state.fleet.disabledShips < Math.max(0, state.fleet.shipCount - 1)) state.fleet.disabledShips++;
+    const counts = strategicFleetCounts(state.fleet);
+    if (supplyLoss >= 5 && counts.disabled < counts.operational) {
+      const target = state.fleet.ships
+        .filter((ship) => !ship.disabled)
+        .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId))
+        .pop();
+      if (target) target.disabled = true;
+    }
     appendLog(state, `敌方袭击前进基地，损失补给 ${supplyLoss}${defense ? '；防御网降低了损失' : ''}。`);
     return;
   }
@@ -285,13 +364,18 @@ export function canQueueResearch(state: UniverseState, projectId: ResearchProjec
 
 export function canEngageEnemy(state: UniverseState): boolean {
   const current = state.systems.find((system) => system.id === state.fleet.systemId);
-  return state.status === 'active' && !!current && current.enemyPower > 0 && state.fleet.shipCount > 0;
+  return state.status === 'active' && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
 }
 
 export function canRepairFleet(state: UniverseState): boolean {
+  return state.fleet.ships.some((ship) => canRepairShip(state, ship.campaignShipId));
+}
+
+export function canRepairShip(state: UniverseState, campaignShipId: string): boolean {
   const base = baseEntity(state);
+  const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
   return state.status === 'active' && !!base && state.fleet.systemId === base.systemId &&
-    facilityCount(base, 'repairDock') > 0 && state.fleet.disabledShips > 0 &&
+    facilityCount(base, 'repairDock') > 0 && !!ship && ship.disabled &&
     state.faction.resources.supplies >= 5 && state.faction.resources.minerals >= 4;
 }
 
@@ -312,7 +396,7 @@ export function canExtractSector(
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   if (
     state.status !== 'active' || !gate || !gate.surveyed || gate.systemId !== state.fleet.systemId ||
-    (system?.enemyPower ?? 0) > 0 || rearguardShips < 0 || rearguardShips >= state.fleet.shipCount
+    (system?.enemyPower ?? 0) > 0 || rearguardShips < 0 || rearguardShips >= strategicFleetCounts(state.fleet).operational
   ) return false;
   if (mode === 'stable') {
     return state.extraction.calibration >= state.extraction.requiredCalibration &&
@@ -376,49 +460,78 @@ function establishBase(state: UniverseState, entityId: string): UniverseState {
 
 function engageEnemy(state: UniverseState): UniverseState {
   if (!canEngageEnemy(state)) return state;
+  // 幂等：已存在待处理战斗时保持原有 seed 与敌军，不重新抽取（刷新 / 重读 / 重复点击均不重抽）。
+  if (state.pendingBattle) return state;
   let next = cloneState(state);
   const system = next.systems.find((candidate) => candidate.id === next.fleet.systemId)!;
-  const enemyBefore = system.enemyPower;
-  const inflicted = Math.max(10, Math.floor(next.fleet.combatPower * 0.42));
-  const retaliation = Math.max(0, enemyBefore - Math.floor(next.fleet.combatPower * 0.38));
-  system.enemyPower = Math.max(0, enemyBefore - inflicted);
-  if (retaliation >= 34 && next.fleet.shipCount > 1) {
-    next.fleet.shipCount--;
-    next.fleet.combatPower = Math.max(20, next.fleet.combatPower - 25);
-    next.faction.legacy.shipsLost++;
-    if (next.fleet.disabledShips >= next.fleet.shipCount) next.fleet.disabledShips = Math.max(0, next.fleet.shipCount - 1);
-    appendLog(next, `在${system.name}与敌军交战，一艘舰船被摧毁。`);
-  } else if (retaliation >= 14 && next.fleet.disabledShips < Math.max(0, next.fleet.shipCount - 1)) {
-    next.fleet.disabledShips++;
-    next.fleet.combatPower = Math.max(20, next.fleet.combatPower - 10);
-    appendLog(next, `在${system.name}与敌军交战，一艘舰船失能。`);
-  } else {
-    appendLog(next, `在${system.name}打击敌军，未出现严重舰损。`);
-  }
-  if (system.enemyPower === 0) {
-    system.control = 'neutral';
-    appendLog(next, `${system.name}的敌方战力已被清除。`);
-  } else {
-    appendLog(next, `${system.name}剩余敌方战力 ${system.enemyPower}。`);
-  }
-  if (next.fleet.shipCount <= 0) {
-    next.status = 'collapsed';
-    appendLog(next, '远征舰队全军覆没。');
-    return next;
-  }
-  next = advanceUniverseTurn(next, '战斗行动结束');
+  const gateSystem = next.entities.find((entity) => entity.id === next.extraction.gateEntityId);
+  const isGate = gateSystem ? system.id === gateSystem.systemId : false;
+  const seed = hash32(next.seed, next.sectorIndex, next.turn, system.id, 'strategic-battle') >>> 0;
+  const cruiserAllowed = next.sectorIndex >= 2 || isGate;
+  const enemyFleet = strategicEnemyFleetFor(seed, system.enemyPower, {
+    sectorIndex: next.sectorIndex,
+    gateGuard: isGate,
+    cruiserAllowed
+  });
+  const pending: PendingStrategicBattle = {
+    battleId: `sb-${next.seed}-${next.sectorIndex}-${system.id}-${next.turn}`,
+    systemId: system.id,
+    battleSeed: seed,
+    enemyPowerBefore: system.enemyPower,
+    enemyFleet
+  };
+  next.pendingBattle = pending;
+  appendLog(
+    next,
+    `在${system.name}锁定敌军（战力 ${system.enemyPower}），已生成待处理战斗（battleId ${pending.battleId}）。点击“继续战斗”进入真实 core-v4 作战。`
+  );
   return next;
 }
 
-function repairFleet(state: UniverseState): UniverseState {
-  if (!canRepairFleet(state)) return state;
+/** 逐舰维修：优先恢复被摧毁的 core/engine/weapon 关键组件；否则维修缺口最大的组件；关键系统恢复后解除 disabled。 */
+function repairShipComponents(ship: PersistentShip): void {
+  const { def } = getShipDef(ship.shipClass, ship.variant);
+  if (!ship.componentHp) ship.componentHp = def.components.map((component) => component.maxHp);
+  const keyTypes = new Set(['core', 'engine', 'weapon']);
+  let target = -1;
+  for (let i = 0; i < def.components.length; i++) {
+    if (keyTypes.has(def.components[i].type) && (ship.componentHp[i] ?? 0) <= 0) {
+      target = i;
+      break;
+    }
+  }
+  if (target < 0) {
+    let maxGap = -1;
+    for (let i = 0; i < def.components.length; i++) {
+      const gap = def.components[i].maxHp - (ship.componentHp[i] ?? 0);
+      if (gap > maxGap) {
+        maxGap = gap;
+        target = i;
+      }
+    }
+  }
+  if (target >= 0) {
+    const maxHp = def.components[target].maxHp;
+    const healed = Math.max(1, Math.ceil(maxHp * 0.5));
+    ship.componentHp[target] = Math.min(maxHp, (ship.componentHp[target] ?? 0) + healed);
+  }
+  const keyAlive = ['core', 'engine', 'weapon'].every((type) => {
+    const index = def.components.findIndex((component) => component.type === type);
+    return index >= 0 && (ship.componentHp?.[index] ?? 0) > 0;
+  });
+  if (keyAlive) ship.disabled = false;
+}
+
+function repairShip(state: UniverseState, campaignShipId: string): UniverseState {
+  if (!canRepairShip(state, campaignShipId)) return state;
   let next = cloneState(state);
   next.faction.resources.supplies -= 5;
   next.faction.resources.minerals -= 4;
-  next.fleet.disabledShips--;
-  const blueprintBonus = next.faction.legacy.blueprints.includes('hardenedBulkheads') ? next.fleet.shipCount * 4 : 0;
-  next.fleet.combatPower = Math.min(next.fleet.shipCount * 32 + blueprintBonus, next.fleet.combatPower + 16);
-  appendLog(next, '战地维修坞恢复一艘失能舰。');
+  const ship = next.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
+  if (ship) {
+    repairShipComponents(ship);
+    appendLog(next, `战地维修坞修复 ${ship.campaignShipId}（${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}）。`);
+  }
   next = advanceUniverseTurn(next, '舰队维修完成');
   return next;
 }
@@ -439,14 +552,45 @@ function calibrateGate(state: UniverseState): UniverseState {
   return next;
 }
 
+/** 确定性选择撤离损失舰船：稳定撤离只损失断后舰（保留失能舰）；紧急撤离先舍弃失能舰，再按稳定 ID 顺序损失断后舰与高压额外舰。 */
+function selectExtractLosses(fleet: StrategicFleet, mode: ExtractionMode, rearguard: number, extraLoss: number): string[] {
+  const operational = fleet.ships
+    .filter((ship) => !ship.disabled)
+    .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
+  const disabledSorted = fleet.ships
+    .filter((ship) => ship.disabled)
+    .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
+  const lost: string[] = [];
+  if (mode === 'emergency') lost.push(...disabledSorted.map((ship) => ship.campaignShipId));
+  lost.push(...operational.slice(0, rearguard).map((ship) => ship.campaignShipId));
+  if (mode === 'emergency') {
+    lost.push(...operational.slice(rearguard, rearguard + extraLoss).map((ship) => ship.campaignShipId));
+  }
+  return lost;
+}
+
+/** UI 预览：给定撤离模式与断后舰数，确定性返回将损失的舰船 ID 列表（与实际撤离逻辑完全一致）。 */
+export function previewExtractLosses(state: UniverseState, mode: ExtractionMode, rearguardShips = 0): string[] {
+  const counts = strategicFleetCounts(state.fleet);
+  const hardened = state.faction.legacy.blueprints.includes('hardenedBulkheads');
+  const rearguard = Math.min(counts.operational, rearguardShips);
+  const pressureLoss = mode === 'emergency' && state.crisis.pressure >= 70 && rearguardShips === 0 && !hardened ? 1 : 0;
+  const extraLoss = mode === 'emergency' ? pressureLoss : 0;
+  return selectExtractLosses(state.fleet, mode, rearguard, extraLoss);
+}
+
 function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShips = 0): UniverseState {
   if (!canExtractSector(state, mode, rearguardShips)) return state;
   const next = cloneState(state);
+  const counts = strategicFleetCounts(next.fleet);
   const hardened = next.faction.legacy.blueprints.includes('hardenedBulkheads');
-  const disabledLost = mode === 'emergency' ? next.fleet.disabledShips : 0;
+  const rearguard = Math.min(counts.operational, rearguardShips);
   const pressureLoss = mode === 'emergency' && next.crisis.pressure >= 70 && rearguardShips === 0 && !hardened ? 1 : 0;
-  const totalLost = Math.min(next.fleet.shipCount - 1, rearguardShips + disabledLost + pressureLoss);
-  const survivingShips = next.fleet.shipCount - totalLost;
+  const extraLoss = mode === 'emergency' ? pressureLoss : 0;
+  const lostIds = selectExtractLosses(next.fleet, mode, rearguard, extraLoss);
+  const survivingShips = next.fleet.ships.filter((ship) => !lostIds.includes(ship.campaignShipId));
+  const totalLost = lostIds.length;
+
   const carriedMaterials = mode === 'stable'
     ? Math.min(30, Math.floor(next.faction.resources.minerals * 0.5))
     : Math.min(12, Math.floor(next.faction.resources.minerals * 0.25));
@@ -465,14 +609,19 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     shipsLost: next.faction.legacy.shipsLost + totalLost
   };
 
+  const inherited: PersistentFleet = {
+    ships: survivingShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined })),
+    formation: next.fleet.formation,
+    doctrine: next.fleet.doctrine
+  };
+
   if (next.sectorIndex >= next.targetSectorCount) {
     next.status = 'victory';
-    next.fleet.shipCount = survivingShips;
-    next.fleet.disabledShips = mode === 'emergency' ? 0 : Math.min(next.fleet.disabledShips, survivingShips - 1);
+    next.fleet.ships = survivingShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
     next.faction.legacy = legacy;
     appendLog(
       next,
-      `${mode === 'stable' ? '稳定' : '紧急'}撤离完成；穿越全部 ${next.targetSectorCount} 个星域，舰船损失 ${totalLost}。`
+      `${mode === 'stable' ? '稳定' : '紧急'}撤离完成；穿越全部 ${next.targetSectorCount} 个星域，舰船损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}。`
     );
     return next;
   }
@@ -482,20 +631,20 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     sectorIndex: next.sectorIndex + 1,
     targetSectorCount: next.targetSectorCount,
     legacy,
-    fleet: {
-      shipCount: survivingShips,
-      disabledShips: mode === 'emergency' ? 0 : Math.min(next.fleet.disabledShips, survivingShips - 1),
-      combatPower: Math.max(survivingShips * 20, next.fleet.combatPower - totalLost * 25)
-    }
+    fleet: inherited
   });
   generated.log.unshift({
     turn: 0,
-    text: `${mode === 'stable' ? '稳定撤离' : '紧急突围'}上一星域：留下 ${rearguardShips} 艘断后舰，总损失 ${totalLost}，携带矿物 ${carriedMaterials}、补给 ${carriedSupplies}。`
+    text: `${mode === 'stable' ? '稳定撤离' : '紧急突围'}上一星域：留下 ${rearguardShips} 艘断后舰，总损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}，携带矿物 ${carriedMaterials}、补给 ${carriedSupplies}。`
   });
   return generated;
 }
 
 export function applyUniverseAction(state: UniverseState, action: UniverseAction): UniverseState {
+  // 存在待处理战斗时，除选择星系与（幂等）发起战斗外，其他战略行动一律阻止。
+  if (state.pendingBattle && action.type !== 'engageEnemy' && action.type !== 'selectSystem') {
+    return state;
+  }
   if (action.type === 'selectSystem') {
     if (!state.systems.some((system) => system.id === action.systemId && system.discovered)) return state;
     const next = cloneState(state);
@@ -506,7 +655,7 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
   if (action.type === 'queueResearch') return queueResearch(state, action.projectId);
   if (action.type === 'establishBase') return establishBase(state, action.entityId);
   if (action.type === 'engageEnemy') return engageEnemy(state);
-  if (action.type === 'repairFleet') return repairFleet(state);
+  if (action.type === 'repairShip') return repairShip(state, action.campaignShipId);
   if (action.type === 'calibrateGate') return calibrateGate(state);
   if (action.type === 'extractSector') return extractSector(state, action.mode, action.rearguardShips ?? 0);
   if (action.type === 'advanceTurn') return advanceUniverseTurn(state);
@@ -589,4 +738,55 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
   }
 
   return state;
+}
+
+/**
+ * 将一次完成的真实 core-v4 战略战斗结果写回战略状态。
+ * 幂等：若已无待处理战斗 / 状态非 active / 战斗未结束，直接返回原状态（结果只应用一次）。
+ * - 玩家舰：destroyed 永久删除；disabled/escaped/operational 保留组件 HP；未参战舰不变。
+ * - 敌方剩余战力：仅由真实 Team B 结果重算（destroyed/disabled 不贡献，escaped/operational 按成本×完整度）。
+ * - 仅推进一个战略回合；清零则星系恢复 neutral，否则保持 enemy。
+ */
+export function applyStrategicBattleResult(
+  state: UniverseState,
+  battle: BattleState,
+  bindings: ReadonlyArray<PersistentBattleBinding>
+): UniverseState {
+  if (!state.pendingBattle || state.status !== 'active' || !battle.finished) return state;
+  const next = cloneState(state);
+  const pending = next.pendingBattle!;
+  const system = next.systems.find((candidate) => candidate.id === pending.systemId);
+  if (!system) return state;
+
+  const persistentFleet = toPersistentFleet(next.fleet);
+  const ownBefore = persistentFleet.ships.length;
+  const updatedFleet = importBattleResult(persistentFleet, battle, bindings);
+  next.fleet.ships = updatedFleet.ships.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
+  const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
+
+  const enemyRemaining = enemyRemainingPower(battle);
+  system.enemyPower = enemyRemaining;
+  system.control = enemyRemaining === 0 ? 'neutral' : 'enemy';
+
+  const destroyedIds = teamACombatIds(battle, bindings, 'destroyed');
+  const disabledIds = teamACombatIds(battle, bindings, 'disabled');
+  const escapedIds = teamACombatIds(battle, bindings, 'escaped');
+  next.faction.legacy.shipsLost += shipsLost;
+  appendLog(
+    next,
+    `战斗结束于${system.name}（battleId ${pending.battleId} / seed ${pending.battleSeed}）：` +
+      `玩家损毁 [${destroyedIds.join(', ')}]，失能 [${disabledIds.join(', ')}]，逃脱 [${escapedIds.join(', ')}]；` +
+      `敌方战力 ${pending.enemyPowerBefore} → ${system.enemyPower}${system.enemyPower === 0 ? '；星系已清除' : ''}。`
+  );
+
+  next.pendingBattle = undefined;
+
+  // 玩家无任何可作战舰船 → 失败（不清除敌方据点）。
+  if (strategicFleetCounts(next.fleet).operational <= 0) {
+    next.status = 'collapsed';
+    appendLog(next, '远征舰队已无可用作战舰船。');
+    return next;
+  }
+
+  return advanceUniverseTurn(next, '战斗行动结束');
 }

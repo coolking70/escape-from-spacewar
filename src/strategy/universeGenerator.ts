@@ -1,4 +1,5 @@
 import { createPRNG } from '../sim/prng';
+import { createStarterFleet, PersistentFleet } from '../campaign/fleet/persistentFleet';
 import type {
   PermanentBlueprintId,
   SectorLegacy,
@@ -25,11 +26,8 @@ export interface SectorGenerationOptions {
   sectorIndex?: number;
   targetSectorCount?: number;
   legacy?: SectorLegacy;
-  fleet?: {
-    shipCount: number;
-    disabledShips: number;
-    combatPower: number;
-  };
+  /** 跨星域继承的真实逐舰舰队；首星域缺省使用三艘初始舰船。 */
+  fleet?: PersistentFleet;
 }
 
 export function hash32(...values: Array<number | string>): number {
@@ -205,16 +203,10 @@ export function generateUniverse(
     if (neighbor.control === 'unknown') neighbor.control = 'neutral';
   }
 
-  const inheritedShips = Math.max(1, options.fleet?.shipCount ?? 3);
-  const inheritedDisabled = Math.min(inheritedShips - 1, Math.max(0, options.fleet?.disabledShips ?? 0));
-  const blueprintPower = legacy.blueprints.includes('hardenedBulkheads') ? inheritedShips * 4 : 0;
-  const combatPower = Math.max(
-    inheritedShips * 20,
-    options.fleet?.combatPower ?? inheritedShips * 28 + blueprintPower
-  );
+  const inherited = options.fleet ?? createStarterFleet();
 
   return {
-    version: '1.0-alpha.2',
+    version: '1.0-alpha.3',
     seed: normalizedSeed,
     sectorIndex,
     targetSectorCount,
@@ -243,9 +235,12 @@ export function generateUniverse(
       systemId: start.id,
       fuel: 8,
       maxFuel: legacy.blueprints.includes('fieldLogistics') ? 10 : 8,
-      shipCount: inheritedShips,
-      disabledShips: inheritedDisabled,
-      combatPower
+      ships: inherited.ships.map((ship) => ({
+        ...ship,
+        componentHp: ship.componentHp ? [...ship.componentHp] : undefined
+      })),
+      formation: inherited.formation,
+      doctrine: inherited.doctrine
     },
     crisis: {
       phase: 'foothold',
