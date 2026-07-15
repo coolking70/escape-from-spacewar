@@ -2,25 +2,21 @@
 //
 // 背景：core-v4 之前 `alive` 同时被用来表达多种含义（未被摧毁 / 仍在场 / 仍可行动 /
 // 仍可作目标）。V0.5.2 起明确拆分语义，并规定：
-//   alive = 核心未摧毁 且 尚未 escaped
-//     —— 即 alive 只表示"结构完整且未脱离战场"。destroyed 与 escaped 都令 alive=false。
+//   alive = 结构未被摧毁。escaped 舰仍 alive=true，只是不再位于战场。
 // 其余行为一律由 combatState 或下列辅助函数判定，避免歧义。
 //
-// 注意：当前（V0.5.2）以下判断在值上重合（都等价于 not destroyed && not escaped），
-// 但分别命名以支撑后续扩展与测试，且全部为纯函数、不读渲染/真实时间。
+// 注意：结构存活与在场刻意分离：escaped 是结构存活但不在场，destroyed 才是结构死亡。
 
 import { Ship, CombatState } from './battleTypes';
 import { isCombatCapable as _isCombatCapable } from './combatState';
 import { engineRatioFrom, weaponSystemFrom, sensorSystemFrom } from './derivedStats';
 
-/** 结构完整：核心未摧毁、未 escaped。
- *  = 既有 `alive` 字段的权威定义。destroyed / escaped 都为 false。 */
+/** 结构存活：仅 destroyed 为 false。escaped 舰结构仍在，只是已经离场。 */
 export function isStructurallyAlive(ship: Ship): boolean {
-  return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
+  return ship.combatState !== 'destroyed';
 }
 
-/** 仍在战场上（可被渲染/物理处理）：与结构完整一致。
- *  escaped 已脱离战场、destroyed 已爆毁，均不在场。 */
+/** 仍在战场上（可被渲染/物理处理）：escaped 已脱离战场、destroyed 已爆毁。 */
 export function isPresentOnBattlefield(ship: Ship): boolean {
   return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
 }

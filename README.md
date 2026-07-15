@@ -150,7 +150,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（57 项，无 `as unknown as` 伪造 BattleState）：
+`npm run test:strategy` 覆盖（59 项，无 `as unknown as` 伪造 BattleState）：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；
@@ -191,13 +191,23 @@ npm run build:static
 - **待处理部署参与**：Team A 集合校验现在纳入 `pendingBattle.deployment` 选中舰，部署受限的战斗不会绑定未部署舰。
 - **`BattleState` 一致性硬化**：`destroyed` 与任何 `escapedTick` / `retreatStartedTick` 互斥（模拟器在死亡时清空）；`disabled` 依据**真实组件损毁**（`expectedDisableFlags`）校验而非仅信任布尔标志；alpha.5 校验拒绝 `escaped=true` 持久舰以保持舰队计数一致。
 - **alpha.2 战力迁移真实校准**：`migrateAlpha2Fleet` 现在对照真实 `campaignFleetPower`（二分校准），而不只校验单调性，迁移战力在容差 `max(8, 5%)` 内逼近目标。
-- **真实 DOM UI 锁定测试**：策略套件不再仅靠原始 HTML 正则断言 UI 锁定——解析出的真实元素树验证 `button.disabled===true`、点击禁用按钮不触发 `onclick`、「继续战斗」/导出/返回保持可用、且无 `disableddisabled`。
+- **真实 DOM UI 锁定测试**：策略套件使用 jsdom 创建真实元素并验证 `button.disabled===true`、点击禁用按钮不触发回调、「继续战斗」/导出/返回保持可用、且无 `disableddisabled`。
+
+### V1.0-B.4 状态不变量与测试真实性
+
+- `isStrategicShipEligible(ship)` 是战略参战的单一权威：仅 `!disabled && deployed !== false` 的舰船可进入默认部署、部署归一化、Team A、pending battle 与 binding；空、重复、不存在或不合资格的 deployment 不能保存。
+- 战斗 binding 必须精确覆盖部署集合与实际 Team A；少绑、多绑、未部署或失能舰一律拒绝。
+- `combatState` 与真实组件损伤使用模拟器同源逻辑校验。引擎/武器失能不得伪装为 normal/damaged；持久舰也拒绝“关键组件全毁而 disabled=false”。
+- `escaped` 的最终 core-v4 语义为：`alive`/结构存活为 true，但 `isPresentOnBattlefield` 为 false；只有 destroyed 才结构死亡。
+- alpha.2 极低战力迁移将 operational 舰钳制到每个组件至少 1 HP 的最近合法状态，并在迁移日志中说明钳制；Sector Expedition Code 版本仍为 `1.0-alpha.5`。
+- alpha.3/alpha.4 的非空 pending enemyFleet 恢复真实舰队成本与 `enemy` 控制权；空 pending 清除为 `neutral`。战略敌军装箱现在有成本/剩余预算后置断言。
+- UI 锁定测试使用 **jsdom** 的真实 `HTMLElement` / `HTMLButtonElement`，不再使用 FakeRoot/FakeNode。
 
 > V1.0-B.1 修复了一处真实写回缺陷：`applyStrategicBattleResult` 原先将战后 `enemyPower` / `control` 写到了原始 `state` 的星系对象上，而返回值是深拷贝的 `next`，导致敌方剩余战力从未真正生效、星系清零逻辑失效；现改为写入克隆后的 `target` 星系。
 
 ## 当前边界
 
-V1.0-B 已用 V0.7 真实逐舰持久舰队与组件 HP 替代抽象舰船数量 / 战力，并将战略交战接入 `core-v4` 真实战斗（共享模拟 / 渲染 / HUD / 绑定路径，`BattleOrigin = 'strategy'`）。V1.0-B.1 进一步统一战力量纲（战略 / 战役敌军、战后剩余战力、存档迁移均改用 core-v4 舰船成本）、强化战斗写回的安全校验与 UI 待处理战斗锁定，并修复了战后敌方战力写回失效的真实缺陷。V1.0-B.2 将战略战斗结果闭环为完全自洽、可重载的状态机：引入深度 `BattleState` 校验、低残余敌战力归一化、`1.0-alpha.4`→`1.0-alpha.5` 存档迁移硬化与 UI 锁定加固。V1.0-B.3 进一步闭合低预算敌军生成、持久战斗绑定完整性（失能舰/部署/精确集合）与 `BattleState` 一致性（死亡清 tick、失能按真实组件损毁、alpha.5 拒绝 escaped），并将 UI 锁定升级为真实 DOM 行为测试、集成测试直接消费模拟器权威输出。策略测试套件扩展至 57 例。以下内容仍属于 V1.0-C：
+V1.0-B.4 完成了战略参战资格、pending deployment / binding 精确集合、组件状态、低战力迁移与 pending 迁移控制权的不变量收尾；策略套件现为 59 项，真实 DOM 覆盖采用 jsdom。以下内容仍属于 V1.0-C：
 
 - 将 V0.8 指挥官与候补系统接入新模式；
 - 多据点与真实运输航线；

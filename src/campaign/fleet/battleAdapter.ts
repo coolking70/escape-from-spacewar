@@ -5,7 +5,7 @@ import { RULESET_V4, SIM_VERSION_V5 } from '../../sim/battleConfig';
 import { assertValidFleet } from '../../sim/fleetValidator';
 import { getShipDef } from '../../sim/shipVariants';
 import { hash32 } from '../sector/sectorGenerator';
-import { PersistentFleet, PersistentShip, activeShips, fleetEntries } from './persistentFleet';
+import { PersistentFleet, PersistentShip, activeShips, fleetEntries, isStrategicShipEligible } from './persistentFleet';
 import { DeploymentSelection, deploymentFleet } from '../deployment/deploymentSystem';
 import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, candidatePool, normalizeStrategicEnemyPower } from './campaignPower';
 
@@ -112,7 +112,9 @@ export function boxStrategicEnemyFleet(
     : 0;
   const result = new Map<string, FleetEntry>();
   let total = 0;
-  for (let slot = 0; slot < 32 && total < target; slot++) {
+  // 每次至少装入最低候选成本，故该上限足以覆盖任意合法预算；不用固定魔法循环次数。
+  const maxSlots = Math.ceil(target / minCandidate) + 1;
+  for (let slot = 0; slot < maxSlots && total < target; slot++) {
     const choices = pool
       .map((entry) => ({
         entry,
@@ -145,6 +147,9 @@ export function boxStrategicEnemyFleet(
   const fleetCost = campaignFleetEntryCost(fleet);
   if (fleetCost > target) {
     throw new Error(`战略敌军舰队成本 ${fleetCost} 超过预算 ${target}（装箱逻辑异常）。`);
+  }
+  if (target - fleetCost >= minCandidate) {
+    throw new Error(`战略敌军装箱未满足剩余预算后置条件：target=${target}，fleetCost=${fleetCost}，最低候选成本=${minCandidate}。`);
   }
   assertValidFleet(fleet);
   return fleet;
@@ -210,8 +215,7 @@ export function validatePersistentBattleBindings(
       seen.add(id);
       const ship = fleet.ships.find((candidate) => candidate.campaignShipId === id);
       if (!ship) throw new Error(`部署舰船 ${id} 不存在于舰队。`);
-      if (ship.disabled) throw new Error(`部署舰船 ${id} 是失能舰，不得参战。`);
-      if (ship.deployed === false) throw new Error(`部署舰船 ${id} 未部署，不得参战。`);
+      if (!isStrategicShipEligible(ship)) throw new Error(`部署舰船 ${id} 不具备战略参战资格（失能或未部署）。`);
       expectedIds.add(id);
     }
   } else {
@@ -229,8 +233,7 @@ export function validatePersistentBattleBindings(
     const ship = fleet.ships.find((candidate) => candidate.campaignShipId === binding.campaignShipId);
     if (!ship) throw new Error(`绑定 campaignShipId ${binding.campaignShipId} 找不到对应的持久舰。`);
     // 失能舰与未部署舰一律不得参战（即便被错误写入绑定）。
-    if (ship.disabled) throw new Error(`失能舰 ${binding.campaignShipId} 不得出现在战斗绑定中。`);
-    if (ship.deployed === false) throw new Error(`未部署舰 ${binding.campaignShipId} 不应出现在战斗绑定中。`);
+    if (!isStrategicShipEligible(ship)) throw new Error(`无战略参战资格舰 ${binding.campaignShipId} 不得出现在战斗绑定中。`);
 
     const battleShip = battle.ships.find((candidate) => candidate.id === binding.battleShipId && candidate.team === 'A');
     if (!battleShip) throw new Error(`绑定 battleShipId ${binding.battleShipId} 找不到对应的 Team A 战斗舰。`);

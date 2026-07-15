@@ -1,5 +1,5 @@
 import { BattleState } from '../../sim/battleTypes';
-import { PersistentFleet } from './persistentFleet';
+import { PersistentFleet, persistentShipHasCriticalDamage } from './persistentFleet';
 import { PersistentBattleBinding } from './battleAdapter';
 
 export function importBattleResult(
@@ -34,10 +34,13 @@ export function importBattleResult(
       continue;
     }
     persistent.deployed = true;
-    persistent.disabled = battle.combatState === 'disabled';
     persistent.escaped = battle.combatState === 'escaped';
     persistent.towed = persistent.disabled ? persistent.towed : false;
     persistent.componentHp = battle.components.map((component) => component.hp);
+    // 真实模拟器会让 disabled 与关键组件损伤同源；保留 combatState 兜底以兼容旧战役结果导入，
+    // 同时绝不允许真实关键损伤被写回为 disabled=false。
+    persistent.disabled = battle.combatState === 'disabled' || persistentShipHasCriticalDamage(persistent);
+    persistent.towed = persistent.disabled ? persistent.towed : false;
   }
 
   return { ...fleet, ships: next };

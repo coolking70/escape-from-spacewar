@@ -36,13 +36,15 @@ import {
 } from '../campaign/fleet/campaignPower';
 import { getShipDef, VARIANTS } from '../sim/shipVariants';
 import { activeShips } from '../campaign/fleet/persistentFleet';
-import { strategicEnemyFleetFor, prepareStrategicBattle, validatePersistentBattleBindings } from '../campaign/fleet/battleAdapter';
+import { boxStrategicEnemyFleet, strategicEnemyFleetFor, prepareStrategicBattle, validatePersistentBattleBindings } from '../campaign/fleet/battleAdapter';
 import type { PersistentBattleBinding } from '../campaign/fleet/battleAdapter';
 import type { BattleState, CombatState } from '../sim/battleTypes';
 import { createSimulator } from '../sim/rulesets';
-import { isPresentOnBattlefield } from '../sim/shipFlags';
+import { isPresentOnBattlefield, isStructurallyAlive } from '../sim/shipFlags';
+import { computeCombatState } from '../sim/combatState';
 import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
 import { StrategicUniversePanel } from '../ui/strategicUniversePanel';
+import { JSDOM } from 'jsdom';
 
 type Ship = BattleState['ships'][number];
 
@@ -209,162 +211,18 @@ function withPending(state: ReturnType<typeof generateUniverse>, systemId: strin
   };
 }
 
-/**
- * test:strategy 在 Node 下运行（无 jsdom）。为 StrategicUniversePanel.render 提供"真实 DOM 行为"桩：
- * innerHTML setter 会把整段 HTML 解析为元素树，querySelector/querySelectorAll 在树上按 `#id` 与 `[data-*]` 选择，
- * 返回的元素具备真实的 `disabled` 属性与 `onclick` 绑定，并提供 `click()`：
- * 当 `disabled===true` 时 click() 不触发 onAction（与真实 <button disabled> 一致），从而把"UI 锁定"从字符串正则升级为真实行为断言。
- */
-class FakeNode {
-  tagName: string;
-  id = '';
-  attributes: Record<string, string> = {};
-  dataset: Record<string, string> = {};
-  children: FakeNode[] = [];
-  onclick: (() => void) | null = null;
-  private _disabled = false;
-  constructor(tagName: string) {
-    this.tagName = tagName.toLowerCase();
-  }
-  get disabled(): boolean {
-    return this._disabled;
-  }
-  set disabled(v: boolean) {
-    this._disabled = !!v;
-  }
-  /** 真实 DOM 语义：disabled 按钮不触发激活行为。 */
-  click(): void {
-    if (this._disabled) return;
-    if (this.onclick) this.onclick();
-  }
-  querySelector(sel: string): FakeNode | null {
-    const all = queryAll(this, sel);
-    return all.length ? all[0] : null;
-  }
-  querySelectorAll(sel: string): FakeNode[] {
-    return queryAll(this, sel);
-  }
-}
-
-function applyAttribute(node: FakeNode, name: string, value: string): void {
-  const lower = name.toLowerCase();
-  if (lower === 'disabled') {
-    node.disabled = true;
-    node.attributes['disabled'] = '';
-  } else if (lower === 'id') {
-    node.id = value;
-    node.attributes['id'] = value;
-  } else if (lower.startsWith('data-')) {
-    node.attributes[lower] = value;
-    const key = lower.slice(5).replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
-    node.dataset[key] = value;
-  } else {
-    node.attributes[lower] = value;
-  }
-}
-
-function parseAttributes(attrStr: string, node: FakeNode): void {
-  const re = /([a-zA-Z_][a-zA-Z0-9_:-]*)(?:\s*=\s*("([^"]*)"|'([^']*)'))?/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(attrStr))) {
-    const name = m[1];
-    const value = m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : '';
-    applyAttribute(node, name, value);
-  }
-}
-
-/** 极简 HTML 解析器：仅用于支撑面板 render 输出的查询；不处理实体/脚本，标签需良好闭合。 */
-function parseHtml(html: string): FakeNode {
-  const root = new FakeNode('#root');
-  const stack: FakeNode[] = [root];
-  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*?)\s*(\/?)>/g;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(html))) {
-    const isClose = m[1] === '/';
-    const tag = m[2].toLowerCase();
-    const attrStr = m[3] ?? '';
-    const selfClose = m[4] === '/';
-    if (isClose) {
-      for (let i = stack.length - 1; i >= 1; i--) {
-        if (stack[i].tagName === tag) {
-          stack.length = i;
-          break;
-        }
-      }
-      continue;
-    }
-    const node = new FakeNode(tag);
-    parseAttributes(attrStr, node);
-    stack[stack.length - 1].children.push(node);
-    if (!selfClose) stack.push(node);
-  }
-  return root;
-}
-
-function selectorMatches(node: FakeNode, sel: string): boolean {
-  if (sel.startsWith('#')) return node.id === sel.slice(1);
-  if (sel.startsWith('[') && sel.endsWith(']')) {
-    return node.attributes[sel.slice(1, -1)] !== undefined;
-  }
-  return node.tagName === sel.toLowerCase();
-}
-
-function queryAll(rootNode: FakeNode, sel: string): FakeNode[] {
-  const out: FakeNode[] = [];
-  const walk = (n: FakeNode): void => {
-    for (const c of n.children) {
-      if (selectorMatches(c, sel)) out.push(c);
-      walk(c);
-    }
-  };
-  walk(rootNode);
-  return out;
-}
-
-class FakeRoot {
-  private _html = '';
-  private _tree: FakeNode = new FakeNode('#root');
-  set innerHTML(v: string) {
-    this._html = v;
-    this._tree = parseHtml(v);
-  }
-  get innerHTML(): string {
-    return this._html;
-  }
-  querySelector(sel: string): any {
-    return this._tree.querySelector(sel);
-  }
-  querySelectorAll(sel: string): any[] {
-    return this._tree.querySelectorAll(sel);
-  }
-}
-
-function parseStrategyButtons(html: string): Array<{ id: string; disabled: boolean; data: string }> {
-  const out: Array<{ id: string; disabled: boolean; data: string }> = [];
-  const re = /<button\b([^>]*)>/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(html))) {
-    const tag = m[1];
-    const tokens = tag.split(/\s+/).filter(Boolean);
-    const disabled = tokens.includes('disabled');
-    const idMatch = tag.match(/\bid="([^"]*)"/);
-    out.push({ id: idMatch ? idMatch[1] : '', disabled, data: tag });
-  }
-  return out;
-}
-
 /** 将战斗舰置为低完整度 operational 状态（用于制造"低残余敌方战力"场景，且不触发任何失能/脱离标记）。 */
 function setLowIntegrity(ship: Ship, fraction: number): void {
   for (const component of ship.components) {
     component.hp = Math.max(1, Math.round(component.maxHp * fraction));
     component.destroyed = false;
   }
-  ship.combatState = 'normal';
   ship.mobilityDisabled = false;
   ship.weaponsDisabled = false;
   ship.sensorsDisabled = false;
   ship.escapedTick = undefined;
   ship.retreatStartedTick = undefined;
+  ship.combatState = computeCombatState(ship, false);
 }
 
 /**
@@ -394,23 +252,16 @@ function simulateStrategicBattle(seed: number, enemyPower: number) {
   return { state, battle: sim.getState(), bindings: ctx.bindings, pending, guard };
 }
 
-/** 在 Node（无 jsdom）下渲染 StrategicUniversePanel 并返回捕获的 innerHTML。 */
-function renderPanel(state: ReturnType<typeof generateUniverse>): string {
-  const root = new FakeRoot();
-  const panel = new StrategicUniversePanel(root as unknown as HTMLElement, { onAction: () => {}, onExport: () => {}, onExit: () => {} });
-  panel.render(state);
-  return root.innerHTML;
-}
-
-/** 真实 DOM 渲染：返回可查询的 FakeRoot 与回调计数器，用于断言"禁用按钮点击不触发回调"等行为。 */
+/** 使用 jsdom 的真实 HTMLElement / button disabled 行为渲染战略面板。 */
 function renderPanelToRoot(state: ReturnType<typeof generateUniverse>): {
-  root: FakeRoot;
+  root: HTMLDivElement;
   html: string;
   calls: { actions: number; exports: number; exits: number };
 } {
-  const root = new FakeRoot();
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const root = dom.window.document.createElement('div');
   const calls = { actions: 0, exports: 0, exits: 0 };
-  const panel = new StrategicUniversePanel(root as unknown as HTMLElement, {
+  const panel = new StrategicUniversePanel(root, {
     onAction: () => {
       calls.actions++;
     },
@@ -849,7 +700,7 @@ export function runStrategicTests(): SuiteResult {
         threw = true;
         msg = String(e);
       }
-      test.true_(threw && msg.includes('未部署'), '未部署舰出现在绑定抛错');
+      test.true_(threw && msg.includes('参战资格'), '未部署舰出现在绑定抛错');
       add(test);
     }
 
@@ -1324,40 +1175,7 @@ export function runStrategicTests(): SuiteResult {
       add(test);
     }
 
-    // 46. UI 锁定（真实 DOM）：待处理战斗时战略行动按钮全部禁用，"继续战斗"保持可用，无非法 disableddisabled
-    {
-      const test = new Case('UI 锁定：待处理战斗时战略行动按钮禁用、继续战斗可用、无 disableddisabled');
-      let gate = prepareGate(generateUniverse(1071), 100);
-      const enabled = establishStartingBase(gate);
-      const hostile = enabled.systems.find((s) => s.control === 'enemy')!;
-      const locked = withPending(enabled, hostile.id, 999);
-      const html = renderPanel(locked);
-      const buttons = parseStrategyButtons(html);
-      const next = buttons.find((b) => b.id === 'strategy-next-turn');
-      test.true_(!!next && next.disabled, '待处理战斗时"推进一回合"被禁用');
-      const engage = buttons.find((b) => b.id === 'strategy-engage');
-      test.true_(!!engage && !engage.disabled, '待处理战斗时"继续战斗"保持可用（唯一允许的战略行动）');
-      for (const id of ['strategy-extract-stable', 'strategy-extract-emergency', 'strategy-extract-rearguard', 'strategy-calibrate']) {
-        const b = buttons.find((x) => x.id === id);
-        if (b) test.true_(b.disabled, `${id} 在待处理战斗时被禁用`);
-      }
-      test.true_(!html.includes('disableddisabled'), '不存在非法"disableddisabled"重复属性');
-      add(test);
-    }
-
-    // 47. UI 无锁定（真实 DOM）：无待处理战斗时推进回合可用，且无 disableddisabled
-    {
-      const test = new Case('UI 无锁定：无待处理战斗时推进回合可用、无 disableddisabled');
-      const state = generateUniverse(1072);
-      const html = renderPanel(state);
-      const buttons = parseStrategyButtons(html);
-      const next = buttons.find((b) => b.id === 'strategy-next-turn');
-      test.true_(!!next && !next.disabled, '无待处理战斗时"推进一回合"可用');
-      test.true_(!html.includes('disableddisabled'), '活跃状态不存在非法"disableddisabled"重复属性');
-      add(test);
-    }
-
-    // 46b. UI 锁定（真实 DOM 行为）：禁用按钮真实 disabled===true 且 click() 不触发回调；继续战斗/导出/返回真实可用
+    // 46. UI 锁定（jsdom 真实 DOM）：禁用按钮真实 disabled===true 且 click() 不触发回调；继续战斗/导出/返回真实可用
     {
       const test = new Case('UI 锁定：真实 DOM——禁用按钮 disabled 且不触发回调、继续/导出/返回可用');
       let gate = prepareGate(generateUniverse(1071), 100);
@@ -1366,7 +1184,7 @@ export function runStrategicTests(): SuiteResult {
       const locked = withPending(enabled, hostile.id, 999);
       const { root, html, calls } = renderPanelToRoot(locked);
       // 禁用按钮：推进一回合
-      const next = root.querySelector('#strategy-next-turn');
+      const next = root.querySelector<HTMLButtonElement>('#strategy-next-turn');
       test.true_(!!next, '存在"推进一回合"按钮');
       if (next) {
         test.true_(next.disabled === true, '待处理战斗时"推进一回合"真实 disabled===true');
@@ -1375,7 +1193,7 @@ export function runStrategicTests(): SuiteResult {
         test.eq(calls.actions, before, '点击禁用按钮不触发 onAction 回调');
       }
       // 继续战斗：保持可用且点击触发 onAction
-      const engage = root.querySelector('#strategy-engage');
+      const engage = root.querySelector<HTMLButtonElement>('#strategy-engage');
       test.true_(!!engage, '存在"继续战斗"按钮');
       if (engage) {
         test.true_(engage.disabled === false, '待处理战斗时"继续战斗"真实 disabled===false');
@@ -1384,14 +1202,14 @@ export function runStrategicTests(): SuiteResult {
         test.eq(calls.actions, before + 1, '点击"继续战斗"触发 onAction 回调');
       }
       // 导出/返回：真实可用且点击触发各自回调
-      const exportBtn = root.querySelector('#strategy-export');
+      const exportBtn = root.querySelector<HTMLButtonElement>('#strategy-export');
       test.true_(!!exportBtn && exportBtn.disabled === false, '导出按钮真实可用');
       if (exportBtn) {
         const before = calls.exports;
         exportBtn.click();
         test.eq(calls.exports, before + 1, '点击"导出"触发 onExport 回调');
       }
-      const exitBtn = root.querySelector('#strategy-exit');
+      const exitBtn = root.querySelector<HTMLButtonElement>('#strategy-exit');
       test.true_(!!exitBtn && exitBtn.disabled === false, '返回按钮真实可用');
       if (exitBtn) {
         const before = calls.exits;
@@ -1399,18 +1217,18 @@ export function runStrategicTests(): SuiteResult {
         test.eq(calls.exits, before + 1, '点击"返回"触发 onExit 回调');
       }
       // 选择系统按钮真实可用（未被锁定）
-      const systemBtns = root.querySelectorAll('[data-strategy-system]');
+      const systemBtns = root.querySelectorAll<HTMLButtonElement>('[data-strategy-system]');
       test.true_(systemBtns.length > 0, '存在可选系统按钮');
-      test.true_(systemBtns.every((b: any) => b.disabled === false), '可选系统按钮均未被禁用');
+      test.true_(Array.from(systemBtns).every((b) => b.disabled === false), '可选系统按钮均未被禁用');
       test.true_(!html.includes('disableddisabled'), '不存在非法"disableddisabled"重复属性');
       add(test);
     }
 
-    // 47b. UI 无锁定（真实 DOM 行为）：推进一回合真实可用且 click() 触发 onAction
+    // 47. UI 无锁定（jsdom 真实 DOM）：推进一回合真实可用且 click() 触发 onAction
     {
       const test = new Case('UI 无锁定：真实 DOM——推进一回合可用且点击触发 onAction');
       const { root, calls } = renderPanelToRoot(generateUniverse(1072));
-      const next = root.querySelector('#strategy-next-turn');
+      const next = root.querySelector<HTMLButtonElement>('#strategy-next-turn');
       test.true_(!!next && next.disabled === false, '无待处理战斗时"推进一回合"真实 disabled===false');
       if (next) {
         const before = calls.actions;
@@ -1480,8 +1298,8 @@ export function runStrategicTests(): SuiteResult {
       test.true_(Math.abs(p90 - calTarget(90)) <= calTol(calTarget(90)), 'combatPower=90 迁移战力经真实 campaignFleetPower 校准逼近目标');
       const disabledShip = m55.fleet.ships.find((s) => s.disabled)!;
       const def = getShipDef(disabledShip.shipClass, disabledShip.variant).def;
-      const keyIdx = def.components.findIndex((c) => c.type === 'core' || c.type === 'engine' || c.type === 'weapon');
-      test.true_(disabledShip.componentHp![keyIdx] === 0, '失能舰关键组件 HP 归零');
+      const keyIdx = def.components.findIndex((c) => c.type === 'engine' || c.type === 'weapon' || c.type === 'sensor');
+      test.true_(disabledShip.componentHp![keyIdx] === 0, '失能舰非核心关键组件 HP 归零（核心保持正值）');
       add(test);
     }
 
@@ -1575,6 +1393,96 @@ export function runStrategicTests(): SuiteResult {
       const run2 = simulateStrategicBattle(1097, ENEMY_BUDGET);
       test.eq(run1.guard, run2.guard, '两次运行步数一致');
       test.eq(JSON.stringify(run1.battle), JSON.stringify(run2.battle), '两次运行的最终 BattleState 完全一致（确定性）');
+      add(test);
+    }
+
+    // 56. pending deployment 的保存边界必须与战略参战资格一致。
+    {
+      const test = new Case('pending deployment 严格拒绝非法集合');
+      const { state } = lockPendingBattle(1201, ENEMY_BUDGET);
+      const id = state.fleet.ships[0].campaignShipId;
+      const rejected = (ids: string[], mutate?: (copy: any) => void) => {
+        const copy = JSON.parse(JSON.stringify(state));
+        copy.pendingBattle.deployment = { selectedShipIds: ids };
+        mutate?.(copy);
+        return !validateUniverseState(copy);
+      };
+      test.true_(rejected([]), '空 deployment 被拒绝');
+      test.true_(rejected([id, id]), '重复 ID 被拒绝');
+      test.true_(rejected(['missing']), '不存在 ID 被拒绝');
+      test.true_(rejected([id], (copy) => { copy.fleet.ships[0].deployed = false; }), 'deployed=false 舰被拒绝');
+      test.true_(rejected([id], (copy) => {
+        const ship = copy.fleet.ships[0];
+        const def = getShipDef(ship.shipClass, ship.variant).def;
+        ship.componentHp = def.components.map((c) => c.maxHp);
+        ship.componentHp[def.components.findIndex((c) => c.type === 'engine')] = 0;
+        ship.disabled = true;
+      }), 'disabled 舰被拒绝');
+      add(test);
+    }
+
+    // 57. binding 必须精确覆盖 deployment，且组件状态不能伪装。
+    {
+      const test = new Case('deployment binding 精确集合与组件 combatState 不变量');
+      const { state, battle, bindings } = lockPendingBattle(1202, ENEMY_BUDGET);
+      const fleet = toPersistentFleet(state.fleet);
+      const deployment = { selectedShipIds: [bindings[0].campaignShipId] };
+      const ctx = prepareStrategicBattle(fleet, state.pendingBattle!.enemyFleet, state.pendingBattle!.battleSeed, deployment);
+      let exact = true; try { validatePersistentBattleBindings(ctx.bindings, fleet, ctx.state, deployment); } catch { exact = false; }
+      test.true_(exact, 'deployment 子集与 Team A/binding 精确一致');
+      let missing = false; try { validatePersistentBattleBindings([], fleet, ctx.state, deployment); } catch { missing = true; }
+      test.true_(missing, '少 binding 被拒绝');
+      let extra = false; try { validatePersistentBattleBindings([...ctx.bindings, bindings[1]], fleet, ctx.state, deployment); } catch { extra = true; }
+      test.true_(extra, '多 binding 被拒绝');
+      const ship = battle.ships.find((candidate) => candidate.team === 'A')!;
+      applyCombatState(ship, 'disabled'); ship.combatState = 'normal';
+      let engine = false; try { validateBattleShipAgainstDefinition(ship); } catch { engine = true; }
+      test.true_(engine, '引擎全毁但 combatState=normal 被拒绝');
+      applyCombatState(ship, 'disabled'); ship.combatState = 'damaged';
+      let weapon = false; try { validateBattleShipAgainstDefinition(ship); } catch { weapon = true; }
+      test.true_(weapon, '武器全毁但 combatState=damaged 被拒绝');
+      const corrupted: any = JSON.parse(JSON.stringify(state));
+      const persistent = corrupted.fleet.ships[0]; const def = getShipDef(persistent.shipClass, persistent.variant).def;
+      persistent.componentHp = def.components.map((c) => c.maxHp);
+      persistent.componentHp[def.components.findIndex((c) => c.type === 'engine')] = 0;
+      test.true_(!validateUniverseState(corrupted), 'disabled=false 但关键组件全毁的持久舰被拒绝');
+      add(test);
+    }
+
+    // 58. alpha.2 的极低目标只能钳制到最近合法状态，永不生成零组件 operational 舰。
+    {
+      const test = new Case('alpha.2 极低 combatPower 迁移合法且单调');
+      let previous = -1;
+      for (const combatPower of [1, 5, 10, 20, 40, 60, 80, 112]) {
+        const base: any = JSON.parse(JSON.stringify(generateUniverse(1203)));
+        base.version = '1.0-alpha.2';
+        base.fleet = { id: base.fleet.id, name: base.fleet.name, systemId: base.fleet.systemId, fuel: base.fleet.fuel, maxFuel: base.fleet.maxFuel, shipCount: 4, disabledShips: 1, combatPower };
+        const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state: base }));
+        const actual = campaignFleetPower(toPersistentFleet(migrated.fleet));
+        test.true_(actual >= previous, `combatPower=${combatPower} 实际战力单调不下降`); previous = actual;
+        test.true_(migrated.fleet.ships.filter((ship) => !ship.disabled).every((ship) => ship.componentHp!.every((hp) => hp > 0)), `combatPower=${combatPower} 的 operational 舰无零组件`);
+        test.true_(validateUniverseState(migrated), `combatPower=${combatPower} 迁移后可保存`);
+      }
+      add(test);
+    }
+
+    // 59. escaped 结构/在场语义、pending 控制权迁移和敌军装箱后置条件。
+    {
+      const test = new Case('escaped 语义、pending 迁移控制权与敌军装箱后置条件');
+      const { state, battle } = lockPendingBattle(1204, ENEMY_BUDGET);
+      const escaped = battle.ships.find((ship) => ship.team === 'A')!; applyCombatState(escaped, 'escaped');
+      test.true_(isStructurallyAlive(escaped) && !isPresentOnBattlefield(escaped), 'escaped 结构存活但不在战场');
+      const alpha4: any = JSON.parse(JSON.stringify(state)); alpha4.version = '1.0-alpha.4';
+      const system = alpha4.systems.find((s: any) => s.id === alpha4.pendingBattle.systemId); system.enemyPower = 1; system.control = 'neutral';
+      const migrated4 = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.4', state: alpha4 }));
+      test.true_(migrated4.systems.find((s) => s.id === migrated4.pendingBattle!.systemId)!.control === 'enemy', 'alpha.4 非空 pending 恢复 enemy control');
+      const alpha3: any = JSON.parse(JSON.stringify(state)); alpha3.version = '1.0-alpha.3'; const before = JSON.stringify(alpha3.pendingBattle.enemyFleet);
+      test.eq(JSON.stringify(decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.3', state: alpha3 })).pendingBattle!.enemyFleet), before, 'alpha.3 pending 不重抽');
+      const pool = [{ shipClass: 'Fighter' as const, variant: 'standard' as const, count: 1 }, { shipClass: 'Fighter' as const, variant: 'scout' as const, count: 1 }];
+      const min = Math.min(...pool.map((entry) => campaignShipCost(entry.shipClass, entry.variant)));
+      const boxed = boxStrategicEnemyFleet(1204, 137, { sectorIndex: 1, gateGuard: false, cruiserAllowed: false }, pool);
+      const cost = campaignFleetEntryCost(boxed);
+      test.true_(cost > 0 && cost <= 137 && 137 - cost < min, '敌军装箱满足剩余预算后置条件');
       add(test);
     }
   });

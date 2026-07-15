@@ -16,6 +16,7 @@ import {
 import { RULESET_V4, SIM_VERSION_V5 } from '../sim/battleConfig';
 import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
 import { isPresentOnBattlefield, isStructurallyDestroyed, expectedDisableFlags } from '../sim/shipFlags';
+import { computeCombatState } from '../sim/combatState';
 import type { BattleState, FleetEntry } from '../sim/battleTypes';
 import type {
   ConstructionOrder,
@@ -936,6 +937,21 @@ export function validateBattleShipAgainstDefinition(ship: BattleState['ships'][n
   }
   if (ship.combatState === 'disabled' && !(ship.mobilityDisabled || ship.weaponsDisabled || ship.sensorsDisabled)) {
     throw new Error(`战斗舰 ${ship.id} 标记 disabled 但无任何关键系统真实失能。`);
+  }
+
+  // combatState 不能只是“未被破坏”的任意标签。引擎或武器失能在任何距离下都必须进入 disabled；
+  // 无关键系统失能时，normal/damaged/critical/retreating 必须和模拟器的同源状态机一致。
+  if (ship.combatState !== 'destroyed' && ship.combatState !== 'escaped') {
+    if (expected.mobilityDisabled || expected.weaponsDisabled) {
+      if (ship.combatState !== 'disabled') {
+        throw new Error(`战斗舰 ${ship.id} 引擎或武器已真实失能，但 combatState(${ship.combatState})不是 disabled。`);
+      }
+    } else if (!expected.sensorsDisabled) {
+      const derivedState = computeCombatState(ship, false);
+      if (derivedState !== ship.combatState) {
+        throw new Error(`战斗舰 ${ship.id} combatState(${ship.combatState})与组件真实状态(${derivedState})不一致。`);
+      }
+    }
   }
 
   // —— alive 与 combatState 一致（模拟器仅在结构死亡时置 alive=false）——

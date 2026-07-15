@@ -177,7 +177,7 @@ V1.0-B.3 closes the last correctness gaps in enemy-budget generation, persistent
 - **Pending deployment participation:** Team A set validation now includes `pendingBattle.deployment` (selected ship ids), so a deployment-limited battle cannot bind ships that were not deployed.
 - **`BattleState` consistency hardening:** `destroyed` is now inconsistent with any `escapedTick` / `retreatStartedTick` (the simulator clears them on death); `disabled` is validated against **real component damage** (`expectedDisableFlags`) rather than trusted boolean flags alone; alpha.5 validation rejects `escaped=true` persistent ships to keep fleet counts consistent.
 - **alpha.2 power migration real calibration:** `migrateAlpha2Fleet` now compares against the real `campaignFleetPower` (binary-search calibration) instead of only monotonicity, so migrated power matches the core-v4 value within tolerance.
-- **Real-DOM UI lock test:** the strategy suite no longer asserts UI locking from raw-HTML regex alone — a real element tree (`FakeRoot` parses `innerHTML`) verifies `button.disabled===true`, that clicking a disabled button does not fire its `onclick`, and that "继续战斗" / 导出 / 返回 stay enabled.
+- **Real-DOM UI lock test:** the strategy suite uses jsdom `HTMLElement` / `HTMLButtonElement` instances to verify `button.disabled===true`, that clicking a disabled button does not fire its callback, and that "继续战斗" / 导出 / 返回 stay enabled.
 - **Real-simulator integration test:** the integration case no longer hand-calls `syncBattleCounts` before writeback or fabricates a `BattleState` via `as unknown as`; it consumes the simulator's authoritative `getState()` output directly.
 
 The strategy suite grows further to **57** cases covering low-budget enemy generation closure, alpha.4 sub-min migration, binding integrity (disabled + deployment + exact set), `BattleState` consistency (death / disable / escape), alpha.5 `escaped` rejection, alpha.2 real-power calibration and real-DOM UI-lock behavior.
@@ -230,9 +230,18 @@ The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` 
 - **V1.0-B.3 binding integrity** (disabled persistent ships rejected; binding set equals the exact participating ship set; pending `deployment` selection included in Team A validation)
 - **V1.0-B.3 `BattleState` consistency** (`destroyed` clears `escapedTick` / `retreatStartedTick`; `disabled` validated against real component damage via `expectedDisableFlags`; alpha.5 rejects `escaped=true` persistent ships)
 - **V1.0-B.3 alpha.2 real-power calibration** (binary-search against real `campaignFleetPower`, within `max(8, 5%)` tolerance)
-- **V1.0-B.3 real-DOM UI lock** (parsed element tree: `button.disabled===true`, clicking a disabled button does not fire `onclick`, "继续战斗" / 导出 / 返回 stay enabled, no `disableddisabled`)
+- **V1.0-B.3 real-DOM UI lock** (superseded in B.4 by jsdom: `button.disabled===true`, clicking a disabled button does not fire its callback, "继续战斗" / 导出 / 返回 stay enabled, no `disableddisabled`)
 
-## Next milestone: V1.0-B/C
+## V1.0-B.4 state invariants and test authenticity
+
+- Added the single strategic eligibility rule: `!ship.disabled && ship.deployed !== false`. It is shared by active ships, default deployment, deployment normalization, deployment fleets, pending-save validation and battle bindings.
+- Pending deployments now reject empty, duplicate, missing, disabled and undeployed IDs; bindings must match the deployment / Team A set exactly.
+- Deep battle validation checks component-derived combat states, and strategic persistent ships reject a destroyed core or mismatched `disabled` / critical-component damage.
+- `escaped` now means structurally alive (`alive=true`) but absent from the battlefield. Only `destroyed` is structurally dead.
+- alpha.2 migration preserves the frozen power formula, clamps impossible low targets to the nearest legal component state (each operational component at least 1 HP), and records the clamp. alpha.3/alpha.4 pending migration restores nonempty fleets to enemy control, or clears empty pending battles to neutral.
+- Added jsdom (`HTMLElement` / native disabled click behavior) and removed FakeRoot/FakeNode UI testing. The strategic suite now has **59 cases**.
+
+## Next milestone: V1.0-C
 
 The next development slice should replace strategic placeholders with existing mature systems:
 

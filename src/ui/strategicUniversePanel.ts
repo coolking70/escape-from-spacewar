@@ -116,7 +116,7 @@ function fleetShipRow(ship: PersistentShip, state: UniverseState): string {
   );
   const warn = keyDestroyed ? ' <span class="ship-warn">⚠关键组件损毁</span>' : '';
   const repairBtn = ship.disabled && canRepairShip(state, ship.campaignShipId)
-    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}">维修</button>`
+    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(!!state.pendingBattle)}>维修</button>`
     : '';
   return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}</div>`;
 }

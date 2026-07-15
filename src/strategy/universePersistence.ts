@@ -4,7 +4,7 @@ import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import { validateFleet } from '../sim/fleetValidator';
 import { strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
 import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, minimumStrategicFleetCost, normalizeStrategicEnemyPower } from '../campaign/fleet/campaignPower';
-import { createStarterFleet } from '../campaign/fleet/persistentFleet';
+import { createStarterFleet, isStrategicShipEligible, persistentShipHasCriticalDamage } from '../campaign/fleet/persistentFleet';
 import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import {
@@ -112,6 +112,13 @@ function validateStrategicShips(ships: unknown): ships is PersistentShip[] {
         if (typeof hp !== 'number' || !Number.isFinite(hp) || hp < 0 || hp > def.components[i].maxHp) return false;
       }
     }
+    // 战略持久舰不能保存“关键组件已全毁但仍可作战”或“无真实关键损伤却标记失能”的矛盾状态。
+    // core 归零意味着结构摧毁，写回流程必须删除该舰，不能把它存为 disabled。
+    const persistent = record as unknown as PersistentShip;
+    const def = getShipDef(persistent.shipClass, persistent.variant).def;
+    const coreIndex = def.components.findIndex((component) => component.type === 'core');
+    if (persistent.componentHp && coreIndex >= 0 && persistent.componentHp[coreIndex] <= 0) return false;
+    if (persistent.disabled !== persistentShipHasCriticalDamage(persistent)) return false;
   }
   return true;
 }
@@ -140,9 +147,10 @@ function validatePendingBattle(pending: unknown, state: UniverseState): boolean 
     const ids = dep.selectedShipIds as unknown[];
     if (!ids.every((id) => typeof id === 'string')) return false;
     if (new Set(ids).size !== ids.length) return false;
-    const owned = new Set(state.fleet.ships.map((ship) => ship.campaignShipId));
-    if (!ids.every((id) => owned.has(id as string))) return false;
-    if (ids.some((id) => state.fleet.ships.find((ship) => ship.campaignShipId === id)?.disabled)) return false;
+    if (!ids.length) return false;
+    const ships = new Map(state.fleet.ships.map((ship) => [ship.campaignShipId, ship]));
+    if (!ids.every((id) => ships.has(id as string))) return false;
+    if (ids.some((id) => !isStrategicShipEligible(ships.get(id as string)!))) return false;
   }
   return true;
 }
@@ -215,6 +223,7 @@ function normalizePendingBattleForAlpha5(state: UniverseState): void {
   }
   pending.enemyPowerBefore = fleetCost;
   system.enemyPower = fleetCost;
+  system.control = 'enemy';
 }
 
 /**
@@ -262,7 +271,7 @@ function migrateAlpha2Fleet(shipCount: number, disabledShips: number, combatPowe
     const componentHp = def.components.map((component) => component.maxHp);
     if (forceKeyZero) {
       const keyIndex = def.components.findIndex(
-        (component) => component.type === 'core' || component.type === 'engine' || component.type === 'weapon'
+        (component) => component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor'
       );
       if (keyIndex >= 0) componentHp[keyIndex] = 0;
     }
@@ -287,10 +296,11 @@ function migrateAlpha2Fleet(shipCount: number, disabledShips: number, combatPowe
       if (!ships[i].componentHp) ships[i].componentHp = getShipDef(ships[i].shipClass, ships[i].variant).def.components.map((c) => c.maxHp);
       const def = getShipDef(ships[i].shipClass, ships[i].variant).def;
       for (let c = 0; c < def.components.length; c++) {
-        if (disabledSet.has(i) && (def.components[c].type === 'core' || def.components[c].type === 'engine' || def.components[c].type === 'weapon')) {
+        if (disabledSet.has(i) && (def.components[c].type === 'engine' || def.components[c].type === 'weapon' || def.components[c].type === 'sensor')) {
           ships[i].componentHp![c] = 0;
         } else {
-          ships[i].componentHp![c] = Math.max(0, Math.min(def.components[c].maxHp, Math.round(def.components[c].maxHp * r)));
+          // 可作战舰的任何组件都不得迁移成 0：0 会表示真实摧毁，必须同步 disabled / 删除。
+          ships[i].componentHp![c] = Math.max(1, Math.min(def.components[c].maxHp, Math.round(def.components[c].maxHp * r)));
         }
       }
     }
@@ -328,6 +338,21 @@ function normalizeLegacyFleet(fleet: any): void {
     if (ship.escaped) ship.escaped = false;
     if (ship.deployed === undefined) ship.deployed = true;
     if (typeof ship.towed !== 'boolean') ship.towed = false;
+    // alpha.3/alpha.4 曾允许只写 disabled 标志。迁移时补成真实关键系统损伤，
+    // 使当前存档不会保留“disabled=true 但组件完好”的矛盾舰船。
+    if (ship.disabled === true && validShipClass(ship.shipClass) && validVariant(ship.variant)) {
+      const def = getShipDef(ship.shipClass, ship.variant).def;
+      if (!Array.isArray(ship.componentHp) || ship.componentHp.length !== def.components.length) {
+        ship.componentHp = def.components.map((component) => component.maxHp);
+      }
+      const damaged = def.components.some((component, index) =>
+        (component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor') && ship.componentHp[index] <= 0
+      );
+      if (!damaged) {
+        const index = def.components.findIndex((component) => component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor');
+        if (index >= 0) ship.componentHp[index] = 0;
+      }
+    }
   }
 }
 
@@ -356,9 +381,14 @@ function migrateAlpha2(raw: any): UniverseState | null {
   };
   rebuildLegacyAlpha3EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
+  const targetPower = legacyAbstractPowerToCoreBudget(shipCount, fleet.combatPower as number);
+  const actualPower = campaignFleetPower({ ships, formation: 'line', doctrine: 'balanced' });
+  const clampNote = actualPower !== targetPower
+    ? `目标 ${targetPower} 因可作战舰组件最低 1 HP 的合法下限被确定性钳制为 ${actualPower}。`
+    : `目标 ${targetPower} 已精确映射为 ${actualPower}。`;
   migrated.log.unshift({
     turn: 0,
-    text: `旧版抽象舰队已转换为逐舰状态（${shipCount} 艘，其中 ${disabledShips} 艘失能；旧战力 ${fleet.combatPower} 已换算为 core-v4 价值）。`
+    text: `旧版抽象舰队已转换为逐舰状态（${shipCount} 艘，其中 ${disabledShips} 艘失能；旧战力 ${fleet.combatPower} 已换算为 core-v4 价值；${clampNote}）`
   });
   return migrated as UniverseState;
 }

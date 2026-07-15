@@ -6,7 +6,8 @@
 > V1.0-B.1 进一步将战略 / 战役敌军、战后剩余战力、存档迁移统一到 core-v4 舰船成本量纲，存档升级为 `1.0-alpha.4`。
 > V1.0-B.2 将战略战斗结果闭环为完全自洽、可重载的状态机（深度 `BattleState` 校验、低残余敌战力归一化、`1.0-alpha.4`→`1.0-alpha.5` 迁移硬化、UI 锁定加固），存档升级为 `1.0-alpha.5`，策略测试套件扩展至 55 例（含真实集成写回）。
 > V1.0-B.3 进一步闭合低预算敌军生成（子最低成本归一化为空舰队，不再回退标准战斗机）、持久战斗绑定完整性（失能舰/部署/精确集合）、`BattleState` 一致性（死亡清 tick、失能按真实组件损毁、alpha.5 拒绝 `escaped`），并将 UI 锁定升级为真实 DOM 行为测试、集成测试直接消费模拟器权威 `getState()`；策略测试套件扩展至 57 例。
-> 当前实现与进度请以 `progress.md` 的「V1.0-B real persistent fleet and core-v4 strategic battle」、「V1.0-B.2 strategic battle-result closure, legacy-save compatibility and UI-lock hardening」与「V1.0-B.3 low-budget enemy generation closure, persistent battle-binding integrity and test authenticity」三节为准。
+> V1.0-B.4 固化 `isStrategicShipEligible`、严格 pending deployment/binding 集合、同源组件—`combatState` 校验与 alpha.2 极低战力钳制；escaped 最终定义为结构存活但已离场。真实 DOM 测试改用 jsdom，存档版本保持 `1.0-alpha.5`，策略测试套件扩展至 59 例。
+> 当前实现与进度请以 `progress.md` 的 V1.0-B.4 小节为准。
 
 ## Purpose
 
