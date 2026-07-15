@@ -1,12 +1,16 @@
 .strategic-screen {
-  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   padding: 18px;
   background:
     radial-gradient(circle at 20% 15%, rgba(48, 97, 155, .22), transparent 34%),
     radial-gradient(circle at 80% 80%, rgba(92, 58, 137, .2), transparent 38%),
     #07101d;
   color: #dcecff;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .strategy-banner {

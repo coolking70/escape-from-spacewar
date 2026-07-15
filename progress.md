@@ -8,6 +8,7 @@
 - Campaign Code remains `0.3`; Campaign Log remains `1.1`.
 - V1.0 development is isolated in PR #9 and remains Draft.
 - GitHub Actions uses Node.js 24.
+- The strategic-sector screen owns a viewport-bounded vertical scroll area, so map, management, fleet and log sections remain reachable without enabling global page scrolling.
 
 ## Frozen compatible campaign
 
