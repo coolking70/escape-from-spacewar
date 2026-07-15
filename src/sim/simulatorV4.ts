@@ -307,6 +307,9 @@ export function applyDamageV4(
     ship.alive = false;
     // 核心/全组件摧毁时显式置 destroyed，避免死舰残留 retreating/disabled 等旧状态。
     ship.combatState = 'destroyed';
+    // 死舰不得残留 escaped / retreating 的状态字段，保证状态机自洽（校验层据此拒绝冲突状态）。
+    ship.escapedTick = undefined;
+    ship.retreatStartedTick = undefined;
     ship.shield = 0;
     state.explosions.push({ shipId: ship.id, pos: { ...ship.pos }, tick: state.tick });
     if (result) result.shipDestroyed = true;
@@ -333,6 +336,15 @@ export class BattleSimulatorV4 {
     for (const s of state.ships) {
       if (isPresentOnBattlefield(s)) s.combatState = computeCombatState(s, false);
     }
+  }
+
+  /**
+   * 只读地返回模拟器当前操作的 BattleState。
+   * 该引用与调用方传入 createSimulator 的 state 为同一对象（构造时 this.state = state），
+   * 因此模拟完成后可直接作为最终 BattleState 使用，无需通过 as unknown as 伪造或额外回读。
+   */
+  getState(): BattleState {
+    return this.state;
   }
 
   getAuraStatus(id: number): { accuracy: number; shieldRegen: number } {
@@ -470,7 +482,8 @@ export class BattleSimulatorV4 {
         if (beyond) {
           ship.escapedTick = s.tick;
           ship.combatState = 'escaped';
-          ship.alive = false;
+          // 脱离战场的舰船"存活"（只是离开战斗），alive 必须为 true，与状态机校验（alive !== destroyed）一致。
+          ship.alive = true;
           events.push({
             type: 'shipEscaped',
             tick: s.tick,

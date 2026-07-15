@@ -21,6 +21,8 @@ export interface SimContext {
   step(): BattleStepResult;
   /** 供 Ship Inspector 只读读取本 tick 该舰受到的支援光环加成（不回写 sim） */
   getAuraStatus(id: number): { accuracy: number; shieldRegen: number };
+  /** 只读返回模拟器当前操作的 BattleState（与传入 createSimulator 的 state 同一引用，模拟结束后即可作为最终状态使用） */
+  getState(): BattleState;
   /** 可选：释放内部缓存（如光环/目标缓存） */
   dispose?(): void;
 }

@@ -1,5 +1,5 @@
 import { getShipDef } from '../../sim/shipVariants';
-import { PersistentShip } from '../fleet/persistentFleet';
+import { isPersistentShipDisabled, PersistentShip } from '../fleet/persistentFleet';
 
 export interface FieldRepairResult {
   ship: PersistentShip;
@@ -17,18 +17,7 @@ export function ensurePersistentComponentHp(ship: PersistentShip): number[] {
 export function canFieldRepair(ship: PersistentShip): boolean {
   const { def } = getShipDef(ship.shipClass, ship.variant);
   if (!ship.componentHp || ship.componentHp.length !== def.components.length) return false;
-  return ship.componentHp.some(
-    (hp, index) => hp > 0 && hp < def.components[index].maxHp
-  );
-}
-
-function hasOperationalSystems(ship: PersistentShip): boolean {
-  if (!ship.componentHp) return false;
-  const { def } = getShipDef(ship.shipClass, ship.variant);
-  const alive = (type: 'core' | 'engine' | 'weapon') => def.components.some(
-    (component, index) => component.type === type && (ship.componentHp?.[index] ?? 0) > 0
-  );
-  return alive('core') && alive('engine') && alive('weapon');
+  return ship.componentHp.some((hp, index) => hp >= 0 && hp < def.components[index].maxHp);
 }
 
 export function fieldRepairShip(ship: PersistentShip): FieldRepairResult | null {
@@ -40,7 +29,12 @@ export function fieldRepairShip(ship: PersistentShip): FieldRepairResult | null 
   for (let index = 0; index < ship.componentHp.length; index++) {
     const hp = ship.componentHp[index];
     const deficit = def.components[index].maxHp - hp;
-    if (hp > 0 && deficit > largestDeficit) {
+    const critical = def.components[index].type === 'engine' || def.components[index].type === 'weapon' || def.components[index].type === 'sensor';
+    const priority = critical && hp <= 0 ? 1 : 0;
+    const currentPriority = componentIndex >= 0 &&
+      (def.components[componentIndex].type === 'engine' || def.components[componentIndex].type === 'weapon' || def.components[componentIndex].type === 'sensor') &&
+      ship.componentHp[componentIndex] <= 0 ? 1 : 0;
+    if (deficit > 0 && (priority > currentPriority || (priority === currentPriority && deficit > largestDeficit))) {
       largestDeficit = deficit;
       componentIndex = index;
     }
@@ -52,9 +46,9 @@ export function fieldRepairShip(ship: PersistentShip): FieldRepairResult | null 
   const amount = Math.max(1, Math.ceil(maxHp * 0.2));
   const before = next.componentHp[componentIndex];
   next.componentHp[componentIndex] = Math.min(maxHp, before + amount);
-  const reactivated = !!next.disabled && hasOperationalSystems(next);
+  const reactivated = !!next.disabled && !isPersistentShipDisabled(next);
+  next.disabled = isPersistentShipDisabled(next);
   if (reactivated) {
-    next.disabled = false;
     next.towed = false;
     next.escaped = false;
     next.deployed = true;

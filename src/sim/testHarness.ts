@@ -64,7 +64,9 @@ export function runSuite(name: string, fn: (add: (c: Case) => void) => void): Su
   try {
     fn(add);
   } catch (e) {
-    cases.push(Object.assign(new Case(name + ' (异常)'), { result: { name, passed: false, failures: [`  ✗ 运行异常: ${String(e)}`], notes: [] } } as unknown));
+    const crash = new Case(name + ' (异常)');
+    crash.fail(`运行异常: ${String(e)}`);
+    cases.push(crash);
   }
   const durationMs = Date.now() - start;
   const failures = cases.flatMap((c) => c.result.failures);

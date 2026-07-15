@@ -24,7 +24,7 @@ import { buildExtractionPlan, jettisonCargo, resolveExtraction } from './extract
 import { CampaignBattleBinding } from './fleet/battleAdapter';
 import { buildEncounterPreview } from './fleet/encounterControl';
 import { importBattleResult } from './fleet/battleResultImporter';
-import { activeShips, disabledShips, movementFuelCost, PersistentShip } from './fleet/persistentFleet';
+import { activeShips, disablePersistentShip, disabledShips, movementFuelCost, PersistentShip } from './fleet/persistentFleet';
 import { canFieldRepair, fieldRepairShip } from './repair/repairSystem';
 import { generatePendingSalvage } from './salvage/salvageGenerator';
 import { SalvageOption } from './salvage/salvageTypes';
@@ -194,16 +194,18 @@ function recoveredShip(state: CampaignState, option: SalvageOption): PersistentS
   const spec = option.recoveredShip;
   if (!spec) return null;
   const def = getShipDef(spec.shipClass, spec.variant).def;
-  return {
+  const ship: PersistentShip = {
     campaignShipId: `cs-recovered-s${state.sectorIndex}-b${state.pendingSalvage?.battleIndex ?? state.turn}`,
     shipClass: spec.shipClass,
     variant: spec.variant,
     componentHp: def.components.map((component) => Math.max(1, Math.floor(component.maxHp * spec.componentRatio))),
-    disabled: true,
+    disabled: false,
     escaped: false,
     towed: true,
     deployed: false
   };
+  disablePersistentShip(ship);
+  return ship;
 }
 
 function resolveSalvage(state: CampaignState, action: Extract<CampaignAction, { type: 'resolveSalvage' }>): CampaignState {
@@ -534,16 +536,18 @@ export function applyCampaignAction(state: CampaignState, action: CampaignAction
       const id = `cs-rescue-s${next.sectorIndex}-${node.id}`;
       if (!next.fleet.ships.some((ship) => ship.campaignShipId === id)) {
         const def = getShipDef('Fighter', 'standard').def;
-        next.fleet.ships.push({
+        const recovered: PersistentShip = {
           campaignShipId: id,
           shipClass: 'Fighter',
           variant: 'standard',
           componentHp: def.components.map((component) => Math.max(1, Math.floor(component.maxHp * 0.4))),
-          disabled: true,
+          disabled: false,
           escaped: false,
           towed: true,
           deployed: false
-        });
+        };
+        disablePersistentShip(recovered);
+        next.fleet.ships.push(recovered);
         next.history.push({ turn: next.turn, text: '发现一艘受损友军战斗机；已拖入舰队，维修后可重新参战。', nodeId: node.id });
       }
     }

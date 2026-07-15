@@ -2,24 +2,21 @@
 //
 // 背景：core-v4 之前 `alive` 同时被用来表达多种含义（未被摧毁 / 仍在场 / 仍可行动 /
 // 仍可作目标）。V0.5.2 起明确拆分语义，并规定：
-//   alive = 核心未摧毁 且 尚未 escaped
-//     —— 即 alive 只表示"结构完整且未脱离战场"。destroyed 与 escaped 都令 alive=false。
+//   alive = 结构未被摧毁。escaped 舰仍 alive=true，只是不再位于战场。
 // 其余行为一律由 combatState 或下列辅助函数判定，避免歧义。
 //
-// 注意：当前（V0.5.2）以下判断在值上重合（都等价于 not destroyed && not escaped），
-// 但分别命名以支撑后续扩展与测试，且全部为纯函数、不读渲染/真实时间。
+// 注意：结构存活与在场刻意分离：escaped 是结构存活但不在场，destroyed 才是结构死亡。
 
-import { Ship, CombatState } from './battleTypes';
+import { Ship, CombatState, ShipComponent } from './battleTypes';
 import { isCombatCapable as _isCombatCapable } from './combatState';
+import { engineRatioFrom, weaponSystemFrom, sensorSystemFrom } from './derivedStats';
 
-/** 结构完整：核心未摧毁、未 escaped。
- *  = 既有 `alive` 字段的权威定义。destroyed / escaped 都为 false。 */
+/** 结构存活：仅 destroyed 为 false。escaped 舰结构仍在，只是已经离场。 */
 export function isStructurallyAlive(ship: Ship): boolean {
-  return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
+  return ship.combatState !== 'destroyed';
 }
 
-/** 仍在战场上（可被渲染/物理处理）：与结构完整一致。
- *  escaped 已脱离战场、destroyed 已爆毁，均不在场。 */
+/** 仍在战场上（可被渲染/物理处理）：escaped 已脱离战场、destroyed 已爆毁。 */
 export function isPresentOnBattlefield(ship: Ship): boolean {
   return ship.combatState !== 'destroyed' && ship.combatState !== 'escaped';
 }
@@ -79,4 +76,44 @@ export function combatStatePriority(cs: CombatState): number {
     default:
       return 1;
   }
+}
+
+/**
+ * 结构死亡判定（与模拟器 dealDamage 的权威规则完全一致）：
+ * 核心组件已摧毁 或 全部组件已摧毁 ⇒ 该舰结构死亡，combatState 必须为 'destroyed'。
+ * 供模拟器（可选复用）与校验器共同使用，避免两套不一致的死亡判定。
+ */
+export function isStructurallyDestroyed(ship: Ship): boolean {
+  const core = ship.components.find((component) => component.def.type === 'core');
+  const coreDead = core ? core.destroyed : true;
+  const allDead = ship.components.length > 0 && ship.components.every((component) => component.destroyed);
+  return coreDead || allDead;
+}
+
+/** 由组件真实损毁推导的失能标志（与模拟器 recomputeDerivedV4 的引擎/武器/传感器规则一致）。 */
+export interface DisableFlags {
+  mobilityDisabled: boolean;
+  weaponsDisabled: boolean;
+  sensorsDisabled: boolean;
+}
+
+/**
+ * 从组件事实推导失能标志。某系统必须“该类型全部组件”均被摧毁才失能；
+ * 这是 simulator 与持久舰层共享的唯一规则。
+ */
+export function computeDisableFlagsFromComponents(
+  components: ShipComponent[]
+): DisableFlags {
+  const eng = engineRatioFrom(components.filter((component) => component.def.type === 'engine'));
+  const wpn = weaponSystemFrom(components.filter((component) => component.def.type === 'weapon'));
+  const sen = sensorSystemFrom(components.filter((component) => component.def.type === 'sensor'));
+  return {
+    mobilityDisabled: eng.mobilityDisabled,
+    weaponsDisabled: wpn.weaponsDisabled,
+    sensorsDisabled: sen.sensorsDisabled
+  };
+}
+
+export function expectedDisableFlags(ship: Ship): DisableFlags {
+  return computeDisableFlagsFromComponents(ship.components);
 }

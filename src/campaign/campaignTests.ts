@@ -28,6 +28,7 @@ import { createStarterFleet } from './fleet/persistentFleet';
 import { importBattleResult } from './fleet/battleResultImporter';
 import { visibleSectorGraph } from './sector/sectorVisibility';
 import { buildCampaignLogExport, encodeCampaignLog } from './campaignLog';
+import { getShipDef } from '../sim/shipVariants';
 import { campaignResultPanel } from '../ui/campaignResultPanel';
 
 function firstNeighbor(state: ReturnType<typeof createCampaign>): string {
@@ -180,11 +181,15 @@ export function runCampaignTests(): SuiteResult {
     {
       const test = new Case('战斗结果写回保持战役舰船语义');
       const fleet = createStarterFleet();
+      const fighterHp = getShipDef('Fighter', 'interceptor').def.components.map((component) => ({ hp: component.maxHp }));
+      const disabledFrigateHp = getShipDef('Frigate', 'standard').def.components.map((component) => ({
+        hp: component.type === 'engine' ? 0 : component.maxHp
+      }));
       const battle = {
         ships: [
           { id: 0, team: 'A', combatState: 'destroyed', components: [] },
-          { id: 1, team: 'A', combatState: 'escaped', components: [{ hp: 3 }] },
-          { id: 2, team: 'A', combatState: 'disabled', components: [{ hp: 2 }] }
+          { id: 1, team: 'A', combatState: 'escaped', components: fighterHp },
+          { id: 2, team: 'A', combatState: 'disabled', components: disabledFrigateHp }
         ]
       } as any;
       const next = importBattleResult(fleet, battle, [

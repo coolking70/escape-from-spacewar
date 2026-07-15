@@ -1,0 +1,131 @@
+.crisis-strip {
+  width: min(1280px, 100%);
+  margin: 12px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid rgba(132, 181, 223, .32);
+  border-radius: 12px;
+  background: rgba(13, 34, 53, .88);
+}
+
+.crisis-strip b {
+  font-size: 15px;
+}
+
+.crisis-strip span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(5, 16, 28, .55);
+  font-size: 12px;
+}
+
+.crisis-strip.phase-contest {
+  border-color: rgba(255, 202, 100, .5);
+  background: rgba(66, 45, 20, .78);
+}
+
+.crisis-strip.phase-collapse,
+.crisis-strip.phase-evacuation {
+  border-color: rgba(255, 105, 105, .55);
+  background: rgba(71, 24, 30, .82);
+}
+
+.strategic-routes line.hostile {
+  stroke: rgba(255, 91, 91, .62);
+  stroke-dasharray: 3 2;
+}
+
+.strategic-system.control-enemy {
+  background: #642c37;
+  border-color: #ff7e8e;
+  box-shadow: 0 0 20px rgba(255, 72, 93, .36);
+}
+
+.strategic-system.control-player {
+  background: #1c6656;
+  border-color: #70e3bd;
+}
+
+.strategic-system.gate-system {
+  outline: 2px solid rgba(190, 145, 255, .8);
+  outline-offset: 3px;
+}
+
+.strategic-system small {
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.strategic-management {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gate-card {
+  border-color: rgba(181, 126, 255, .45);
+  background: linear-gradient(145deg, rgba(30, 21, 54, .92), rgba(7, 20, 35, .9));
+}
+
+.extraction-actions {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.strategy-end {
+  width: min(1280px, 100%);
+  margin: 0 auto 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(102, 224, 175, .55);
+  background: rgba(18, 70, 54, .88);
+}
+
+.strategy-end.defeat {
+  border-color: rgba(255, 99, 115, .6);
+  background: rgba(77, 22, 31, .9);
+}
+
+.strategy-end h2,
+.strategy-end p {
+  margin: 0;
+}
+
+.strategy-end p {
+  margin-top: 4px;
+}
+
+.btn.danger {
+  border-color: rgba(255, 103, 116, .62);
+  background: rgba(125, 31, 43, .72);
+  color: #ffe2e5;
+}
+
+.btn.danger:hover:not(:disabled) {
+  background: rgba(164, 38, 54, .85);
+}
+
+@media (max-width: 920px) {
+  .strategic-management {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .crisis-strip {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .crisis-strip b {
+    grid-column: 1 / -1;
+  }
+
+  .strategic-system small {
+    width: 88px;
+    font-size: 10px;
+  }
+}

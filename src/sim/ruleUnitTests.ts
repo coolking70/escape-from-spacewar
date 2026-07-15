@@ -367,7 +367,7 @@ export function combatStateTests(): SuiteResult {
     // escaped 不会重新成为目标
     const escShip = base({ escapedTick: 1, combatState: 'escaped' });
     c.true_(!isTargetable(escShip), 'escaped 不可被锁定（isTargetable=false）');
-    c.true_(!isStructurallyAlive(escShip), 'escaped 非结构存活');
+    c.true_(isStructurallyAlive(escShip), 'escaped 仍结构存活');
 
     // destroyed 不计入 escaped
     const deadShip = base({ alive: false, combatState: 'destroyed' });

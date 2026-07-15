@@ -354,10 +354,10 @@ export function combatStateValidationTests(): SuiteResult {
       c.eq(isEscaped(s), s.combatState === 'escaped', `isEscaped(id=${s.id})`);
       c.eq(isDisabled(s), s.combatState === 'disabled', `isDisabled(id=${s.id})`);
       c.eq(isRetreating(s), s.combatState === 'retreating', `isRetreating(id=${s.id})`);
-      // isPresentOnBattlefield / isStructurallyAlive 等价（非 destroyed 且非 escaped）
+      // escaped 已离场但结构仍存活；destroyed 才是结构死亡。
       const onField = s.combatState !== 'destroyed' && s.combatState !== 'escaped';
       c.eq(isPresentOnBattlefield(s), onField, `isPresentOnBattlefield(id=${s.id})`);
-      c.eq(isStructurallyAlive(s), onField, `isStructurallyAlive(id=${s.id})`);
+      c.eq(isStructurallyAlive(s), s.combatState !== 'destroyed', `isStructurallyAlive(id=${s.id})`);
       // isCombatCapable 与 combatState 一致
       const capable = s.combatState === 'normal' || s.combatState === 'damaged' || s.combatState === 'critical' || s.combatState === 'retreating';
       c.eq(isCombatCapable(s), capable, `isCombatCapable(id=${s.id})`);
