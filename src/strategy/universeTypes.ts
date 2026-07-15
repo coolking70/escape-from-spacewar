@@ -1,11 +1,11 @@
 import type { PersistentFleet } from '../campaign/fleet/persistentFleet';
 import type { DeploymentSelection } from '../campaign/deployment/deploymentSystem';
 import type { FleetEntry } from '../sim/battleTypes';
-import type { CampaignCommander } from '../campaign/campaignTypes';
+import type { CampaignCommander, PendingRecruitment } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-C.1 升级为 1.0-alpha.6，加入复用 V0.8 模型的指挥官状态。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.6';
-export type SectorExpeditionVersion = '1.0-alpha.6';
+/** 当前 Sector Expedition Code 版本。V1.0-C.4 升级为 1.0-alpha.9，加入移动敌军、围攻与星门防御战。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.9';
+export type SectorExpeditionVersion = '1.0-alpha.9';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
@@ -39,6 +39,37 @@ export interface ConstructionOrder {
 export interface ResearchOrder {
   id: string;
   projectId: ResearchProjectId;
+  turnsRemaining: number;
+  totalTurns: number;
+}
+
+/**
+ * 一个次级据点到唯一主基地的固定抽象运输链。
+ * 路径仅允许使用建立当时已经发现且逐段相邻的星系；畅通/中断由当前控制权动态计算，避免保存陈旧状态。
+ */
+export interface StrategicTransportLink {
+  id: string;
+  outpostEntityId: string;
+  hubEntityId: string;
+  pathSystemIds: string[];
+}
+
+export type StrategicEnemyTaskForceRole = 'raider' | 'gateDefense';
+
+/** 按战略回合沿星系航线移动的敌方舰队；power 使用 core-v4 舰船成本量纲。 */
+export interface StrategicEnemyTaskForce {
+  id: string;
+  systemId: string;
+  power: number;
+  role: StrategicEnemyTaskForceRole;
+  spawnedTurn: number;
+}
+
+/** 敌方特遣舰队抵达我方据点后形成的持久围攻倒计时。 */
+export interface StrategicSiege {
+  id: string;
+  taskForceId: string;
+  stationEntityId: string;
   turnsRemaining: number;
   totalTurns: number;
 }
@@ -104,6 +135,8 @@ export interface PendingStrategicBattle {
   battleSeed: number;
   enemyPowerBefore: number;
   enemyFleet: FleetEntry[];
+  source: 'garrison' | 'taskForce' | 'gateDefense';
+  taskForceId?: string;
   deployment?: DeploymentSelection;
 }
 
@@ -139,6 +172,7 @@ export interface ExtractionState {
   calibration: number;
   requiredCalibration: number;
   emergencyThreshold: number;
+  gateDefense: 'dormant' | 'pending' | 'resolved';
 }
 
 export type UniverseStatus = 'active' | 'victory' | 'collapsed';
@@ -165,7 +199,12 @@ export interface UniverseState {
   faction: StrategicFaction;
   commander: CampaignCommander;
   reserveCommanders: CampaignCommander[];
+  pendingRecruitment?: PendingRecruitment;
+  recruitmentUsedThisSector: boolean;
   pendingSuccession: boolean;
+  transportLinks: StrategicTransportLink[];
+  enemyTaskForces: StrategicEnemyTaskForce[];
+  sieges: StrategicSiege[];
   fleet: StrategicFleet;
   crisis: CrisisState;
   extraction: ExtractionState;
@@ -180,9 +219,14 @@ export type UniverseAction =
   | { type: 'surveyEntity'; entityId: string }
   | { type: 'extractAsteroid'; entityId: string }
   | { type: 'establishBase'; entityId: string }
-  | { type: 'queueConstruction'; facilityType: FacilityType }
+  | { type: 'establishOutpost'; entityId: string }
+  | { type: 'queueConstruction'; facilityType: FacilityType; entityId?: string }
   | { type: 'queueResearch'; projectId: ResearchProjectId }
   | { type: 'engageEnemy' }
+  | { type: 'openRecruitment' }
+  | { type: 'resolveRecruitment'; candidateId?: string }
+  | { type: 'treatCommander' }
+  | { type: 'appointCommander'; commanderId: string }
   | { type: 'repairShip'; campaignShipId: string }
   | { type: 'calibrateGate' }
   | { type: 'extractSector'; mode: ExtractionMode; rearguardShips?: number }

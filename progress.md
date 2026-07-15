@@ -128,8 +128,8 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.6` (real per-ship fleet plus a V0.8-compatible commander profile). `1.0-alpha.2` through `1.0-alpha.5` are migrated deterministically in place.
-- Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state (per-ship) and inherited assets.
+- Current version: `1.0-alpha.9` (real per-ship fleet, playable commander loop, multiple temporary outposts, moving enemy task forces, sieges and gate defense). `1.0-alpha.2` through `1.0-alpha.8` are migrated deterministically in place.
+- Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship) and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
 
@@ -282,6 +282,52 @@ The next development slice should extend the now-real persistent fleet and core-
 - The strategy suite now has **66 cases**, including invalid commander/succession combinations, legal succession save/code round trips, reducer lock coverage and jsdom native disabled-click behavior.
 - Full closure verification passed: `npm ci`, build, core tests, deterministic tests, campaign tests, 66-case strategy tests, stress, static build, `git diff --check` and real Chromium browser regression. The standard web-game client entered a fresh strategic expedition with matching commander text state, a clean screenshot and no console-error artifact.
 - Commander UI duty text now reuses the authoritative availability rule and renders localized conditions/injuries, so a severity-3 injury cannot be shown as “available” while strategic actions are locked. Alpha.3/alpha.4 migration logs report the actual current target version instead of stale alpha.5 text; both paths have regression assertions.
+
+### V1.0-C.2 playable commander loop
+
+- Sector Expedition Code advances to `1.0-alpha.7`; alpha.6 saves migrate deterministically with no pending offer and a fresh per-sector recruitment opportunity.
+- A forward base offers one deterministic recruitment decision per sector: exactly two candidates, an authoritative supply cost and a shared three-person reserve cap. Accept and decline both consume the opportunity; crossing the gate resets it.
+- Real strategic battle results now award commander experience and apply the existing V0.8 battle injury rules from actual fleet losses. A severe injury or death enters succession when an available reserve exists; otherwise the expedition ends as a valid `collapsed` state instead of becoming unsaveable.
+- Treatment is available only at the forward base, costs two supplies and one strategic turn. Appointment swaps an available reserve into command while preserving an incapacitated living incumbent in the reserve roster.
+- Pending recruitment and succession use explicit reducer/UI action locks. Deep persistence validation rejects malformed offers, duplicate identities, invalid costs, conflicting pending states and reserve overflow.
+- The strategy suite now has **69 cases**. Real Chromium additionally performs the playable `establish base → open recruitment → choose candidate → reserve roster` flow and checks candidate count, action locking, resources, debug state, UI text and console errors.
+- Full closure verification passed after a clean install: production build, acceptance, deterministic, campaign, 69-case strategy, stress, standard Chromium, production-chunk Chromium, single-file static Chromium, static build, npm audit and `git diff --check`.
+
+### V1.0-C.3 multiple outposts and transport network
+
+- Sector Expedition Code advances to `1.0-alpha.8`; alpha.7 saves preserve their original forward base as the unique main base and receive an empty transport-link collection.
+- Player-owned station entities are the authoritative outpost set. `baseEntityId` identifies exactly one main base; every secondary outpost must have exactly one validated link to it.
+- Transport paths are deterministic shortest paths over already discovered systems only. Their status is derived from current control rather than saved: enemy power on any path system blocks secondary production delivery, and clearing the route restores it without rewriting the link.
+- Every outpost retains its own facility slots and two-item construction queue. All queues advance independently; main-base output enters storage locally while only active links deliver secondary output.
+- Enemy expansion can raid any adjacent owned outpost. The shared deterministic resolver accounts for local defense grids and whether the fleet is physically present, applies real supply loss and component-backed fleet disablement, and produces a save-valid result.
+- The strategic map renders active transport paths as green dashed lines and blocked paths as red dashed lines without exposing hidden systems. The management UI lists the main base, every secondary outpost, route, blocker, local/delivered output, facilities and queues.
+- Strategy coverage is now **73 cases**, including deterministic establishment, parallel construction, route blocking, deep malformed-link rejection, real DOM target-specific construction and raid resolution. Chromium performs `main base → recruit → travel two hops → survey station → establish outpost → queue local construction` through visible controls and checks debug state and console errors.
+
+### V1.0-C.4 moving enemy fleets, sieges and gate defense
+
+- Sector Expedition Code advances to `1.0-alpha.9`; alpha.8 saves preserve their complete outpost network, receive no surprise mobile enemies and map old extraction progress to a consistent gate-defense state.
+- Every new sector starts with one persistent raider task force. Raiders move at most one graph edge per strategic turn along a stable shortest path to the nearest player station; only discovered positions render, so hidden fleets do not leak through the map DOM.
+- Mobile fleets share the existing core-v4 cost scale and the same pending battle / deployment / Three.js / binding / writeback path as fixed garrisons. `PendingStrategicBattle.source` and `taskForceId` make the writeback target explicit.
+- Raiders on transport paths block secondary delivery. Reaching a station starts a persistent two-turn siege; each local defense grid extends the response window by one turn up to four. A returning player fleet pauses the countdown and exposes the real battle action.
+- A lost secondary outpost removes its facilities, queue and exact transport link. Losing the unique main base ends the expedition as a valid, exportable `collapsed` state.
+- Crossing the emergency calibration threshold automatically creates a mandatory gate-defense task force and launches the existing battle screen through normal App flow. A player victory means the interceptor was destroyed, disabled or forced away and unlocks extraction.
+- Deep validation rejects duplicate/missing task forces, malformed siege references, bad locations/power, contradictory gate-defense state and pending source mismatches. Strategy coverage is now **78 cases**.
+- Chromium now performs `main base → recruit → travel → survey → establish outpost → local construction → enemy siege → return to base → existing Three.js defense battle`; screenshots and debug text agree and the console remains clean.
+- Full closure verification passed after a clean install: production build, 19-suite acceptance, deterministic/golden replay, campaign, 78-case strategy, development Chromium, production-chunk Chromium, single-file static Chromium, 50v50 stress, static build, npm audit and `git diff --check`.
+
+### V1.0-C.5 three-sector release closeout
+
+- The pre-fix executable baseline completed **0/20** sampled three-sector runs: a fixed 95%-baseline gate garrison plus a second interceptor duplicated the mandatory encounter; abstract territorial expansion could remotely drain a station in addition to mobile sieges; inherited fleets then faced fixed higher-sector mobile budgets they could not recover from.
+- Gate systems now begin neutral and are excluded from ordinary expansion. Calibration creates the one authoritative mandatory `gateDefense` battle; ordinary territorial expansion cannot bypass persistent task forces to directly damage an owned station.
+- Raider and gate-defense targets rise by sector (`100/110/120` and `115/125/140`) while being capped at 55% and 65% of current operational fleet value. This is strategic encounter pacing only: core-v4 costs, ship values, AI and golden replays are unchanged.
+- All sectors use a 17-turn action window. Pressure still starts and grows faster in later sectors, and Crisis Forecasting reduces the shared pure growth function.
+- Added `runStrategicThreeSectorPlaythrough()`: a release verifier that uses only public strategic actions, official Sector Expedition Code round trips, `prepareStrategicBattle`, the real simulator and binding-based writeback. It establishes a base, queues route research, makes recruitment decisions, defeats each raider, travels only through revealed next hops, surveys/calibrates each gate and completes three emergency extractions.
+- Strategy coverage is now **81 cases**. The committed matrix runs 65 seeds through three sectors and validates every victory code; an additional 1000-seed probe completed 1000/1000 with no failure. Canonical seed 2036 performs six real battles and produces byte-identical actions, metrics and final code on repeat.
+- Chromium performs the same visible three-sector flow through real buttons, renders three raider and three gate battles in the existing Three.js UI, writes every result back, reaches the third-sector victory panel, keeps export/exit available and reports no console error. Screenshots were visually inspected; the standard develop-web-game client independently confirmed the initial strategic layout and text state.
+- Defeat settlement text now uses the actual final strategic log reason instead of always claiming a missed deadline. `render_game_to_text` exposes sector/status/window/fleet/extraction fields needed to compare UI and runtime state without exposing hidden map topology.
+- Independent release verification passed after a clean `npm ci`: production build, 19/19 acceptance suites, deterministic and golden replays, campaign coverage, 81-case strategy coverage, development Chromium, production-chunk Chromium, single-file static Chromium, deterministic 50v50 stress, static build, zero npm audit findings and `git diff --check`. Every browser target completed all six mandatory battles and reached the third-sector victory settlement without console errors.
+
+V1.0-C feature scope is now closed. Next action: commit/push and PR release-candidate acceptance. Deferred unless separately approved: multiple player fleets, real-time strategic movement, ship production/fitting, diplomacy, markets and population simulation.
 
 ## Still out of scope for V1.0-C
 

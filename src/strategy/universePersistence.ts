@@ -9,6 +9,10 @@ import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import { validateCampaignCommander } from '../campaign/campaignCode';
 import { createCommander } from '../campaign/commander/commanderSystem';
+import {
+  MAX_RESERVE_COMMANDERS,
+  commanderRecruitmentSupplyCost
+} from '../campaign/commander/commanderRecruitment';
 import { isStrategicSuccessionStateConsistent } from './universeCommander';
 import {
   SECTOR_EXPEDITION_VERSION,
@@ -52,7 +56,25 @@ function addStrategicCommanderState(state: any): void {
     state.commander = createCommander(state.seed >>> 0, `${factionName}指挥官`, 'balanced');
   }
   if (!Array.isArray(state.reserveCommanders)) state.reserveCommanders = [];
+  state.pendingRecruitment = undefined;
+  state.recruitmentUsedThisSector = false;
+  state.transportLinks = [];
+  state.enemyTaskForces = [];
+  state.sieges = [];
+  if (state.extraction) {
+    state.extraction.gateDefense = state.extraction.calibration >= state.extraction.emergencyThreshold ? 'resolved' : 'dormant';
+  }
   if (typeof state.pendingSuccession !== 'boolean') state.pendingSuccession = false;
+  addC4StrategicState(state);
+}
+
+function addC4StrategicState(state: any): void {
+  if (!Array.isArray(state.enemyTaskForces)) state.enemyTaskForces = [];
+  if (!Array.isArray(state.sieges)) state.sieges = [];
+  if (state.extraction && !['dormant', 'pending', 'resolved'].includes(state.extraction.gateDefense)) {
+    state.extraction.gateDefense = state.extraction.calibration >= state.extraction.emergencyThreshold ? 'resolved' : 'dormant';
+  }
+  if (state.pendingBattle && !state.pendingBattle.source) state.pendingBattle.source = 'garrison';
 }
 
 function b64(source: string): string {
@@ -143,12 +165,20 @@ function validatePendingBattle(pending: unknown, state: UniverseState): boolean 
   if (!nonNegativeInteger(record.enemyPowerBefore)) return false;
   if (!Array.isArray(record.enemyFleet)) return false;
   if (!validateFleet(record.enemyFleet).valid) return false;
+  if (!['garrison', 'taskForce', 'gateDefense'].includes(record.source as string)) return false;
   const system = state.systems.find((candidate) => candidate.id === record.systemId);
   if (!system) return false;
-  // systemId 必须等于舰队当前所在星系；对应星系必须为敌方且 enemyPower 与 pending 一致。
+  // systemId 必须等于舰队当前所在星系；战斗来源必须与驻军或特遣舰队精确一致。
   if (record.systemId !== state.fleet.systemId) return false;
-  if (system.control !== 'enemy' || system.enemyPower <= 0) return false;
-  if (system.enemyPower !== record.enemyPowerBefore) return false;
+  if (record.source === 'garrison') {
+    if (record.taskForceId !== undefined || system.control !== 'enemy' || system.enemyPower <= 0) return false;
+    if (system.enemyPower !== record.enemyPowerBefore) return false;
+  } else {
+    if (typeof record.taskForceId !== 'string' || !record.taskForceId) return false;
+    const force = state.enemyTaskForces.find((candidate) => candidate.id === record.taskForceId);
+    if (!force || force.systemId !== record.systemId || force.power !== record.enemyPowerBefore) return false;
+    if ((record.source === 'gateDefense') !== (force.role === 'gateDefense')) return false;
+  }
   // enemyFleet 实际成本与 enemyPowerBefore 一致（在明确离散容差内）。
   const fleetCost = campaignFleetEntryCost(record.enemyFleet as FleetEntry[]);
   if (Math.abs(fleetCost - (record.enemyPowerBefore as number)) > DISCRETE_TOLERANCE) return false;
@@ -467,6 +497,51 @@ function migrateAlpha5(raw: any): UniverseState | null {
   migrated.log.unshift({ turn: 0, text: 'alpha.5 星域远征已接入确定性指挥官档案。' });
   return migrated as UniverseState;
 }
+
+/** alpha.6 → 当前版本：保留完整指挥官档案，补入每星域招募与据点网络状态。 */
+function migrateAlpha6(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.6' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  migrated.pendingRecruitment = undefined;
+  migrated.recruitmentUsedThisSector = false;
+  migrated.transportLinks = [];
+  migrated.enemyTaskForces = [];
+  migrated.sieges = [];
+  addC4StrategicState(migrated);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.6 星域远征已接入指挥官招募、治疗、战斗伤病与实际继任操作。' });
+  return migrated as UniverseState;
+}
+
+/** alpha.7 → 当前版本：单一基地原样成为主基地，初始化空运输链及 C.4 状态。 */
+function migrateAlpha7(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.7' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  migrated.transportLinks = [];
+  migrated.enemyTaskForces = [];
+  migrated.sieges = [];
+  addC4StrategicState(migrated);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.7 星域远征已接入多据点与抽象运输网络；原前进基地保留为唯一主基地。' });
+  return migrated as UniverseState;
+}
+
+
+/** alpha.8 → alpha.9：保留多据点网络，旧存档不凭空生成移动敌军；既有可撤离进度视为已完成旧式防御。 */
+function migrateAlpha8(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.8' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  migrated.enemyTaskForces = [];
+  migrated.sieges = [];
+  if (migrated.extraction) delete migrated.extraction.gateDefense;
+  addC4StrategicState(migrated);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.8 星域远征已接入移动敌军、据点围攻与真实星门防御战。' });
+  return migrated as UniverseState;
+}
 export function validateUniverseState(value: unknown): value is UniverseState {
   const state = value as UniverseState;
   // 安全顺序：任何缺失/畸形结构都必须安全返回 false，绝不抛出（覆盖 undefined / null / {} / {version} / {fleet:null} / {fleet:{}}）。
@@ -478,15 +553,21 @@ export function validateUniverseState(value: unknown): value is UniverseState {
   if (!Array.isArray(state.systems) || state.systems.length < 6) return false;
   if (!state.fleet || typeof state.fleet !== 'object' || !Array.isArray(state.fleet.ships) || state.fleet.ships.length < 1) return false;
   if (!state.crisis || !state.extraction) return false;
-  if (!Array.isArray(state.entities) || !state.faction || !Array.isArray(state.log)) return false;
+  if (
+    !Array.isArray(state.entities) || !state.faction || !Array.isArray(state.log) ||
+    !Array.isArray(state.transportLinks) || !Array.isArray(state.enemyTaskForces) || !Array.isArray(state.sieges)
+  ) return false;
   if (
     !validateCampaignCommander(state.commander) || !Array.isArray(state.reserveCommanders) ||
-    state.reserveCommanders.length > 3 || typeof state.pendingSuccession !== 'boolean' ||
+    state.reserveCommanders.length > MAX_RESERVE_COMMANDERS ||
+    typeof state.recruitmentUsedThisSector !== 'boolean' || typeof state.pendingSuccession !== 'boolean' ||
     state.reserveCommanders.some((commander) => !validateCampaignCommander(commander))
   ) return false;
   const commanderIds = [state.commander.id, ...state.reserveCommanders.map((commander) => commander.id)];
   if (new Set(commanderIds).size !== commanderIds.length) return false;
   if (!isStrategicSuccessionStateConsistent(state)) return false;
+  if (state.pendingRecruitment && (state.status !== 'active' || state.pendingBattle || state.pendingSuccession)) return false;
+  if (state.status !== 'active' && state.pendingRecruitment) return false;
   if (
     !state.crisis || !CRISIS_PHASES.includes(state.crisis.phase) || !nonNegativeInteger(state.crisis.pressure) ||
     state.crisis.pressure > 100 || !positiveInteger(state.crisis.finalTurn)
@@ -496,7 +577,8 @@ export function validateUniverseState(value: unknown): value is UniverseState {
     !nonNegativeInteger(state.extraction.calibration) || state.extraction.calibration > state.extraction.requiredCalibration ||
     !nonNegativeInteger(state.extraction.emergencyThreshold) ||
     state.extraction.emergencyThreshold > state.extraction.requiredCalibration ||
-    typeof state.extraction.discovered !== 'boolean'
+    typeof state.extraction.discovered !== 'boolean' ||
+    !['dormant', 'pending', 'resolved'].includes(state.extraction.gateDefense)
   ) return false;
 
   const systemIds = new Set(state.systems.map((system) => system.id));
@@ -597,6 +679,94 @@ export function validateUniverseState(value: unknown): value is UniverseState {
     ) return false;
   }
 
+  const ownedStations = state.entities.filter((entity) => entity.kind === 'station' && entity.ownerId === state.faction.id);
+  if (!state.faction.baseEntityId && (ownedStations.length > 0 || state.transportLinks.length > 0)) return false;
+  for (const station of ownedStations) {
+    const system = state.systems.find((candidate) => candidate.id === station.systemId);
+    if (
+      !station.surveyed || !Array.isArray(station.facilities) || !Array.isArray(station.constructionQueue) ||
+      !system || system.control !== 'player' || system.enemyPower !== 0
+    ) return false;
+  }
+  const linkIds = state.transportLinks.map((link) => link.id);
+  const linkedOutposts = state.transportLinks.map((link) => link.outpostEntityId);
+  if (new Set(linkIds).size !== linkIds.length || new Set(linkedOutposts).size !== linkedOutposts.length) return false;
+  for (const link of state.transportLinks) {
+    const outpost = state.entities.find((entity) => entity.id === link.outpostEntityId);
+    const hub = state.entities.find((entity) => entity.id === link.hubEntityId);
+    if (
+      !link.id || !outpost || outpost.kind !== 'station' || outpost.ownerId !== state.faction.id ||
+      outpost.id === state.faction.baseEntityId || !hub || hub.id !== state.faction.baseEntityId ||
+      !Array.isArray(link.pathSystemIds) || link.pathSystemIds.length < 2 ||
+      link.pathSystemIds[0] !== outpost.systemId || link.pathSystemIds[link.pathSystemIds.length - 1] !== hub.systemId ||
+      new Set(link.pathSystemIds).size !== link.pathSystemIds.length ||
+      link.pathSystemIds.some((id) => !systemIds.has(id) || !state.faction.knownSystemIds.includes(id))
+    ) return false;
+    for (let index = 1; index < link.pathSystemIds.length; index++) {
+      const previous = state.systems.find((system) => system.id === link.pathSystemIds[index - 1]);
+      if (!previous?.neighbors.includes(link.pathSystemIds[index])) return false;
+    }
+  }
+  const secondaryOutpostIds = ownedStations
+    .filter((station) => station.id !== state.faction.baseEntityId)
+    .map((station) => station.id)
+    .sort();
+  if (JSON.stringify([...linkedOutposts].sort()) !== JSON.stringify(secondaryOutpostIds)) return false;
+
+  const forceIds = state.enemyTaskForces.map((force) => force.id);
+  if (new Set(forceIds).size !== forceIds.length) return false;
+  for (const force of state.enemyTaskForces) {
+    if (
+      !force.id || !systemIds.has(force.systemId) || !['raider', 'gateDefense'].includes(force.role) ||
+      !nonNegativeInteger(force.spawnedTurn) || force.spawnedTurn > state.turn ||
+      !positiveInteger(force.power) || force.power < MIN_ENEMY_BUDGET
+    ) return false;
+  }
+  const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId)!;
+  const gateDefenders = state.enemyTaskForces.filter((force) => force.role === 'gateDefense');
+  if (gateDefenders.length > 1 || gateDefenders.some((force) => force.systemId !== gate.systemId)) return false;
+  if (state.extraction.gateDefense === 'pending') {
+    if (gateDefenders.length !== 1 || state.extraction.calibration < state.extraction.emergencyThreshold) return false;
+  } else if (gateDefenders.length !== 0) return false;
+  if (state.extraction.gateDefense === 'resolved' && state.extraction.calibration < state.extraction.emergencyThreshold) return false;
+  if (state.extraction.gateDefense === 'dormant' && state.extraction.calibration >= state.extraction.emergencyThreshold) return false;
+
+  const siegeIds = state.sieges.map((siege) => siege.id);
+  const siegeForces = state.sieges.map((siege) => siege.taskForceId);
+  const siegeStations = state.sieges.map((siege) => siege.stationEntityId);
+  if (
+    new Set(siegeIds).size !== siegeIds.length || new Set(siegeForces).size !== siegeForces.length ||
+    new Set(siegeStations).size !== siegeStations.length
+  ) return false;
+  for (const siege of state.sieges) {
+    const force = state.enemyTaskForces.find((candidate) => candidate.id === siege.taskForceId);
+    const station = ownedStations.find((candidate) => candidate.id === siege.stationEntityId);
+    if (
+      !siege.id || !force || force.role !== 'raider' || !station || force.systemId !== station.systemId ||
+      !positiveInteger(siege.turnsRemaining) || !positiveInteger(siege.totalTurns) ||
+      siege.turnsRemaining > siege.totalTurns || siege.totalTurns < 2 || siege.totalTurns > 4
+    ) return false;
+  }
+
+  if (state.pendingRecruitment) {
+    const offer = state.pendingRecruitment;
+    const base = state.faction.baseEntityId
+      ? state.entities.find((entity) => entity.id === state.faction.baseEntityId)
+      : undefined;
+    if (
+      !state.recruitmentUsedThisSector || !base || offer.nodeId !== base.id ||
+      state.fleet.systemId !== base.systemId || state.reserveCommanders.length >= MAX_RESERVE_COMMANDERS ||
+      !Array.isArray(offer.candidates) || offer.candidates.length !== 2 ||
+      offer.supplyCost !== commanderRecruitmentSupplyCost(state.reserveCommanders.length) ||
+      offer.candidates.some((candidate) => !validateCampaignCommander(candidate))
+    ) return false;
+    const offerIds = offer.candidates.map((candidate) => candidate.id);
+    if (
+      new Set(offerIds).size !== offerIds.length ||
+      offerIds.some((id) => commanderIds.includes(id))
+    ) return false;
+  }
+
   if (
     !state.fleet.id || !state.fleet.name || !nonNegativeInteger(state.fleet.fuel) ||
     !positiveInteger(state.fleet.maxFuel) || state.fleet.fuel > state.fleet.maxFuel ||
@@ -641,6 +811,18 @@ export function decodeUniverse(code: string): UniverseState {
     const migrated = migrateAlpha5(envelope.state);
     if (migrated) return migrated;
   }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.6') {
+    const migrated = migrateAlpha6(envelope.state);
+    if (migrated) return migrated;
+  }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.7') {
+    const migrated = migrateAlpha7(envelope.state);
+    if (migrated) return migrated;
+  }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.8') {
+    const migrated = migrateAlpha8(envelope.state);
+    if (migrated) return migrated;
+  }
   if (
     envelope?.type !== 'spacewar-sector-expedition' || envelope?.v !== SECTOR_EXPEDITION_VERSION ||
     !validateUniverseState(envelope.state)
@@ -675,6 +857,27 @@ export function loadUniverse(): UniverseState | null {
     }
     if (parsed && parsed.version === '1.0-alpha.5') {
       const migrated = migrateAlpha5(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.6') {
+      const migrated = migrateAlpha6(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.7') {
+      const migrated = migrateAlpha7(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.8') {
+      const migrated = migrateAlpha8(parsed);
       if (migrated) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
         return migrated;

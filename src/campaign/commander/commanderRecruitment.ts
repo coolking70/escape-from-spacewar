@@ -9,8 +9,8 @@ const RECRUITMENT_HISTORY_MARKER = '发现可招募的指挥人员';
 
 export const MAX_RESERVE_COMMANDERS = 3;
 
-function candidateSeed(state: CampaignState, nodeId: string, index: number): number {
-  return hash32(state.campaignSeed, state.sectorIndex, nodeId, index, 'commander-recruit');
+function candidateSeed(seed: number, sectorIndex: number, sourceId: string, index: number): number {
+  return hash32(seed, sectorIndex, sourceId, index, 'commander-recruit');
 }
 
 function offeredInCurrentSector(state: CampaignState): boolean {
@@ -26,21 +26,46 @@ function offeredInCurrentSector(state: CampaignState): boolean {
 }
 
 export function recruitmentSupplyCost(state: CampaignState): number {
-  return 2 + Math.min(2, state.reserveCommanders?.length ?? 0);
+  return commanderRecruitmentSupplyCost(state.reserveCommanders?.length ?? 0);
+}
+
+/** V0.8 与战略层共享的招募补给成本权威函数。 */
+export function commanderRecruitmentSupplyCost(reserveCount: number): number {
+  return 2 + Math.min(2, Math.max(0, Math.floor(reserveCount)));
+}
+
+/**
+ * V0.8 与战略层共享的确定性候选人生成器。相同 seed / 星域 / 来源 / 已用 ID
+ * 必须生成完全一致的两名候选人；这里只生成档案，不修改任何状态。
+ */
+export function generateCommanderRecruitmentCandidates(
+  seed: number,
+  sectorIndex: number,
+  sourceId: string,
+  usedCommanderIds: Iterable<string>
+): CampaignCommander[] {
+  const used = new Set(usedCommanderIds);
+  const candidates: CampaignCommander[] = [];
+  for (let index = 0; candidates.length < 2 && index < 8; index++) {
+    const generatedSeed = candidateSeed(seed, sectorIndex, sourceId, index);
+    const id = `cmd-recruit-s${sectorIndex}-${sourceId}-${index}`;
+    if (used.has(id)) continue;
+    const name = NAMES[generatedSeed % NAMES.length];
+    const focus = FOCUSES[(generatedSeed >>> 8) % FOCUSES.length];
+    candidates.push(createCommanderWithId(generatedSeed, id, { name, focus }));
+    used.add(id);
+  }
+  return candidates;
 }
 
 export function generateRecruitmentOffer(state: CampaignState, nodeId: string): PendingRecruitment {
-  const used = new Set([state.commander.id, ...(state.reserveCommanders ?? []).map((commander) => commander.id)]);
-  const candidates: CampaignCommander[] = [];
-  for (let index = 0; candidates.length < 2 && index < 8; index++) {
-    const seed = candidateSeed(state, nodeId, index);
-    const id = `cmd-recruit-s${state.sectorIndex}-${nodeId}-${index}`;
-    if (used.has(id)) continue;
-    const name = NAMES[seed % NAMES.length];
-    const focus = FOCUSES[(seed >>> 8) % FOCUSES.length];
-    candidates.push(createCommanderWithId(seed, id, { name, focus }));
-    used.add(id);
-  }
+  const used = [state.commander.id, ...(state.reserveCommanders ?? []).map((commander) => commander.id)];
+  const candidates = generateCommanderRecruitmentCandidates(
+    state.campaignSeed,
+    state.sectorIndex,
+    nodeId,
+    used
+  );
   return { nodeId, candidates, supplyCost: recruitmentSupplyCost(state) };
 }
 

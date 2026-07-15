@@ -1,6 +1,7 @@
 import { createPRNG } from '../sim/prng';
 import { createStarterFleet, PersistentFleet } from '../campaign/fleet/persistentFleet';
-import { systemEnemyBudget } from '../campaign/fleet/campaignPower';
+import { campaignFleetEntryCost, campaignFleetPower, systemEnemyBudget } from '../campaign/fleet/campaignPower';
+import { strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
 import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
 import { createCommander } from '../campaign/commander/commanderSystem';
 import type { CampaignCommander } from '../campaign/campaignTypes';
@@ -13,6 +14,7 @@ import type {
   StarType,
   UniverseState
 } from './universeTypes';
+import { strategicMobileEnemyBudget, strategicPressureAtStart } from './universePacing';
 
 const STAR_TYPES: StarType[] = ['yellowDwarf', 'redDwarf', 'blueGiant', 'whiteDwarf', 'binary'];
 const SYSTEM_PREFIX = ['阿尔法', '塞勒涅', '奥尔特', '赫利俄斯', '织女', '卡戎', '天苑', '伊卡洛斯', '苍穹', '远岬'];
@@ -176,8 +178,10 @@ export function generateUniverse(
   );
   const gateSystem = orderedByDistance[0];
   const enemyOutpost = orderedByDistance.find((system) => system.id !== gateSystem.id && system.id !== start.id)!;
-  gateSystem.control = 'enemy';
-  gateSystem.enemyPower = systemEnemyBudget(sectorIndex, true);
+  // 星门的唯一强制遭遇在校准达到启动阈值时生成。C 阶段没有造舰系统，
+  // 不再在同一地点叠加一支固定高预算驻军和一支机动拦截队。
+  gateSystem.control = 'neutral';
+  gateSystem.enemyPower = 0;
   enemyOutpost.control = 'enemy';
   enemyOutpost.enemyPower = systemEnemyBudget(sectorIndex, false);
 
@@ -214,6 +218,16 @@ export function generateUniverse(
   const commander = options.commander
     ? JSON.parse(JSON.stringify(options.commander)) as CampaignCommander
     : createCommander(normalizedSeed, `${factionName.trim() || '深空远征团'}指挥官`, 'balanced');
+  const raiderSeed = hash32(normalizedSeed, sectorIndex, enemyOutpost.id, 'initial-raider');
+  const raiderFleet = strategicEnemyFleetFor(
+    raiderSeed,
+    strategicMobileEnemyBudget(sectorIndex, campaignFleetPower(inherited), 'raider'),
+    {
+    sectorIndex,
+    gateGuard: false,
+    cruiserAllowed: sectorIndex >= 2
+    }
+  );
 
   return {
     version: SECTOR_EXPEDITION_VERSION,
@@ -243,7 +257,17 @@ export function generateUniverse(
     reserveCommanders: options.reserveCommanders
       ? JSON.parse(JSON.stringify(options.reserveCommanders)) as CampaignCommander[]
       : [],
+    recruitmentUsedThisSector: false,
     pendingSuccession: options.pendingSuccession ?? false,
+    transportLinks: [],
+    enemyTaskForces: [{
+      id: `enemy-task-force-${normalizedSeed}-${sectorIndex}-0`,
+      systemId: enemyOutpost.id,
+      power: campaignFleetEntryCost(raiderFleet),
+      role: 'raider',
+      spawnedTurn: 0
+    }],
+    sieges: [],
     fleet: {
       id: `strategic-fleet-${normalizedSeed}-${sectorIndex}`,
       name: '远征舰队',
@@ -259,21 +283,24 @@ export function generateUniverse(
     },
     crisis: {
       phase: 'foothold',
-      pressure: 8 + sectorIndex * 4,
-      finalTurn: Math.max(12, 17 - Math.min(4, sectorIndex - 1))
+      pressure: strategicPressureAtStart(sectorIndex),
+      // 敌军目标与危机压力仍逐域上升；在尚无造舰/多舰队系统的 C 阶段，
+      // 三个星域共享同一 17 回合行动预算，避免图拓扑本身令第三星域无解。
+      finalTurn: 17
     },
     extraction: {
       gateEntityId,
       discovered: false,
       calibration: 0,
       requiredCalibration: 100,
-      emergencyThreshold: 40
+      emergencyThreshold: 40,
+      gateDefense: 'dormant'
     },
     selectedSystemId: start.id,
     log: [
       {
         turn: 0,
-        text: `进入第 ${sectorIndex} 星域。必须在第 ${Math.max(12, 17 - Math.min(4, sectorIndex - 1))} 回合前找到并启动星门。`
+        text: `进入第 ${sectorIndex} 星域。必须在第 17 回合前找到并启动星门。`
       },
       {
         turn: 0,

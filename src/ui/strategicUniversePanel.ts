@@ -5,15 +5,23 @@ import {
   FACILITY_DEFINITIONS,
   RESEARCH_DEFINITIONS,
   canCalibrateGate,
+  canAppointStrategicCommander,
   canEngageEnemy,
   canEstablishBase,
+  canEstablishOutpost,
   canExtractSector,
+  canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueResearch,
   canRepairShip,
+  canTreatStrategicCommander,
+  ownedStrategicStations,
   previewExtractLosses,
   strategicFleetCounts,
   strategicFleetPower,
+  strategicIncomeReport,
+  strategicHostilePowerAt,
+  strategicTransportStatus,
   travelFuelCost,
   universeTurnIncome
 } from '../strategy/universeRules';
@@ -26,7 +34,8 @@ import {
 } from '../campaign/commander/commanderSystem';
 import {
   COMMANDER_CONDITION_LABEL,
-  COMMANDER_INJURY_LABEL
+  COMMANDER_INJURY_LABEL,
+  isCommanderAvailable
 } from '../campaign/commander/commanderHealth';
 import type {
   FacilityType,
@@ -105,7 +114,8 @@ function fmtLosses(ids: Iterable<string>): string {
 function endState(state: UniverseState): string {
   if (state.status === 'active') return '';
   const victory = state.status === 'victory';
-  return `<div class="strategy-end ${victory ? 'victory' : 'defeat'}"><h2>${victory ? '远征完成' : '星域崩溃'}</h2><p>${victory ? `已连续穿越 ${state.targetSectorCount} 个星域。` : '舰队未能在最终撤离窗口关闭前离开。'}</p></div>`;
+  const defeatReason = state.log[state.log.length - 1]?.text || '远征已结束。';
+  return `<div class="strategy-end ${victory ? 'victory' : 'defeat'}"><h2>${victory ? '远征完成' : '星域崩溃'}</h2><p>${victory ? `已连续穿越 ${state.targetSectorCount} 个星域。` : escapeHtml(defeatReason)}</p></div>`;
 }
 
 /** 单一 disabled 属性输出：避免重复拼接 'disabled' 产生 'disableddisabled'（后者不是合法 HTML 属性，会导致按钮实际未被禁用）。 */
@@ -153,19 +163,25 @@ export class StrategicUniversePanel {
     const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId)!;
     const gateSystem = state.systems.find((system) => system.id === gate.systemId)!;
     const income = universeTurnIncome(state);
+    const incomeReport = strategicIncomeReport(state);
     const fleetCounts = strategicFleetCounts(state.fleet);
     const fleetPower = strategicFleetPower(state);
     const hasPending = !!state.pendingBattle;
+    const hasRecruitment = !!state.pendingRecruitment;
     const commandLocked = isStrategicCommandLocked(state);
     // pending 只锁定行动，不应令原本可执行的管理操作从界面消失；保留按钮并禁用，
     // 让玩家清楚哪些操作会在结算战斗后恢复。
-    const actionState = hasPending ? { ...state, pendingBattle: undefined } : state;
+    const actionState = hasPending || hasRecruitment
+      ? { ...state, pendingBattle: undefined, pendingRecruitment: undefined }
+      : state;
     const pendingBanner = hasPending
       ? '<div class="strategy-banner pending">当前存在尚未结算的战略战斗。完成战斗前，战略时间与其他行动已锁定。</div>'
-      : commandLocked
-        ? '<div class="strategy-banner pending">现任指挥官无法履职。完成继任前，战略时间与其他行动已锁定。</div>'
-        : '';
-    const actionLocked = hasPending || commandLocked;
+      : hasRecruitment
+        ? '<div class="strategy-banner pending">招募候选人正在等待决定。接受或放弃前，战略时间与其他行动已锁定。</div>'
+        : commandLocked
+          ? '<div class="strategy-banner pending">现任指挥官无法履职。完成治疗或继任前，战略时间与其他行动已锁定。</div>'
+          : '';
+    const actionLocked = hasPending || hasRecruitment || commandLocked;
     const blueprintText = state.faction.legacy.blueprints.length
       ? state.faction.legacy.blueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
       : '无';
@@ -186,6 +202,14 @@ export class StrategicUniversePanel {
     const known = new Set(state.faction.knownSystemIds);
     const turnsLeft = Math.max(0, state.crisis.finalTurn - state.turn);
 
+    const transportEdges = new Map<string, 'active' | 'blocked'>();
+    for (const link of state.transportLinks) {
+      const status = strategicTransportStatus(state, link);
+      for (let index = 1; index < link.pathSystemIds.length; index++) {
+        const edge = [link.pathSystemIds[index - 1], link.pathSystemIds[index]].sort().join('|');
+        transportEdges.set(edge, status === 'blocked' ? 'blocked' : transportEdges.get(edge) ?? 'active');
+      }
+    }
     const routes = state.systems.flatMap((system) => system.neighbors
       .filter((neighborId) => system.id < neighborId)
       .map((neighborId) => {
@@ -193,7 +217,8 @@ export class StrategicUniversePanel {
         if (!known.has(system.id) && !known.has(neighbor.id)) return '';
         const active = [system.id, neighbor.id].includes(current.id);
         const hostile = system.control === 'enemy' || neighbor.control === 'enemy';
-        return `<line class="${active ? 'active ' : ''}${hostile ? 'hostile' : ''}" x1="${system.x}" y1="${system.y}" x2="${neighbor.x}" y2="${neighbor.y}"/>`;
+        const transport = transportEdges.get([system.id, neighbor.id].sort().join('|'));
+        return `<line class="${active ? 'active ' : ''}${hostile ? 'hostile ' : ''}${transport ? `transport ${transport}` : ''}" x1="${system.x}" y1="${system.y}" x2="${neighbor.x}" y2="${neighbor.y}"/>`;
       })).join('');
 
     const systems = state.systems.filter((system) => known.has(system.id)).map((system) => {
@@ -201,8 +226,18 @@ export class StrategicUniversePanel {
       if (system.id === selected.id) classes.push('selected');
       if (system.id === current.id) classes.push('fleet-here');
       if (system.id === gateSystem.id && state.extraction.discovered) classes.push('gate-system');
-      const marker = system.id === current.id ? '◆' : system.id === gateSystem.id && state.extraction.discovered ? '◎' : '●';
-      const threat = system.enemyPower > 0 ? ` · 敌军 ${system.enemyPower}` : '';
+      const hasOutpost = ownedStrategicStations(state).some((station) => station.systemId === system.id);
+      const mobileForces = state.enemyTaskForces.filter((force) => force.systemId === system.id);
+      const siege = state.sieges.find((candidate) => {
+        const station = state.entities.find((entity) => entity.id === candidate.stationEntityId);
+        return station?.systemId === system.id;
+      });
+      if (hasOutpost) classes.push('has-outpost');
+      if (mobileForces.length) classes.push('enemy-task-force');
+      if (siege) classes.push('under-siege');
+      const marker = system.id === current.id ? '◆' : siege ? '⚠' : mobileForces.length ? '▲' : system.id === gateSystem.id && state.extraction.discovered ? '◎' : hasOutpost ? '▣' : '●';
+      const hostilePower = strategicHostilePowerAt(state, system.id);
+      const threat = hostilePower > 0 ? ` · 敌军 ${hostilePower}${siege ? ` · 围攻 ${siege.turnsRemaining}` : ''}` : '';
       return `<button class="${classes.join(' ')}" style="left:${system.x}%;top:${system.y}%" data-strategy-system="${escapeHtml(system.id)}" title="${escapeHtml(system.name)}"><span>${marker}</span><small>${escapeHtml(system.name)}${threat}</small></button>`;
     }).join('');
 
@@ -215,16 +250,17 @@ export class StrategicUniversePanel {
       const pb = state.pendingBattle;
       const battleSystem = state.systems.find((system) => system.id === pb.systemId);
       const enemyCount = pb.enemyFleet.reduce((sum, entry) => sum + Math.max(0, Math.floor(entry.count)), 0);
-      battle = `<button class="btn danger" id="strategy-engage">继续战斗 · ${escapeHtml(battleSystem?.name ?? pb.systemId)} · ${enemyCount} 敌舰 · seed ${pb.battleSeed} · 战前预算 ${pb.enemyPowerBefore}</button>`;
+      const source = pb.source === 'gateDefense' ? '星门防御战' : pb.source === 'taskForce' ? '特遣舰队战' : '驻军战';
+      battle = `<button class="btn danger" id="strategy-engage">继续${source} · ${escapeHtml(battleSystem?.name ?? pb.systemId)} · ${enemyCount} 敌舰 · seed ${pb.battleSeed} · 战前预算 ${pb.enemyPowerBefore}</button>`;
     } else if (selected.id === current.id && canEngageEnemy(state)) {
-      battle = `<button class="btn danger" id="strategy-engage"${disabledAttr(actionLocked)}>攻击当地敌军（战力 ${current.enemyPower}）</button>`;
+      battle = `<button class="btn danger" id="strategy-engage"${disabledAttr(actionLocked)}>攻击当地敌军（总战力 ${strategicHostilePowerAt(state, current.id)}）</button>`;
     }
 
     const selectedEntities = state.entities.filter((entity) => entity.systemId === selected.id);
     const entityCards = selectedEntities.some((entity) => entity.discovered)
       ? selectedEntities.filter((entity) => entity.discovered).map((entity) => {
           const fleetHere = entity.systemId === current.id;
-          const safe = selected.enemyPower === 0;
+          const safe = strategicHostilePowerAt(state, selected.id) === 0;
           const survey = fleetHere && safe && !entity.surveyed && state.status === 'active'
             ? `<button class="btn small" data-strategy-survey="${escapeHtml(entity.id)}"${disabledAttr(actionLocked)}>测绘</button>`
             : '';
@@ -235,22 +271,41 @@ export class StrategicUniversePanel {
           const establish = canEstablishBase(actionState, entity.id)
             ? `<button class="btn small primary" data-strategy-base="${escapeHtml(entity.id)}"${disabledAttr(actionLocked)}>建立前进基地</button>`
             : '';
-          return `<div class="strategic-entity ${entity.ownerId ? 'owned' : ''}"><div class="entity-icon">${ENTITY_ICON[entity.kind]}</div><div><b>${escapeHtml(entity.name)}</b><small>${ENTITY_LABEL[entity.kind]} · 轨道 ${entity.orbit}</small><small>${escapeHtml(entityDetails(entity))}</small></div><div class="entity-actions">${survey}${extract}${establish}</div></div>`;
+          const establishOutpost = canEstablishOutpost(actionState, entity.id)
+            ? `<button class="btn small primary" data-strategy-outpost="${escapeHtml(entity.id)}"${disabledAttr(actionLocked)}>建立补给前哨</button>`
+            : '';
+          return `<div class="strategic-entity ${entity.ownerId ? 'owned' : ''}"><div class="entity-icon">${ENTITY_ICON[entity.kind]}</div><div><b>${escapeHtml(entity.name)}</b><small>${ENTITY_LABEL[entity.kind]} · 轨道 ${entity.orbit}</small><small>${escapeHtml(entityDetails(entity))}</small></div><div class="entity-actions">${survey}${extract}${establish}${establishOutpost}</div></div>`;
         }).join('')
       : '<p class="muted">当前仅掌握远程坐标；舰队抵达后才能识别实体。</p>';
 
-    const facilities = (base?.facilities ?? []).map((facility) =>
-      `<span>${FACILITY_DEFINITIONS[facility.type].label} Lv.${facility.level}</span>`
-    ).join('') || '<span>尚无已建设施</span>';
-    const constructionQueue = (base?.constructionQueue ?? []).map((order) =>
-      `<div>${FACILITY_DEFINITIONS[order.facilityType].label} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合</div>`
-    ).join('') || '<div>建造队列为空</div>';
-    const constructionButtons = base
-      ? (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
-          const definition = FACILITY_DEFINITIONS[type];
-          return `<button class="btn small" data-strategy-build="${type}"${disabledAttr(!canQueueFacility(actionState, type) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
-        }).join('')
-      : '<p class="muted">先在无敌军的已测绘空间站建立前进基地。</p>';
+    const networkStations = ownedStrategicStations(state);
+    const networkCards = networkStations.map((station) => {
+      const stationSystem = state.systems.find((system) => system.id === station.systemId)!;
+      const source = incomeReport.sources.find((candidate) => candidate.entityId === station.id)!;
+      const link = state.transportLinks.find((candidate) => candidate.outpostEntityId === station.id);
+      const blockingSystem = link?.pathSystemIds
+        .map((id) => state.systems.find((system) => system.id === id))
+        .find((system) => !!system && strategicHostilePowerAt(state, system.id) > 0);
+      const linkText = station.id === state.faction.baseEntityId
+        ? '主基地 · 本地产出直接入库'
+        : link
+          ? `${source.status === 'blocked' ? `运输中断（${blockingSystem?.name ?? '未知敌情'}）` : '运输畅通'} · ${link.pathSystemIds.map((id) => state.systems.find((system) => system.id === id)?.name ?? id).join(' → ')}`
+          : '运输链缺失';
+      const facilities = (station.facilities ?? []).map((facility) =>
+        `<span>${FACILITY_DEFINITIONS[facility.type].label} Lv.${facility.level}</span>`
+      ).join('') || '<span>尚无已建设施</span>';
+      const queue = (station.constructionQueue ?? []).map((order) =>
+        `<div>${FACILITY_DEFINITIONS[order.facilityType].label} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合</div>`
+      ).join('') || '<div>建造队列为空</div>';
+      const buttons = (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
+        const definition = FACILITY_DEFINITIONS[type];
+        return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
+      }).join('');
+      const siege = state.sieges.find((candidate) => candidate.stationEntityId === station.id);
+      const siegeText = siege ? `<div class="siege-warning">围攻中 · ${siege.turnsRemaining}/${siege.totalTurns} 回合后失守</div>` : '';
+      return `<article class="outpost-card ${source.status === 'blocked' ? 'blocked' : ''} ${siege ? 'besieged' : ''}" data-strategy-outpost-card="${escapeHtml(station.id)}"><h3>${station.id === state.faction.baseEntityId ? '主基地' : '补给前哨'} · ${escapeHtml(station.name)}</h3>${siegeText}<p>${escapeHtml(stationSystem.name)} · ${escapeHtml(linkText)}</p><small>本地产出 矿物 +${source.produced.minerals} / 能源 +${source.produced.energy} / 科学 +${source.produced.science} / 补给 +${source.produced.supplies}${source.status === 'blocked' ? '（当前未送达）' : ''}</small><div class="facility-list">${facilities}</div><h4>建造队列</h4><div class="queue-list">${queue}</div><div class="strategy-button-grid">${buttons}</div></article>`;
+    }).join('') || '<p class="muted">先在无敌军的已测绘空间站建立主基地，之后可继续建立补给前哨。</p>';
+    const networkCard = `<section class="strategic-card strategic-network"><h2>据点与运输网络</h2><p>据点 ${networkStations.length} · 运输链 ${state.transportLinks.length} · 本回合送达：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</p><div class="outpost-list">${networkCards}</div></section>`;
 
     const researchQueue = state.faction.researchQueue.map((order) =>
       `<div>${RESEARCH_DEFINITIONS[order.projectId].label} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合</div>`
@@ -261,12 +316,9 @@ export class StrategicUniversePanel {
       return `<button class="btn small ${researched ? 'complete' : ''}" data-strategy-research="${projectId}"${disabledAttr(!canQueueResearch(actionState, projectId) || actionLocked)}>${researched ? '已完成：' : ''}${definition.label}<small>科学 ${definition.scienceCost} · ${definition.turns}回合 · ${definition.description}</small></button>`;
     }).join('');
 
-    const baseText = base
-      ? `${escapeHtml(base.name)} · ${escapeHtml(state.systems.find((system) => system.id === base.systemId)!.name)}`
-      : '尚未建立；舰队保持机动但无法持续生产';
-
+    const gateDefenseText = state.extraction.gateDefense === 'resolved' ? '防御战已完成' : state.extraction.gateDefense === 'pending' ? '敌方拦截舰队待击退' : '防御战尚未触发';
     const gateKnown = state.extraction.discovered
-      ? `<p>${escapeHtml(gateSystem.name)} · 校准 ${state.extraction.calibration}/${state.extraction.requiredCalibration}% · 敌军 ${gateSystem.enemyPower}</p>`
+      ? `<p>${escapeHtml(gateSystem.name)} · 校准 ${state.extraction.calibration}/${state.extraction.requiredCalibration}% · ${gateDefenseText} · 敌军 ${strategicHostilePowerAt(state, gateSystem.id)}</p>`
       : '<p>星门位置尚未确认。需要抵达远端星系并测绘跃迁设施。</p>';
     const calibrate = canCalibrateGate(actionState)
       ? `<button class="btn primary" id="strategy-calibrate"${disabledAttr(actionLocked)}>校准星门（能源 6 / 科学 2 / 补给 1）</button>`
@@ -304,9 +356,37 @@ export class StrategicUniversePanel {
       commanderInjuries,
       `候补 ${state.reserveCommanders.length}/3`
     ].filter(Boolean).join(' · ');
-    const commanderCard = `<section class="strategic-card strategic-commander"><h2>远征指挥官</h2><h3>${escapeHtml(commander.name)} · Lv.${commander.level}</h3><div class="commander-stats">${commanderAttributes}</div><p>特质：${commander.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')}</p><p class="muted">${commanderStatus}</p></section>`;
+    const treatmentButton = canTreatStrategicCommander(state)
+      ? '<button class="btn small primary" id="strategy-treat-commander">治疗现任（补给 2 / 1 回合）</button>'
+      : '';
+    const recruitmentButton = canOpenCommanderRecruitment(state)
+      ? '<button class="btn small" id="strategy-open-recruitment">联络招募候选人</button>'
+      : '';
+    const recruitmentStatus = state.recruitmentUsedThisSector && !state.pendingRecruitment
+      ? '<small class="muted">本星域招募机会已处理。</small>'
+      : !base || state.fleet.systemId !== base.systemId
+        ? '<small class="muted">舰队返回前进基地后可进行本星域招募与治疗。</small>'
+        : '';
+    const reserveRows = state.reserveCommanders.length
+      ? state.reserveCommanders.map((candidate) => {
+          const profile = ensureCommanderProfile(candidate, state.seed);
+          const available = isCommanderAvailable(profile, state.seed);
+          const appoint = canAppointStrategicCommander(state, profile.id)
+            ? `<button class="btn small primary" data-strategy-appoint="${escapeHtml(profile.id)}">任命继任</button>`
+            : '';
+          return `<div class="commander-roster-row"><div><b>${escapeHtml(profile.name)}</b><small>Lv.${profile.level} · ${available ? '可履职' : '无法履职'} · ${profile.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')}</small></div>${appoint}</div>`;
+        }).join('')
+      : '<small class="muted">暂无候补指挥官。</small>';
+    const recruitmentOffer = state.pendingRecruitment
+      ? `<div class="commander-recruitment"><h3>招募候选人 · 补给 ${state.pendingRecruitment.supplyCost}</h3>${state.pendingRecruitment.candidates.map((candidate) => {
+          const profile = ensureCommanderProfile(candidate, state.seed);
+          const affordable = state.faction.resources.supplies >= state.pendingRecruitment!.supplyCost && state.reserveCommanders.length < 3;
+          return `<div class="commander-roster-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')} · 指挥 ${profile.attributes.command} / 战术 ${profile.attributes.tactics} / 后勤 ${profile.attributes.logistics} / 意志 ${profile.attributes.resolve}</small></div><button class="btn small primary" data-strategy-recruit-candidate="${escapeHtml(profile.id)}"${disabledAttr(!affordable)}>招募</button></div>`;
+        }).join('')}<button class="btn small" id="strategy-recruit-decline">放弃本次招募</button></div>`
+      : '';
+    const commanderCard = `<section class="strategic-card strategic-commander"><h2>远征指挥官</h2><h3>${escapeHtml(commander.name)} · Lv.${commander.level}</h3><div class="commander-stats">${commanderAttributes}</div><p>特质：${commander.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')}</p><p class="muted">${commanderStatus}</p><div class="commander-actions">${treatmentButton}${recruitmentButton}${recruitmentStatus}</div><h3>候补名单</h3><div class="commander-roster">${reserveRows}</div>${recruitmentOffer}</section>`;
 
-    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点产出：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${selected.enemyPower ? ` · 敌军战力 ${selected.enemyPower}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management">${commanderCard}<section class="strategic-card"><h2>前进基地</h2><p>${baseText}</p><div class="facility-list">${facilities}</div><h3>建造队列</h3><div class="queue-list">${constructionQueue}</div><div class="strategy-button-grid">${constructionButtons}</div></section><section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}<div class="extraction-actions">${stable}${emergency}${rearguard}</div><p class="muted extract-preview">${extractPreview}</p><small>稳定撤离需要 100% 校准、补给 8、燃料 2；紧急撤离只需 40% 校准，但会丢失失能舰和大部分资源。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
+    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>移动敌军 ${state.enemyTaskForces.length}</span><span>围攻 ${state.sieges.length}</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点送达：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${strategicHostilePowerAt(state, selected.id) ? ` · 敌军总战力 ${strategicHostilePowerAt(state, selected.id)}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management">${commanderCard}<section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${networkCard}${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}<div class="extraction-actions">${stable}${emergency}${rearguard}</div><p class="muted extract-preview">${extractPreview}</p><small>稳定撤离需要 100% 校准、补给 8、燃料 2；紧急撤离需要 40% 校准。两种方式都必须先完成真实星门防御战。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
 
     this.root.querySelectorAll<HTMLElement>('[data-strategy-system]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'selectSystem', systemId: button.dataset.strategySystem! });
@@ -323,14 +403,33 @@ export class StrategicUniversePanel {
     this.root.querySelectorAll<HTMLElement>('[data-strategy-base]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'establishBase', entityId: button.dataset.strategyBase! });
     });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-outpost]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'establishOutpost', entityId: button.dataset.strategyOutpost! });
+    });
     this.root.querySelectorAll<HTMLElement>('[data-strategy-build]').forEach((button) => {
-      button.onclick = () => this.cb.onAction({ type: 'queueConstruction', facilityType: button.dataset.strategyBuild as FacilityType });
+      button.onclick = () => this.cb.onAction({
+        type: 'queueConstruction',
+        facilityType: button.dataset.strategyBuild as FacilityType,
+        entityId: button.dataset.strategyBuildEntity
+      });
     });
     this.root.querySelectorAll<HTMLElement>('[data-strategy-research]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'queueResearch', projectId: button.dataset.strategyResearch as ResearchProjectId });
     });
     const engage = this.root.querySelector('#strategy-engage') as HTMLButtonElement | null;
     if (engage) engage.onclick = () => this.cb.onAction({ type: 'engageEnemy' });
+    const openRecruitment = this.root.querySelector('#strategy-open-recruitment') as HTMLButtonElement | null;
+    if (openRecruitment) openRecruitment.onclick = () => this.cb.onAction({ type: 'openRecruitment' });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-recruit-candidate]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'resolveRecruitment', candidateId: button.dataset.strategyRecruitCandidate! });
+    });
+    const declineRecruitment = this.root.querySelector('#strategy-recruit-decline') as HTMLButtonElement | null;
+    if (declineRecruitment) declineRecruitment.onclick = () => this.cb.onAction({ type: 'resolveRecruitment' });
+    const treatCommanderButton = this.root.querySelector('#strategy-treat-commander') as HTMLButtonElement | null;
+    if (treatCommanderButton) treatCommanderButton.onclick = () => this.cb.onAction({ type: 'treatCommander' });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-appoint]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'appointCommander', commanderId: button.dataset.strategyAppoint! });
+    });
     this.root.querySelectorAll<HTMLElement>('[data-strategy-repair]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'repairShip', campaignShipId: button.dataset.strategyRepair! });
     });

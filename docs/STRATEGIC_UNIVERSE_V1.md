@@ -9,7 +9,11 @@
 > V1.0-B.4 固化 `isStrategicShipEligible`、严格 pending deployment/binding 集合、同源组件—`combatState` 校验与 alpha.2 极低战力钳制；escaped 最终定义为结构存活但已离场。真实 DOM 测试改用 jsdom，存档版本保持 `1.0-alpha.5`，策略测试套件扩展至 59 例。
 > V1.0-B.5 将“当前可参战”与“可重新选择部署”分离，统一组件失能、敌袭、维修和写回状态，并使战斗入口严格拒绝空、重复、不存在或不合资格的显式部署；真实 pending/UI 测试夹具可保存，策略测试套件扩展至 64 例。
 > V1.0-C.1 首个切片将 V0.8 同源指挥官档案加入战略状态、UI 与跨星域继承，Sector Expedition Code 升级为 `1.0-alpha.6`，并显式迁移 alpha.5。现任指挥官可用性与 `pendingSuccession` 必须双向一致；继任期间保存、编码、战略判定、reducer 与 UI 共用行动锁。策略测试套件扩展至 66 例。
-> 当前实现与进度请以 `progress.md` 的 V1.0-C.1 小节为准。
+> V1.0-C.2 完成可玩指挥官闭环：每星域确定性招募、真实战斗伤病与经验、基地治疗、候补任命和无继任者崩溃结局；Sector Expedition Code 升级为 `1.0-alpha.7`，策略测试套件扩展至 69 例。
+> V1.0-C.3 完成多据点与抽象运输网络：唯一主基地、次级补给前哨、独立建造、已知航路运输阻断，以及防御网和舰队驻防共同影响的敌袭；Sector Expedition Code 升级为 `1.0-alpha.8`，策略测试套件扩展至 73 例。
+> V1.0-C.4 完成持久移动敌军、据点围攻与真实星门防御战：特遣舰队按回合确定性移动，围攻与据点失守保持网络不变量，驻军/特遣舰队/星门拦截统一复用 core-v4 与 Three.js 战斗闭环；Sector Expedition Code 升级为 `1.0-alpha.9`，策略测试套件扩展至 78 例。
+> V1.0-C.5 完成三星域发布闭环与压力校准：星门只保留校准触发的唯一强制防御战，移动敌军随星域增长且受继承舰队战力上限约束，普通扩张不再隔空伤害据点；三个星域共享 17 回合行动预算。81 项策略用例、65-seed 正式矩阵、额外 1000-seed 探针与真实 Chromium 三星域流程均通过。
+> 当前实现与进度请以 `progress.md` 的 V1.0-C.5 小节为准。
 
 ## Purpose
 
@@ -17,7 +21,7 @@ This milestone begins the transition from an FTL-style route campaign to a persi
 
 ## Implemented loop
 
-1. Generate a deterministic connected universe of seven star systems.
+1. Generate a deterministic connected sector of nine star systems.
 2. Discover systems through strategic fleet travel.
 3. Reveal persistent planets, moons, stations, asteroid fields, and jump infrastructure.
 4. Survey entities for information and science.
@@ -25,8 +29,10 @@ This milestone begins the transition from an FTL-style route campaign to a persi
 6. Produce minerals, energy, and science from an owned orbital base.
 7. Queue facilities with material costs and construction time.
 8. Queue research with science costs and research time.
-9. Unlock strategic effects such as lower travel fuel and shipyard construction.
-10. Export, import, save, and resume the full universe state.
+9. Recruit, treat and replace a persistent commander.
+10. Defend a main base and secondary outposts against persistent moving task forces and sieges.
+11. Trigger the single mandatory gate-defense battle through the existing core-v4 / Three.js flow.
+12. Export, import, save, resume and complete three consecutive sectors with persistent ship identity and component damage.
 
 ## Persistent entities
 
@@ -42,14 +48,16 @@ The first vertical slice includes:
 
 ## Base construction
 
-The player begins with one owned orbital station. It contains persistent facilities and a construction queue.
+The player begins beside a surveyed but unowned orbital station. Establishing it as the main forward base costs resources and one strategic turn. Additional surveyed stations can become secondary outposts linked to the main base through discovered routes.
 
 Available facilities:
 
 - orbital solar array
 - automated mining array
 - orbital research laboratory
-- light orbital shipyard
+- supply works
+- field repair dock
+- local defense grid
 
 The shipyard is currently an infrastructure milestone. Ship production is deliberately deferred until the strategic fleet model supports multiple fleets and persistent ship assignments.
 
@@ -57,34 +65,35 @@ The shipyard is currently an infrastructure milestone. Ship production is delibe
 
 Research is time-based rather than an instant module unlock.
 
-Initial projects:
+Current local projects:
 
 - Stellar Cartography: reduces strategic travel fuel.
-- Automated Industry: increases facility output.
-- Orbital Engineering: unlocks the light shipyard.
+- Rapid Fabrication: reduces construction time.
+- Crisis Forecasting: reduces pressure growth.
+- Gate Theory: increases calibration progress.
 
 ## Relationship with the existing campaign
 
 The existing V0.6–V0.9 campaign remains available as an FTL-style expedition mode. It is not yet embedded inside the strategic universe.
 
-The intended future relationship is:
+The current relationship is:
 
 - strategic universe: systems, ownership, bases, economy, construction, fleet locations
-- local expedition: hazards, battles, salvage, commander events, and deep exploration inside a selected system
-- expedition results: write discoveries, damage, resources, and control changes back into the persistent universe
+- strategic universe: systems, ownership, bases, economy, construction, fleet location, moving enemies and extraction
+- core-v4 battle: the shared real-time encounter used by garrisons, task forces and gate defense
+- battle results: deterministic bindings write persistent ship identity, component damage, destruction and commander consequences back into the strategic save
 
-## Explicit limitations
+## Explicit limitations after V1.0-C.5
 
-This vertical slice does not yet include:
+The release-candidate slice does not include:
 
 - multiple player fleets
-- colony establishment
-- multiple owned bases
+- permanent colonies or a long-lived empire map
 - ship production
-- AI factions or territorial simulation
+- ship fitting or modular equipment
+- multiple independently controlled player fleets
 - diplomacy and markets
 - population and workforce
-- local expedition launch from a strategic entity
-- strategic combat interception
+- real-time strategic movement
 
 These are follow-up slices, not hidden features of the current implementation.

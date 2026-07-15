@@ -4,21 +4,36 @@ import { decodeUniverse, encodeUniverse, legacyAbstractPowerToCoreBudget, valida
 import {
   FACILITY_DEFINITIONS,
   RESEARCH_DEFINITIONS,
+  COMMANDER_TREATMENT_SUPPLY_COST,
   applyStrategicBattleResult,
   applyUniverseAction,
+  advanceStrategicEnemyTaskForces,
   advanceUniverseTurn,
   canCalibrateGate,
+  canAppointStrategicCommander,
   canEngageEnemy,
   canEstablishBase,
+  canEstablishOutpost,
   canExtractSector,
+  canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueResearch,
   canRepairFleet,
   canRepairShip,
+  canTreatStrategicCommander,
   crisisPhaseForTurn,
+  ownedStrategicStations,
   previewExtractLosses,
+  processStrategicSieges,
+  resolveStrategicOutpostRaid,
   strategicFleetCounts,
   strategicFleetPower,
+  strategicEnemyPath,
+  strategicHostilePowerAt,
+  strategicIncomeReport,
+  strategicOutpostRaidSupplyLoss,
+  strategicTransportPath,
+  strategicTransportStatus,
   travelFuelCost,
   universeTurnIncome,
   toPersistentFleet,
@@ -53,6 +68,13 @@ import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
 import type { UniverseAction } from './universeTypes';
 import { StrategicUniversePanel } from '../ui/strategicUniversePanel';
 import { JSDOM } from 'jsdom';
+import { addCommanderInjury } from '../campaign/commander/commanderHealth';
+import {
+  strategicMobileEnemyBudget,
+  strategicPressureAtStart,
+  strategicPressurePerTurn
+} from './universePacing';
+import { runStrategicThreeSectorPlaythrough } from './strategicPlaythrough';
 
 type Ship = BattleState['ships'][number];
 
@@ -79,6 +101,33 @@ function establishStartingBase(state: ReturnType<typeof generateUniverse>) {
   return applyUniverseAction(state, { type: 'establishBase', entityId: station.id });
 }
 
+function prepareSecondaryOutpost(state: ReturnType<typeof generateUniverse>) {
+  const next = JSON.parse(JSON.stringify(state)) as ReturnType<typeof generateUniverse>;
+  // C.3 据点/运输单元测试隔离 C.4 的移动敌军；C.4 另以真实特遣舰队与围攻专用用例覆盖。
+  next.enemyTaskForces = [];
+  next.sieges = [];
+  next.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+  next.faction.knownSystemIds = next.systems.map((system) => system.id);
+  next.systems.forEach((system) => { system.discovered = true; });
+  const base = next.entities.find((entity) => entity.id === next.faction.baseEntityId)!;
+  const station = next.entities
+    .filter((entity) => entity.kind === 'station' && entity.id !== base.id && !entity.ownerId)
+    .map((entity) => ({
+      entity,
+      path: strategicTransportPath(next, entity.systemId, base.systemId)
+    }))
+    .filter((candidate) => !!candidate.path)
+    .sort((left, right) => right.path!.length - left.path!.length || left.entity.id.localeCompare(right.entity.id))[0].entity;
+  const system = next.systems.find((candidate) => candidate.id === station.systemId)!;
+  system.control = 'neutral';
+  system.enemyPower = 0;
+  station.discovered = true;
+  station.surveyed = true;
+  next.fleet.systemId = system.id;
+  next.selectedSystemId = system.id;
+  return { state: next, station, base };
+}
+
 function prepareGate(state: ReturnType<typeof generateUniverse>, calibration: number) {
   const next = JSON.parse(JSON.stringify(state)) as ReturnType<typeof generateUniverse>;
   const gate = next.entities.find((entity) => entity.id === next.extraction.gateEntityId)!;
@@ -87,6 +136,10 @@ function prepareGate(state: ReturnType<typeof generateUniverse>, calibration: nu
   gate.surveyed = true;
   next.extraction.discovered = true;
   next.extraction.calibration = calibration;
+  next.extraction.gateDefense = calibration >= next.extraction.emergencyThreshold ? 'resolved' : 'dormant';
+  const gateDefenseIds = new Set(next.enemyTaskForces.filter((force) => force.role === 'gateDefense').map((force) => force.id));
+  next.enemyTaskForces = next.enemyTaskForces.filter((force) => force.role !== 'gateDefense');
+  next.sieges = next.sieges.filter((siege) => !gateDefenseIds.has(siege.taskForceId));
   next.fleet.systemId = system.id;
   next.selectedSystemId = system.id;
   system.discovered = true;
@@ -300,7 +353,10 @@ export function runStrategicTests(): SuiteResult {
       test.true_(graphReachable(first), '星域航线图整体连通');
       test.true_(first.entities.some((entity) => entity.kind === 'jumpGate'), '存在唯一撤离星门');
       test.true_(first.entities.some((entity) => entity.kind === 'relicSite'), '存在可带走蓝图的科研遗迹');
-      test.true_(first.systems.filter((system) => system.control === 'enemy').length >= 2, '星域开局存在真实敌方控制区');
+      test.true_(first.systems.some((system) => system.control === 'enemy'), '星域开局存在真实敌方控制区');
+      const gate = first.entities.find((entity) => entity.id === first.extraction.gateEntityId)!;
+      const gateSystem = first.systems.find((system) => system.id === gate.systemId)!;
+      test.true_(gateSystem.control === 'neutral' && gateSystem.enemyPower === 0, '星门不再叠加固定驻军，强制战斗由校准拦截队唯一负责');
       test.eq(first.faction.baseEntityId, undefined, '开局没有免费永久基地');
       test.eq(first.crisis.phase, 'foothold', '开局处于立足窗口');
       test.true_(Array.isArray(first.fleet.ships) && first.fleet.ships.length > 0, '开局舰队为真实逐舰数组');
@@ -1321,6 +1377,7 @@ export function runStrategicTests(): SuiteResult {
         { type: 'surveyEntity', entityId: pendingState.entities[0].id },
         { type: 'extractAsteroid', entityId: pendingState.entities.find((entity) => entity.kind === 'asteroidField')!.id },
         { type: 'establishBase', entityId: pendingState.entities.find((entity) => entity.kind === 'station')!.id },
+        { type: 'establishOutpost', entityId: pendingState.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'queueConstruction', facilityType: 'solarArray' },
         { type: 'queueResearch', projectId: 'routeAnalysis' },
         { type: 'repairShip', campaignShipId: pendingState.fleet.ships[0].campaignShipId },
@@ -1439,6 +1496,7 @@ export function runStrategicTests(): SuiteResult {
       test.true_(!threw, `真实集成写回成功（${msg}）`);
       if (!threw && after) {
         test.true_(after.status === 'active' || after.status === 'collapsed', '写回后状态合法（active 或 collapsed）');
+        test.eq(after.commander.domainExperience?.combat, battle.winner === 'A' ? 12 : 6, '真实模拟器结果直接写入指挥官战斗经验');
         test.true_(validateUniverseState(after), '写回后状态通过深层校验，可被保存');
         const round = decodeUniverse(encodeUniverse(after));
         test.true_(validateUniverseState(round), '真实集成结果远征码往返仍可被保存');
@@ -1696,21 +1754,13 @@ export function runStrategicTests(): SuiteResult {
       repaired = state.fleet.ships.find((ship) => ship.campaignShipId === frigate.campaignShipId)!;
       test.true_(!repaired.disabled && validateUniverseState(state), '继续维修保持可作战且状态仍合法');
 
-      // 让敌方只能袭击基地；真实 advanceUniverseTurn 必须把组件伤害同步写入可保存状态。
+      // 权威据点袭击结算仍必须把组件伤害同步写入可保存状态；真实回合中的据点攻击则由移动舰队/围攻触发，
+      // 不再由抽象扩张隔空重复结算。
       const raid = establishStartingBase(generateUniverse(1304));
       const raidBase = raid.entities.find((entity) => entity.id === raid.faction.baseEntityId)!;
-      const baseSystem = raid.systems.find((system) => system.id === raidBase.systemId)!;
-      for (const system of raid.systems) {
-        if (system.id === baseSystem.id) {
-          system.control = 'player';
-          system.enemyPower = 0;
-        } else {
-          system.control = 'enemy';
-          system.enemyPower = minimumStrategicFleetCost();
-        }
-      }
-      raid.turn = 3;
-      const afterRaid = advanceUniverseTurn(raid, 'B.5 敌袭验证');
+      raid.faction.resources.supplies = 30;
+      raid.fleet.systemId = raidBase.systemId;
+      const afterRaid = resolveStrategicOutpostRaid(raid, raidBase.id);
       const disabled = afterRaid.fleet.ships.find((ship) => ship.disabled);
       test.true_(!!disabled && isPersistentShipDisabled(disabled), '敌袭通过真实组件损伤产生 disabled');
       test.true_(validateUniverseState(afterRaid), '敌袭后的真实状态可保存');
@@ -1746,7 +1796,7 @@ export function runStrategicTests(): SuiteResult {
       const first = generateUniverse(1401, '指挥官测试团');
       const same = generateUniverse(1401, '指挥官测试团');
       test.eq(JSON.stringify(first.commander), JSON.stringify(same.commander), '相同 seed 生成完全一致的指挥官档案');
-      test.eq(first.version, SECTOR_EXPEDITION_VERSION, '新远征使用当前 alpha.6 版本');
+      test.eq(first.version, SECTOR_EXPEDITION_VERSION, '新远征使用当前 alpha.9 版本');
       test.true_(validateUniverseState(first), '含指挥官的新战略状态通过深层校验');
 
       const roundTrip = decodeUniverse(encodeUniverse(first));
@@ -1766,7 +1816,7 @@ export function runStrategicTests(): SuiteResult {
       delete legacy.reserveCommanders;
       delete legacy.pendingSuccession;
       const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.5', state: legacy }));
-      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.5 存档迁移到 alpha.6');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.5 存档迁移到当前 alpha.9');
       test.true_(validateUniverseState(migrated), 'alpha.5 迁移补齐合法指挥官档案');
       test.eq(migrated.commander.id, first.commander.id, 'alpha.5 迁移按原 seed 确定生成同一指挥官 ID');
 
@@ -1857,6 +1907,7 @@ export function runStrategicTests(): SuiteResult {
         { type: 'surveyEntity', entityId: succession.entities[0].id },
         { type: 'extractAsteroid', entityId: succession.entities.find((entity) => entity.kind === 'asteroidField')!.id },
         { type: 'establishBase', entityId: succession.entities.find((entity) => entity.kind === 'station')!.id },
+        { type: 'establishOutpost', entityId: succession.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'queueConstruction', facilityType: 'solarArray' },
         { type: 'queueResearch', projectId: 'routeAnalysis' },
         { type: 'engageEnemy' },
@@ -1879,12 +1930,565 @@ export function runStrategicTests(): SuiteResult {
         nextTurn.click();
         test.eq(rendered.calls.actions, before, '点击继任锁定按钮不触发回调');
       }
-      test.true_(rendered.html.includes('完成继任前'), '战略界面明确显示继任行动锁原因');
+      test.true_(rendered.html.includes('完成治疗或继任前'), '战略界面明确显示继任行动锁原因');
       const systemButton = rendered.root.querySelector<HTMLButtonElement>('[data-strategy-system]');
       test.true_(!!systemButton && !systemButton.disabled, '继任期间系统选择保持可用');
       const exportButton = rendered.root.querySelector<HTMLButtonElement>('#strategy-export');
       const exitButton = rendered.root.querySelector<HTMLButtonElement>('#strategy-exit');
       test.true_(!!exportButton && !exportButton.disabled && !!exitButton && !exitButton.disabled, '继任期间导出与返回保持可用');
+      add(test);
+    }
+
+    // V1.0-C.2：确定性招募、一次性机会、待处理锁和 alpha.6 迁移。
+    {
+      const test = new Case('战略指挥官招募闭环、真实 DOM 与 alpha.6 迁移');
+      const base = establishStartingBase(generateUniverse(1501, '招募测试团'));
+      test.true_(canOpenCommanderRecruitment(base), '舰队位于前进基地时可开启本星域招募');
+      const first = applyUniverseAction(base, { type: 'openRecruitment' });
+      const second = applyUniverseAction(JSON.parse(JSON.stringify(base)), { type: 'openRecruitment' });
+      test.true_(!!first.pendingRecruitment, '开启招募后生成待处理候选人');
+      test.eq(JSON.stringify(first.pendingRecruitment), JSON.stringify(second.pendingRecruitment), '相同状态生成完全一致的候选人与成本');
+      test.eq(first.pendingRecruitment?.candidates.length, 2, '每次招募提供两名候选人');
+      test.eq(first.recruitmentUsedThisSector, true, '开启后立即消耗本星域招募机会，不能反复刷新');
+      test.true_(validateUniverseState(first), '合法待处理招募可保存');
+      test.eq(JSON.stringify(decodeUniverse(encodeUniverse(first)).pendingRecruitment), JSON.stringify(first.pendingRecruitment), '招募候选人编码往返完全一致');
+      test.true_(applyUniverseAction(first, { type: 'advanceTurn' }) === first, '待处理招募锁定战略回合');
+
+      const rendered = renderPanelToRoot(first);
+      const nextTurn = rendered.root.querySelector<HTMLButtonElement>('#strategy-next-turn');
+      test.true_(!!nextTurn && nextTurn.disabled, '待处理招募时推进回合真实 disabled');
+      if (nextTurn) {
+        const before = rendered.calls.actions;
+        nextTurn.click();
+        test.eq(rendered.calls.actions, before, '点击招募锁定按钮不触发回调');
+      }
+      const recruitButton = rendered.root.querySelector<HTMLButtonElement>('[data-strategy-recruit-candidate]');
+      test.true_(!!recruitButton && !recruitButton.disabled, '补给充足时招募候选按钮可用');
+      recruitButton?.click();
+      test.eq(rendered.calls.actionLog[rendered.calls.actionLog.length - 1]?.type, 'resolveRecruitment', '真实 DOM 招募按钮发出 resolveRecruitment');
+
+      const candidateId = first.pendingRecruitment!.candidates[0].id;
+      const cost = first.pendingRecruitment!.supplyCost;
+      const supplies = first.faction.resources.supplies;
+      const recruited = applyUniverseAction(first, { type: 'resolveRecruitment', candidateId });
+      test.eq(recruited.reserveCommanders.length, 1, '选中候选人加入候补名单');
+      test.eq(recruited.reserveCommanders[0].id, candidateId, '加入的是明确选中的候选人');
+      test.eq(recruited.faction.resources.supplies, supplies - cost, '招募扣除共享权威成本');
+      test.eq(recruited.pendingRecruitment, undefined, '招募后清理待处理状态');
+      test.true_(!canOpenCommanderRecruitment(recruited), '本星域不能再次开启招募');
+
+      const declined = applyUniverseAction(first, { type: 'resolveRecruitment' });
+      test.eq(declined.pendingRecruitment, undefined, '可明确放弃招募');
+      test.eq(declined.recruitmentUsedThisSector, true, '放弃后也不能刷新本星域机会');
+
+      const invalidUsed = JSON.parse(JSON.stringify(first)) as typeof first;
+      invalidUsed.recruitmentUsedThisSector = false;
+      test.true_(!validateUniverseState(invalidUsed), '待处理招募但未标记机会已使用时拒绝存档');
+      const invalidCost = JSON.parse(JSON.stringify(first)) as typeof first;
+      invalidCost.pendingRecruitment!.supplyCost++;
+      test.true_(!validateUniverseState(invalidCost), '招募成本与候补数量不一致时拒绝存档');
+      const duplicateCandidate = JSON.parse(JSON.stringify(first)) as typeof first;
+      duplicateCandidate.pendingRecruitment!.candidates[1].id = duplicateCandidate.pendingRecruitment!.candidates[0].id;
+      test.true_(!validateUniverseState(duplicateCandidate), '重复招募候选人 ID 被深层校验拒绝');
+
+      const alpha6: any = JSON.parse(JSON.stringify(generateUniverse(1502)));
+      alpha6.version = '1.0-alpha.6';
+      delete alpha6.recruitmentUsedThisSector;
+      delete alpha6.pendingRecruitment;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.6', state: alpha6 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.6 存档迁移到当前 alpha.9');
+      test.eq(migrated.recruitmentUsedThisSector, false, 'alpha.6 迁移补齐未使用的本星域招募机会');
+      test.true_(validateUniverseState(migrated), 'alpha.6 迁移结果通过深层校验');
+
+      const extraction = prepareGate(recruited, 100);
+      const nextSector = applyUniverseAction(extraction, { type: 'extractSector', mode: 'stable' });
+      test.eq(nextSector.reserveCommanders[0].id, candidateId, '候补指挥官跨星域继承');
+      test.eq(nextSector.recruitmentUsedThisSector, false, '进入新星域后获得新的招募机会');
+      add(test);
+    }
+
+    // V1.0-C.2：治疗与继任是可操作流程，而非只能依赖手工构造状态。
+    {
+      const test = new Case('战略指挥官治疗、重伤恢复与实际继任操作');
+      let injured = establishStartingBase(generateUniverse(1503, '治疗测试团'));
+      injured.commander = addCommanderInjury(injured.commander, injured.seed, 'trauma', 2, injured.turn, '测试伤势');
+      const turn = injured.turn;
+      const supplies = injured.faction.resources.supplies;
+      test.true_(canTreatStrategicCommander(injured), '基地内存在可治疗伤势时允许治疗');
+      const treated = applyUniverseAction(injured, { type: 'treatCommander' });
+      test.eq(treated.turn, turn + 1, '治疗消耗一个战略回合');
+      test.eq(treated.faction.resources.supplies, supplies - COMMANDER_TREATMENT_SUPPLY_COST, '治疗消耗明确补给');
+      test.eq(treated.commander.injuries?.find((injury) => injury.id === 'trauma')?.severity, 1, '治疗降低真实伤势严重度');
+      test.true_(validateUniverseState(treated), '治疗后每一步状态可保存');
+
+      const reserve = generateUniverse(2503, '候补测试团').commander;
+      let incapacitated = establishStartingBase(generateUniverse(1504, '重伤测试团'));
+      incapacitated.commander = addCommanderInjury(incapacitated.commander, incapacitated.seed, 'trauma', 3, incapacitated.turn, '战斗重伤');
+      incapacitated.reserveCommanders = [reserve];
+      incapacitated.pendingSuccession = true;
+      test.true_(validateUniverseState(incapacitated), '有可用候补的重伤继任状态合法');
+      test.true_(canTreatStrategicCommander(incapacitated), '重伤继任期间在基地仍可选择治疗现任');
+      const recovered = applyUniverseAction(incapacitated, { type: 'treatCommander' });
+      test.eq(recovered.pendingSuccession, false, '治疗至可履职后自动取消继任流程');
+      test.true_(validateUniverseState(recovered), '重伤治疗结果可保存往返');
+
+      let multipleSevere = JSON.parse(JSON.stringify(incapacitated)) as typeof incapacitated;
+      multipleSevere.commander = addCommanderInjury(multipleSevere.commander, multipleSevere.seed, 'fracture', 3, multipleSevere.turn, '复合重伤');
+      const multipleTurn = multipleSevere.turn;
+      const partiallyTreated = applyUniverseAction(multipleSevere, { type: 'treatCommander' });
+      test.eq(partiallyTreated.turn, multipleTurn + 1, '治疗后仍有另一处三级伤势时也结算一个战略回合');
+      test.eq(partiallyTreated.pendingSuccession, true, '一次治疗未恢复履职能力时保持继任锁');
+      test.true_(validateUniverseState(partiallyTreated), '部分治疗后的继任状态仍可保存');
+
+      const appointed = applyUniverseAction(incapacitated, { type: 'appointCommander', commanderId: reserve.id });
+      test.eq(appointed.commander.id, reserve.id, '玩家可明确任命可用候补接任');
+      test.eq(appointed.pendingSuccession, false, '任命后解除战略行动锁');
+      test.true_(appointed.reserveCommanders.some((commander) => commander.id === incapacitated.commander.id), '仍存活的重伤前任转入候补名单');
+      test.true_(canAppointStrategicCommander(incapacitated, reserve.id), '继任候选资格由共享可用性规则判断');
+      test.true_(validateUniverseState(appointed), '实际继任结果通过深层校验和保存闭环');
+
+      const appointmentUi = renderPanelToRoot(incapacitated);
+      const appointButton = appointmentUi.root.querySelector<HTMLButtonElement>('[data-strategy-appoint]');
+      test.true_(!!appointButton && !appointButton.disabled, '继任期间真实 DOM 任命按钮可用');
+      appointButton?.click();
+      test.eq(appointmentUi.calls.actionLog[appointmentUi.calls.actionLog.length - 1]?.type, 'appointCommander', '任命按钮发出 appointCommander');
+      add(test);
+    }
+
+    // V1.0-C.2：真实战斗舰损触发同源伤病、继任与无继任者失败。
+    {
+      const test = new Case('真实战略战斗舰损驱动指挥官伤病、继任和失败判定');
+      const buildCatastrophicBattle = (seed: number, withReserve: boolean) => {
+        let state = generateUniverse(seed, '战损测试团');
+        const source = state.fleet.ships[0];
+        state.fleet.ships.push({
+          ...JSON.parse(JSON.stringify(source)),
+          campaignShipId: `cs-c2-extra-${seed}`
+        });
+        if (withReserve) state.reserveCommanders = [generateUniverse(seed + 10000, '战损候补').commander];
+        const hostile = state.systems.find((system) => system.control === 'enemy')!;
+        state.fleet.systemId = hostile.id;
+        state.selectedSystemId = hostile.id;
+        hostile.discovered = true;
+        hostile.enemyPower = ENEMY_BUDGET;
+        state = applyUniverseAction(state, { type: 'engageEnemy' });
+        const pending = state.pendingBattle!;
+        const context = prepareStrategicBattle(toPersistentFleet(state.fleet), pending.enemyFleet, pending.battleSeed);
+        context.state.finished = true;
+        context.state.winner = 'A';
+        const teamA = context.state.ships.filter((ship) => ship.team === 'A');
+        teamA.slice(0, 3).forEach((ship) => applyCombatState(ship, 'destroyed'));
+        teamA.slice(3).forEach((ship) => applyCombatState(ship, 'normal'));
+        context.state.ships.filter((ship) => ship.team === 'B').forEach((ship) => applyCombatState(ship, 'destroyed'));
+        syncBattleCounts(context.state);
+        return { state, battle: context.state, bindings: context.bindings };
+      };
+
+      const withReserve = buildCatastrophicBattle(1505, true);
+      const result = applyStrategicBattleResult(withReserve.state, withReserve.battle, withReserve.bindings);
+      test.eq(result.turn, withReserve.state.turn + 1, '触发继任的真实战斗仍准确结算一个战略回合');
+      test.eq(result.status, 'active', '仍有作战舰且有继任者时远征保持 active');
+      test.eq(result.commander.injuries?.find((injury) => injury.id === 'trauma')?.severity, 3, '真实损失三舰产生三级创伤');
+      test.eq(result.pendingSuccession, true, '三级创伤自动进入继任流程');
+      test.eq(result.commander.domainExperience?.combat, 12, '真实胜利写入战斗领域经验');
+      test.true_(validateUniverseState(result), '真实战损与继任状态可直接保存编码');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(result))), '真实战损状态编码往返有效');
+
+      const withoutReserve = buildCatastrophicBattle(1506, false);
+      const collapsed = applyStrategicBattleResult(withoutReserve.state, withoutReserve.battle, withoutReserve.bindings);
+      test.eq(collapsed.status, 'collapsed', '指挥官失能且无可用继任者时明确失败，不留下行动死锁');
+      test.eq(collapsed.pendingSuccession, false, '失败状态不残留无法完成的继任提示');
+      test.true_(validateUniverseState(collapsed), '无继任者失败状态仍可保存和导出');
+      add(test);
+    }
+
+    // V1.0-C.3：主基地 + 次级据点 + 稳定已知航路运输链。
+    {
+      const test = new Case('多据点建立、确定性运输路径与 alpha.7 迁移');
+      const baseState = establishStartingBase(generateUniverse(1601, '运输测试团'));
+      const firstPrepared = prepareSecondaryOutpost(baseState);
+      const secondPrepared = prepareSecondaryOutpost(JSON.parse(JSON.stringify(baseState)));
+      test.true_(canEstablishOutpost(firstPrepared.state, firstPrepared.station.id), '已测绘安全空间站可建立次级补给前哨');
+      const before = firstPrepared.state.faction.resources;
+      const turn = firstPrepared.state.turn;
+      const first = applyUniverseAction(firstPrepared.state, { type: 'establishOutpost', entityId: firstPrepared.station.id });
+      const second = applyUniverseAction(secondPrepared.state, { type: 'establishOutpost', entityId: secondPrepared.station.id });
+      test.eq(first.turn, turn + 1, '建立前哨消耗一个战略回合');
+      test.eq(first.faction.resources.minerals, before.minerals - 8, '建立前哨扣除矿物成本');
+      test.eq(first.faction.resources.energy, before.energy - 4, '建立前哨扣除能源成本');
+      test.eq(first.faction.resources.supplies, before.supplies - 3, '建立前哨扣除补给成本');
+      test.eq(ownedStrategicStations(first).length, 2, '主基地与次级前哨同时存在');
+      test.eq(first.faction.baseEntityId, firstPrepared.base.id, '唯一主基地 ID 不因建立前哨改变');
+      test.eq(first.transportLinks.length, 1, '次级前哨生成且仅生成一条运输链');
+      test.eq(first.transportLinks[0].outpostEntityId, firstPrepared.station.id, '运输链起点绑定明确前哨');
+      test.eq(first.transportLinks[0].hubEntityId, firstPrepared.base.id, '运输链终点绑定唯一主基地');
+      test.eq(JSON.stringify(first.transportLinks), JSON.stringify(second.transportLinks), '相同状态建立前哨生成完全一致的运输路径');
+      test.eq(strategicTransportStatus(first, first.transportLinks[0]), 'active', '安全已知路径初始运输畅通');
+      test.true_(validateUniverseState(first), '多据点与运输链通过深层校验');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(first))), '多据点远征码往返有效');
+      const thirdPrepared = prepareSecondaryOutpost(first);
+      const expanded = applyUniverseAction(thirdPrepared.state, { type: 'establishOutpost', entityId: thirdPrepared.station.id });
+      test.eq(ownedStrategicStations(expanded).length, 3, '同一星域可拥有一个主基地和两个次级前哨');
+      test.eq(expanded.transportLinks.length, 2, '两个次级前哨各自拥有独立运输链');
+      test.true_(validateUniverseState(expanded), '三据点网络通过深层校验');
+      const nextSector = applyUniverseAction(prepareGate(expanded, 100), { type: 'extractSector', mode: 'stable' });
+      test.eq(nextSector.faction.baseEntityId, undefined, '跨星域后临时主基地不继承');
+      test.eq(nextSector.transportLinks.length, 0, '跨星域后临时前哨与运输链全部重置');
+
+      const alpha7: any = JSON.parse(JSON.stringify(generateUniverse(1602)));
+      alpha7.version = '1.0-alpha.7';
+      delete alpha7.transportLinks;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.7', state: alpha7 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.7 存档迁移到当前 alpha.9');
+      test.eq(migrated.transportLinks.length, 0, 'alpha.7 单基地状态迁移为空运输链');
+      test.true_(validateUniverseState(migrated), 'alpha.7 迁移结果合法');
+      add(test);
+    }
+
+    // V1.0-C.3：各据点并行建设，敌占中继星系只截断次级据点送达。
+    {
+      const test = new Case('据点独立建设、运输收入与敌占航路阻断');
+      const prepared = prepareSecondaryOutpost(establishStartingBase(generateUniverse(1603, '据点生产团')));
+      let state = applyUniverseAction(prepared.state, { type: 'establishOutpost', entityId: prepared.station.id });
+      const outpost = state.entities.find((entity) => entity.id === prepared.station.id)!;
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      state.fleet.systemId = outpost.systemId;
+      state = applyUniverseAction(state, { type: 'queueConstruction', facilityType: 'miningArray', entityId: outpost.id });
+      state.fleet.systemId = base.systemId;
+      state = applyUniverseAction(state, { type: 'queueConstruction', facilityType: 'solarArray', entityId: base.id });
+      state.entities.find((entity) => entity.id === outpost.id)!.constructionQueue![0].turnsRemaining = 1;
+      state.entities.find((entity) => entity.id === base.id)!.constructionQueue![0].turnsRemaining = 1;
+      state = advanceUniverseTurn(state, '并行建设测试');
+      test.true_(state.entities.find((entity) => entity.id === outpost.id)!.facilities!.some((facility) => facility.type === 'miningArray'), '次级前哨独立完成采矿设施');
+      test.true_(state.entities.find((entity) => entity.id === base.id)!.facilities!.some((facility) => facility.type === 'solarArray'), '主基地在同回合独立完成能源设施');
+      const active = strategicIncomeReport(state);
+      test.eq(active.total.minerals, 4, '畅通运输链送达前哨矿物');
+      test.eq(active.total.energy, 4, '主基地本地产出直接入库');
+
+      const blocked = JSON.parse(JSON.stringify(state)) as typeof state;
+      const link = blocked.transportLinks[0];
+      test.true_(link.pathSystemIds.length >= 3, '测试前哨与主基地之间存在至少一个中继星系');
+      const intermediate = blocked.systems.find((system) => system.id === link.pathSystemIds[1])!;
+      intermediate.control = 'enemy';
+      intermediate.enemyPower = minimumStrategicFleetCost();
+      test.eq(strategicTransportStatus(blocked, link), 'blocked', '敌占中继星系会中断运输');
+      const interrupted = strategicIncomeReport(blocked);
+      test.eq(interrupted.total.minerals, 0, '中断运输时前哨矿物不进入库存');
+      test.eq(interrupted.total.energy, 4, '运输中断不影响主基地本地产出');
+      test.true_(validateUniverseState(blocked), '运输中断是可保存的合法战略状态');
+      add(test);
+    }
+
+    // V1.0-C.3：链接集合、路径和 UI 均使用真实状态而非派生猜测。
+    {
+      const test = new Case('运输链深层校验与真实 DOM 据点操作');
+      const prepared = prepareSecondaryOutpost(establishStartingBase(generateUniverse(1604, '网络校验团')));
+      const beforeUi = renderPanelToRoot(prepared.state);
+      const establishButton = beforeUi.root.querySelector<HTMLButtonElement>(`[data-strategy-outpost="${prepared.station.id}"]`);
+      test.true_(!!establishButton && !establishButton.disabled, '真实 DOM 显示可用的建立补给前哨按钮');
+      establishButton?.click();
+      test.eq(beforeUi.calls.actionLog[beforeUi.calls.actionLog.length - 1]?.type, 'establishOutpost', '前哨按钮发出 establishOutpost action');
+
+      const state = applyUniverseAction(prepared.state, { type: 'establishOutpost', entityId: prepared.station.id });
+      const rendered = renderPanelToRoot(state);
+      test.eq(rendered.root.querySelectorAll('[data-strategy-outpost-card]').length, 2, '真实 DOM 渲染主基地和次级前哨两张卡片');
+      test.true_(rendered.html.includes('运输畅通'), '据点卡片显示运输状态');
+      const buildButton = rendered.root.querySelector<HTMLButtonElement>(`[data-strategy-build-entity="${prepared.station.id}"]`);
+      test.true_(!!buildButton && !buildButton.disabled, '舰队所在前哨的建设按钮可用');
+      buildButton?.click();
+      const buildAction = rendered.calls.actionLog[rendered.calls.actionLog.length - 1];
+      test.eq(buildAction?.type, 'queueConstruction', '前哨建设按钮发出 queueConstruction');
+      test.eq((buildAction as Extract<UniverseAction, { type: 'queueConstruction' }>).entityId, prepared.station.id, '建设 action 精确携带目标据点 ID');
+
+      const missing = JSON.parse(JSON.stringify(state)) as typeof state;
+      missing.transportLinks = [];
+      test.true_(!validateUniverseState(missing), '次级前哨缺少运输链时拒绝存档');
+      const duplicate = JSON.parse(JSON.stringify(state)) as typeof state;
+      duplicate.transportLinks.push(JSON.parse(JSON.stringify(duplicate.transportLinks[0])));
+      test.true_(!validateUniverseState(duplicate), '重复前哨运输链被拒绝');
+      const brokenPath = JSON.parse(JSON.stringify(state)) as typeof state;
+      brokenPath.transportLinks[0].pathSystemIds[1] = brokenPath.systems.find((system) =>
+        !brokenPath.systems.find((candidate) => candidate.id === brokenPath.transportLinks[0].pathSystemIds[0])!.neighbors.includes(system.id)
+      )!.id;
+      test.true_(!validateUniverseState(brokenPath), '不相邻的运输路径被拒绝');
+      add(test);
+    }
+
+    // V1.0-C.3：敌袭损失由据点本地防御与舰队驻防共同决定。
+    {
+      const test = new Case('据点敌袭、防御网与舰队驻防效果');
+      const prepared = prepareSecondaryOutpost(establishStartingBase(generateUniverse(1605, '据点防御团')));
+      const state = applyUniverseAction(prepared.state, { type: 'establishOutpost', entityId: prepared.station.id });
+      const outpost = state.entities.find((entity) => entity.id === prepared.station.id)!;
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      state.fleet.systemId = base.systemId;
+      const undefended = strategicOutpostRaidSupplyLoss(state, outpost.id);
+      const suppliesBeforeRaid = state.faction.resources.supplies;
+      const raided = resolveStrategicOutpostRaid(state, outpost.id);
+      test.eq(raided.faction.resources.supplies, suppliesBeforeRaid - undefended, '真实敌袭结算扣除权威预览损失');
+      test.true_(raided.log[raided.log.length - 1].text.includes(outpost.name), '敌袭日志明确记录受袭据点');
+      test.true_(validateUniverseState(raided), '真实敌袭结果可直接保存');
+      state.fleet.systemId = outpost.systemId;
+      const fleetDefended = strategicOutpostRaidSupplyLoss(state, outpost.id);
+      outpost.facilities!.push({ id: 'test-outpost-defense', type: 'defenseGrid', level: 1 });
+      const fullyDefended = strategicOutpostRaidSupplyLoss(state, outpost.id);
+      test.true_(undefended > fleetDefended, '舰队驻防真实降低敌袭补给损失');
+      test.true_(fleetDefended > fullyDefended, '本地防御网进一步降低损失');
+      test.eq(fullyDefended, 0, '一级防御网加驻防舰队可完全拦截第一星域敌袭');
+      const defended = resolveStrategicOutpostRaid(state, outpost.id);
+      test.eq(defended.faction.resources.supplies, state.faction.resources.supplies, '完全防御时真实结算不损失补给');
+      test.true_(validateUniverseState(state), '带防御设施的多据点状态仍可保存');
+      add(test);
+    }
+
+    // V1.0-C.4：移动敌军使用完整图上的稳定最短路，但未发现位置不进入地图 DOM。
+    {
+      const test = new Case('敌方特遣舰队确定性移动与战争迷雾');
+      const initial = generateUniverse(1701, '机动敌情团');
+      const initialForce = initial.enemyTaskForces[0];
+      const homeStation = initial.entities.find((entity) => entity.kind === 'station' && entity.systemId === initial.fleet.systemId)!;
+      const path = strategicEnemyPath(initial, initialForce.systemId, homeStation.systemId)!;
+      test.true_(path.length >= 2, '初始特遣舰队与潜在主基地之间存在真实航路');
+      const first = establishStartingBase(JSON.parse(JSON.stringify(initial)));
+      const second = establishStartingBase(JSON.parse(JSON.stringify(initial)));
+      test.eq(first.enemyTaskForces[0].systemId, path[1], '建立基地后敌舰每回合只推进一跳');
+      test.eq(JSON.stringify(first.enemyTaskForces), JSON.stringify(second.enemyTaskForces), '相同状态的敌方移动完全确定');
+      const hidden = initial.systems.find((system) => system.id === initialForce.systemId)!;
+      test.true_(!hidden.discovered, '测试敌方初始位置处于战争迷雾');
+      const rendered = renderPanelToRoot(initial);
+      test.eq(rendered.root.querySelectorAll('.strategic-system.enemy-task-force').length, 0, '隐藏特遣舰队不会泄露到地图 DOM');
+      test.true_(validateUniverseState(first), '移动后的特遣舰队状态可保存');
+      add(test);
+    }
+
+    // V1.0-C.4：抵达据点形成持久围攻；防御网延长倒计时，次级前哨失守时闭合所有网络不变量。
+    {
+      const test = new Case('据点围攻倒计时、防御网与失守闭环');
+      const prepared = prepareSecondaryOutpost(establishStartingBase(generateUniverse(1702, '围攻测试团')));
+      let state = applyUniverseAction(prepared.state, { type: 'establishOutpost', entityId: prepared.station.id });
+      const station = state.entities.find((entity) => entity.id === prepared.station.id)!;
+      station.facilities!.push({ id: 'siege-defense-grid', type: 'defenseGrid', level: 1 });
+      state.enemyTaskForces = [{
+        id: 'test-siege-force', systemId: station.systemId, power: minimumStrategicFleetCost(), role: 'raider', spawnedTurn: state.turn
+      }];
+      state.sieges = [];
+      advanceStrategicEnemyTaskForces(state);
+      test.eq(state.sieges.length, 1, '敌方舰队抵达次级前哨后形成围攻');
+      test.eq(state.sieges[0].totalTurns, 3, '一级防御网将围攻窗口从 2 延长到 3 回合');
+      test.true_(renderPanelToRoot(state).html.includes('围攻中'), '真实 DOM 明确显示围攻倒计时');
+      state.fleet.systemId = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!.systemId;
+      processStrategicSieges(state);
+      processStrategicSieges(state);
+      test.true_(station.ownerId === state.faction.id, '倒计时结束前前哨仍由玩家控制');
+      processStrategicSieges(state);
+      test.eq(station.ownerId, undefined, '倒计时耗尽后次级前哨失守');
+      test.eq(state.transportLinks.length, 0, '失守前哨的运输链同步删除');
+      test.eq(station.facilities!.length, 0, '失守前哨设施被清除');
+      test.true_(validateUniverseState(state), '前哨失守后的完整状态仍可保存编码');
+      add(test);
+    }
+
+    // V1.0-C.4：主基地围攻失败是合法终态，不留下悬空围攻或不可保存状态。
+    {
+      const test = new Case('主基地围攻失败终态');
+      const state = establishStartingBase(generateUniverse(1703, '主基地防御团'));
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      state.enemyTaskForces = [{
+        id: 'test-base-siege', systemId: base.systemId, power: minimumStrategicFleetCost(), role: 'raider', spawnedTurn: state.turn
+      }];
+      state.sieges = [];
+      advanceStrategicEnemyTaskForces(state);
+      test.eq(state.sieges[0].totalTurns, 2, '无防御网主基地围攻窗口为 2 回合');
+      processStrategicSieges(state);
+      test.eq(state.sieges[0].turnsRemaining, 2, '舰队驻防时围攻倒计时暂停并等待真实战斗');
+      state.fleet.systemId = state.systems.find((system) => system.id === base.systemId)!.neighbors[0];
+      processStrategicSieges(state);
+      processStrategicSieges(state);
+      test.eq(state.status, 'collapsed', '主基地失守明确结束远征');
+      test.eq(state.sieges.length, 0, '终局不残留悬空围攻');
+      test.true_(validateUniverseState(state), '主基地失守终态可保存和导出');
+      add(test);
+    }
+
+    // V1.0-C.4：移动敌军与驻军共用真实 core-v4 战斗入口，并按 taskForceId 精确写回。
+    {
+      const test = new Case('特遣舰队真实战斗与持久写回');
+      let state = establishStartingBase(generateUniverse(1704, '拦截作战团'));
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      state.enemyTaskForces = [{
+        id: 'test-mobile-battle', systemId: base.systemId, power: minimumStrategicFleetCost(), role: 'raider', spawnedTurn: state.turn
+      }];
+      state.sieges = [];
+      state.fleet.systemId = base.systemId;
+      state = applyUniverseAction(state, { type: 'engageEnemy' });
+      test.eq(state.pendingBattle?.source, 'taskForce', '在无驻军星系攻击时锁定明确的移动敌军来源');
+      test.eq(state.pendingBattle?.taskForceId, 'test-mobile-battle', 'pending 精确持久化 taskForceId');
+      const pending = state.pendingBattle!;
+      const context = prepareStrategicBattle(toPersistentFleet(state.fleet), pending.enemyFleet, pending.battleSeed);
+      const simulator = createSimulator(context.state, context.rng);
+      let guard = 0;
+      while (!context.state.finished && guard++ < 200000) simulator.step();
+      test.true_(context.state.finished, '移动敌军战斗由真实 core-v4 模拟器运行至结束');
+      const after = applyStrategicBattleResult(state, context.state, context.bindings);
+      test.eq(after.pendingBattle, undefined, '真实战果写回后清除 pending');
+      const remaining = after.enemyTaskForces.find((force) => force.id === 'test-mobile-battle');
+      test.true_(!remaining || remaining.power <= pending.enemyPowerBefore, '特遣舰队仅按真实 Team B 战果删除或降低战力');
+      test.true_(validateUniverseState(after), '移动敌军真实战果可保存并编码往返');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(after))), '移动敌军战果远征码往返有效');
+      add(test);
+    }
+
+    // V1.0-C.4：达到任一撤离阈值都会自动锁定不可绕过的真实星门防御战。
+    {
+      const test = new Case('星门防御战触发、行动锁与 alpha.8 迁移');
+      let state = prepareGate(generateUniverse(1705, '星门防御团'), 25);
+      state.extraction.gateDefense = 'dormant';
+      state.enemyTaskForces = [];
+      state.sieges = [];
+      state.faction.resources.energy = 20;
+      state.faction.resources.science = 20;
+      state.faction.resources.supplies = 20;
+      state = applyUniverseAction(state, { type: 'calibrateGate' });
+      test.eq(state.extraction.calibration, 50, '校准跨过紧急撤离阈值');
+      test.eq(state.extraction.gateDefense, 'pending', '达到启动阈值后星门防御进入 pending');
+      test.eq(state.pendingBattle?.source, 'gateDefense', '自动创建明确来源的真实星门防御战');
+      test.true_((state.pendingBattle?.enemyFleet.length ?? 0) > 0, '星门防御战使用合法非空敌军舰队');
+      test.true_(!canExtractSector(state, 'emergency'), '防御战完成前不能绕过并紧急撤离');
+      test.true_(validateUniverseState(state), '待处理星门防御战可保存');
+      const rendered = renderPanelToRoot(state);
+      test.true_(rendered.html.includes('继续星门防御战'), '真实 DOM 明确显示继续星门防御战');
+      const gatePending = state.pendingBattle!;
+      const gateContext = prepareStrategicBattle(toPersistentFleet(state.fleet), gatePending.enemyFleet, gatePending.battleSeed);
+      const gateSimulator = createSimulator(gateContext.state, gateContext.rng);
+      let gateGuard = 0;
+      while (!gateContext.state.finished && gateGuard++ < 200000) gateSimulator.step();
+      test.true_(gateContext.state.finished, '星门防御战由真实 core-v4 模拟器运行至结束');
+      test.eq(gateContext.state.winner, 'A', '修整后的初始舰队具备赢得终战拦截的确定性可玩窗口');
+      const defended = applyStrategicBattleResult(state, gateContext.state, gateContext.bindings);
+      test.eq(defended.extraction.gateDefense, 'resolved', '全歼星门拦截舰队后写回防御战已完成');
+      test.true_(!defended.enemyTaskForces.some((force) => force.role === 'gateDefense'), '已消灭的星门拦截舰队从战略状态移除');
+      test.true_(canExtractSector(defended, 'emergency'), '真实星门防御战完成后紧急撤离解锁');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(defended))), '星门防御战结果可保存并编码往返');
+
+      const alpha8: any = JSON.parse(JSON.stringify(generateUniverse(1706)));
+      alpha8.version = '1.0-alpha.8';
+      delete alpha8.enemyTaskForces;
+      delete alpha8.sieges;
+      delete alpha8.extraction.gateDefense;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.8', state: alpha8 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.8 存档迁移到 alpha.9');
+      test.eq(migrated.enemyTaskForces.length, 0, 'alpha.8 迁移不凭空生成移动敌军');
+      test.eq(migrated.extraction.gateDefense, 'dormant', '未达到阈值的旧存档保持防御战未触发');
+      test.true_(validateUniverseState(migrated), 'alpha.8 迁移结果合法');
+
+      const duplicateForce = JSON.parse(JSON.stringify(state)) as typeof state;
+      duplicateForce.enemyTaskForces.push(JSON.parse(JSON.stringify(duplicateForce.enemyTaskForces[0])));
+      test.true_(!validateUniverseState(duplicateForce), '重复敌方舰队 ID 被深层校验拒绝');
+      const brokenSiege = JSON.parse(JSON.stringify(establishStartingBase(generateUniverse(1707)))) as typeof state;
+      brokenSiege.sieges = [{ id: 'bad-siege', taskForceId: 'missing', stationEntityId: brokenSiege.faction.baseEntityId!, turnsRemaining: 1, totalTurns: 2 }];
+      test.true_(!validateUniverseState(brokenSiege), '引用不存在舰队的围攻被深层校验拒绝');
+      add(test);
+    }
+
+    // V1.0-C.5：移动敌军按星域目标增长，但强制遭遇必须服从当前可用舰队的可玩上限。
+    {
+      const test = new Case('C.5 移动敌军预算、危机节奏与唯一星门战');
+      const fullPower = strategicBaselineFleetPower();
+      const raiderBudgets = [1, 2, 3].map((sector) => strategicMobileEnemyBudget(sector, fullPower, 'raider'));
+      const gateBudgets = [1, 2, 3].map((sector) => strategicMobileEnemyBudget(sector, fullPower, 'gateDefense'));
+      test.eq(JSON.stringify(raiderBudgets), JSON.stringify([100, 110, 120]), '完整舰队面对的 raider 目标逐星域增长');
+      test.eq(JSON.stringify(gateBudgets), JSON.stringify([115, 125, 140]), '完整舰队面对的星门拦截目标逐星域增长');
+      for (let index = 0; index < 3; index++) {
+        test.true_(gateBudgets[index] > raiderBudgets[index], `第 ${index + 1} 星域星门拦截目标强于 raider`);
+      }
+      const damagedPower = 100;
+      test.true_(strategicMobileEnemyBudget(3, damagedPower, 'raider') <= Math.floor(damagedPower * 0.55), '舰损继承后 raider 不超过当前舰队 55% 战力上限');
+      test.true_(strategicMobileEnemyBudget(3, damagedPower, 'gateDefense') <= Math.floor(damagedPower * 0.65), '舰损继承后强制星门战不超过当前舰队 65% 战力上限');
+      test.eq(strategicMobileEnemyBudget(1, 0, 'raider'), 0, '零可用战力不生成伪造的最低成本敌舰');
+      test.eq(strategicPressureAtStart(1), 10, '第一星域危机压力从 10 开始');
+      test.true_(strategicPressurePerTurn(1) < strategicPressurePerTurn(3), '高星域每回合危机压力增长更快');
+      test.true_(strategicPressurePerTurn(3, true) < strategicPressurePerTurn(3), '危机预测研究真实降低压力增长');
+
+      let state = establishStartingBase(generateUniverse(1801, '节奏验证团'));
+      const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId)!;
+      const gateSystem = state.systems.find((system) => system.id === gate.systemId)!;
+      test.eq(state.crisis.finalTurn, 17, '三个星域共享可验证的 17 回合行动预算');
+      test.true_(gateSystem.control === 'neutral' && gateSystem.enemyPower === 0, '星门开局没有重复固定驻军');
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      const baseSystem = state.systems.find((system) => system.id === base.systemId)!;
+      for (const system of state.systems) {
+        if (system.id === baseSystem.id || system.id === gateSystem.id) continue;
+        system.control = 'enemy';
+        system.enemyPower = minimumStrategicFleetCost();
+      }
+      state.turn = 3;
+      const supplies = state.faction.resources.supplies;
+      const expanded = advanceUniverseTurn(state, 'C.5 扩张边界验证');
+      test.eq(expanded.faction.resources.supplies, supplies, '普通领土扩张不能绕过移动舰队直接远程扣除据点补给');
+      const expandedGate = expanded.systems.find((system) => system.id === gateSystem.id)!;
+      test.true_(expandedGate.control === 'neutral' && expandedGate.enemyPower === 0, '普通领土扩张不能占领星门并叠加第二场强制战');
+      test.true_(validateUniverseState(expanded), '节奏边界结算后的状态仍可保存');
+      add(test);
+    }
+
+    // V1.0-C.5：真实 reducer → 正式远征码 → core-v4 → 逐舰写回，连续完成三个星域。
+    {
+      const test = new Case('C.5 三星域真实玩家闭环与终局 UI');
+      const result = runStrategicThreeSectorPlaythrough(2036);
+      test.eq(result.finalState.status, 'victory', '真实玩家策略连续穿越三星域并取得胜利');
+      test.eq(JSON.stringify(result.sectors.map((sector) => sector.sectorIndex)), JSON.stringify([1, 2, 3]), '三星域均产生明确撤离检查点');
+      test.true_(result.sectors.every((sector) => sector.turn <= 17), '每个星域均在正式撤离窗口内完成');
+      test.eq(result.battles.filter((battle) => battle.source === 'taskForce').length, 3, '每个星域各完成一次真实 raider 战斗');
+      test.eq(result.battles.filter((battle) => battle.source === 'gateDefense').length, 3, '每个星域各完成一次真实星门防御战');
+      test.true_(result.battles.every((battle) => battle.winner === 'A' && battle.ticks > 0), '六场强制遭遇均由真实 core-v4 运行并得出胜利');
+      const actionTypes = new Set(result.actions.map((action) => action.type));
+      for (const type of ['establishBase', 'queueResearch', 'openRecruitment', 'engageEnemy', 'travel', 'surveyEntity', 'calibrateGate', 'extractSector']) {
+        test.true_(actionTypes.has(type as UniverseAction['type']), `端到端流程实际执行 ${type}`);
+      }
+      const originalIds = new Set(generateUniverse(2036).fleet.ships.map((ship) => ship.campaignShipId));
+      test.true_(result.finalState.fleet.ships.every((ship) => originalIds.has(ship.campaignShipId)), '跨三星域只保留原持久舰 ID，不重建替换舰船');
+      test.true_(validateUniverseState(result.finalState), '胜利终态通过深层校验');
+      test.eq(encodeUniverse(decodeUniverse(result.finalCode)), result.finalCode, '胜利远征码编码解码闭环完全一致');
+
+      const rendered = renderPanelToRoot(result.finalState);
+      test.true_(rendered.html.includes('远征完成') && rendered.html.includes('已连续穿越 3 个星域'), '真实 DOM 显示三星域胜利结算');
+      test.true_(rendered.root.querySelector<HTMLButtonElement>('#strategy-next-turn')?.disabled === true, '胜利后推进回合真实禁用');
+      rendered.root.querySelector<HTMLButtonElement>('#strategy-next-turn')?.click();
+      test.eq(rendered.calls.actionLog.length, 0, '点击胜利终态的禁用行动不会触发 reducer 回调');
+      rendered.root.querySelector<HTMLButtonElement>('#strategy-export')?.click();
+      rendered.root.querySelector<HTMLButtonElement>('#strategy-exit')?.click();
+      test.eq(rendered.calls.exports, 1, '胜利后仍可导出远征码');
+      test.eq(rendered.calls.exits, 1, '胜利后仍可返回主菜单');
+      add(test);
+    }
+
+    // 独立发布矩阵包含先前暴露 16 回合边界的 seed 36，并重复 canonical seed 验证完整确定性。
+    {
+      const test = new Case('C.5 65-seed 三星域发布矩阵与全流程确定性');
+      const seeds = [...Array.from({ length: 64 }, (_, index) => index + 1), 2036];
+      const summaries = seeds.map((seed) => {
+        const result = runStrategicThreeSectorPlaythrough(seed);
+        test.eq(result.finalState.status, 'victory', `seed ${seed} 完成三星域胜利`);
+        test.true_(result.sectors.every((sector) => sector.turn <= 17), `seed ${seed} 未超过任一撤离窗口`);
+        test.true_(validateUniverseState(decodeUniverse(result.finalCode)), `seed ${seed} 胜利码可保存恢复`);
+        return {
+          seed,
+          sectors: result.sectors,
+          battles: result.battles,
+          actions: result.actions,
+          finalCode: result.finalCode
+        };
+      });
+      const edge = summaries.find((summary) => summary.seed === 36)!;
+      test.eq(edge.sectors[2].turn, 16, '已知最慢拓扑 seed 36 在第三星域第 16 回合合法撤离');
+      const first = runStrategicThreeSectorPlaythrough(2036);
+      const second = runStrategicThreeSectorPlaythrough(2036);
+      test.eq(
+        JSON.stringify({ sectors: first.sectors, battles: first.battles, actions: first.actions, finalCode: first.finalCode }),
+        JSON.stringify({ sectors: second.sectors, battles: second.battles, actions: second.actions, finalCode: second.finalCode }),
+        '相同 seed 的行动、战斗、撤离指标与最终远征码完全一致'
+      );
       add(test);
     }
   });

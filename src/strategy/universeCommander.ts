@@ -40,3 +40,27 @@ export function isStrategicCommandLocked(
 ): boolean {
   return state.pendingSuccession || !isStrategicCommanderAvailable(state);
 }
+
+export type StrategicContinuityResult = 'available' | 'succession' | 'collapsed';
+
+/**
+ * 在任何可能改变指挥官可用性的真实路径后统一重算指挥连续性。
+ * 没有可用继任者时不能留下“active 但永远无法行动”的死锁状态，而是明确判定远征崩溃。
+ */
+export function reconcileStrategicCommanderContinuity(state: UniverseState): StrategicContinuityResult {
+  if (state.status !== 'active') {
+    state.pendingSuccession = false;
+    return 'collapsed';
+  }
+  if (isStrategicCommanderAvailable(state)) {
+    state.pendingSuccession = false;
+    return 'available';
+  }
+  if (hasAvailableStrategicSuccessor(state.reserveCommanders, state.seed)) {
+    state.pendingSuccession = true;
+    return 'succession';
+  }
+  state.pendingSuccession = false;
+  state.status = 'collapsed';
+  return 'collapsed';
+}
