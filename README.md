@@ -146,11 +146,12 @@ npm test
 npm run test:det
 npm run test:campaign
 npm run test:strategy
+npm run test:browser
 npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（59 项，无 `as unknown as` 伪造 BattleState）：
+`npm run test:strategy` 覆盖（64 项，无 `as unknown as` 伪造 BattleState）。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动和下方管理区可达性：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；

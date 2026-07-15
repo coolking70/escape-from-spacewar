@@ -1,3 +1,5 @@
+Original prompt: Continue V1.0-C in the current repository, beginning with strategic-screen browser regression coverage and then commander integration.
+
 # Development Progress
 
 ## Current baseline
@@ -262,6 +264,12 @@ The next development slice should extend the now-real persistent fleet and core-
 2. support multiple temporary outposts and abstract transport links;
 3. simulate moving enemy fleets, sieges and a real gate-defense battle;
 4. assign individual ships to cargo escort, early extraction and rearguard roles.
+
+### V1.0-C.0 browser regression baseline
+
+- Added a real Chromium regression that starts the Vite application, enters a fresh strategic expedition, scrolls the viewport-bounded strategic container with a mouse wheel and verifies that the lower management area becomes visible without console errors.
+- CI installs Playwright Chromium and runs `npm run test:browser`; jsdom remains responsible for reducer/button behavior while Chromium owns layout and scrolling assertions.
+- Local Chromium verification passed at a 1280×720 viewport (`clientHeight=720`, `scrollHeight=1583`, final `scrollTop=863`). The standard develop-web-game client also entered a fresh expedition, produced matching strategic text state and a clean strategic-map screenshot.
 
 ## Still out of scope for V1.0-C
 
