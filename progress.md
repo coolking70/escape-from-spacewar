@@ -128,7 +128,7 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.5` (real per-ship fleet; enemy power uses the core-v4 ship-cost dimension). `1.0-alpha.2` (abstract fleet), `1.0-alpha.3` (old-dimension enemy power) and `1.0-alpha.4` (per-ship, old escaped semantics) are migrated deterministically in place.
+- Current version: `1.0-alpha.6` (real per-ship fleet plus a V0.8-compatible commander profile). `1.0-alpha.2` through `1.0-alpha.5` are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, facilities, queues, crisis, gate state, fleet state (per-ship) and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
@@ -270,6 +270,18 @@ The next development slice should extend the now-real persistent fleet and core-
 - Added a real Chromium regression that starts the Vite application, enters a fresh strategic expedition, scrolls the viewport-bounded strategic container with a mouse wheel and verifies that the lower management area becomes visible without console errors.
 - CI installs Playwright Chromium and runs `npm run test:browser`; jsdom remains responsible for reducer/button behavior while Chromium owns layout and scrolling assertions.
 - Local Chromium verification passed at a 1280×720 viewport (`clientHeight=720`, `scrollHeight=1583`, final `scrollTop=863`). The standard develop-web-game client also entered a fresh expedition, produced matching strategic text state and a clean strategic-map screenshot.
+
+### V1.0-C.1 commander integration — first slice
+
+- Sector Expedition Code advances to `1.0-alpha.6`. New strategic expeditions deterministically create the existing V0.8 `CampaignCommander`; alpha.5 saves receive the same profile through an explicit migration.
+- Commander, reserve roster and succession flag are part of `UniverseState`, deep validation reuses the campaign commander validator, and the complete profile survives code round trips and sector extraction.
+- The strategic management area displays the commander level, attributes, traits, duty state and reserve count. Recruitment, battle consequences, treatment and succession actions remain the next sub-slice.
+- Browser inspection confirmed the commander card is readable beside the base card, lower management content remains reachable, and `render_game_to_text` now exposes commander identity, level, life state, reserve count and succession status.
+- Commander availability and succession now form a strict active-state invariant: an available incumbent cannot leave `pendingSuccession` set, while an unavailable incumbent requires both `pendingSuccession` and an available reserve. Ended expeditions cannot retain a succession prompt.
+- `validateUniverseState`, Sector Expedition Code, strategic `can*` predicates, the reducer and the real DOM share the same command lock. During succession only system selection, export and exit remain available; turn advancement and every state-changing strategic action are blocked.
+- The strategy suite now has **66 cases**, including invalid commander/succession combinations, legal succession save/code round trips, reducer lock coverage and jsdom native disabled-click behavior.
+- Full closure verification passed: `npm ci`, build, core tests, deterministic tests, campaign tests, 66-case strategy tests, stress, static build, `git diff --check` and real Chromium browser regression. The standard web-game client entered a fresh strategic expedition with matching commander text state, a clean screenshot and no console-error artifact.
+- Commander UI duty text now reuses the authoritative availability rule and renders localized conditions/injuries, so a severity-3 injury cannot be shown as “available” while strategic actions are locked. Alpha.3/alpha.4 migration logs report the actual current target version instead of stale alpha.5 text; both paths have regression assertions.
 
 ## Still out of scope for V1.0-C
 

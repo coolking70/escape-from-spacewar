@@ -19,6 +19,15 @@ import {
 } from '../strategy/universeRules';
 import { SHIP_CN, VARIANT_CN, getShipDef } from '../sim/shipVariants';
 import type { PersistentShip } from '../campaign/fleet/persistentFleet';
+import {
+  COMMANDER_ATTRIBUTE_LABEL,
+  COMMANDER_TRAIT_LABEL,
+  ensureCommanderProfile
+} from '../campaign/commander/commanderSystem';
+import {
+  COMMANDER_CONDITION_LABEL,
+  COMMANDER_INJURY_LABEL
+} from '../campaign/commander/commanderHealth';
 import type {
   FacilityType,
   ResearchProjectId,
@@ -29,6 +38,10 @@ import type {
   UniverseAction,
   UniverseState
 } from '../strategy/universeTypes';
+import {
+  isStrategicCommanderAvailable,
+  isStrategicCommandLocked
+} from '../strategy/universeCommander';
 
 const STAR_LABEL: Record<StarType, string> = {
   yellowDwarf: '黄矮星',
@@ -101,7 +114,7 @@ function disabledAttr(disabled: boolean): string {
 }
 
 /** 单艘舰的卡片：ID / 舰种 / 改型 / 状态 / 组件完整度 / 关键组件损毁提示 / 维修按钮。 */
-function fleetShipRow(ship: PersistentShip, state: UniverseState, actionState: UniverseState): string {
+function fleetShipRow(ship: PersistentShip, actionState: UniverseState, actionLocked: boolean): string {
   const def = getShipDef(ship.shipClass, ship.variant).def;
   const maxTotal = def.components.reduce((sum, component) => sum + component.maxHp, 0);
   const curTotal = ship.componentHp
@@ -116,7 +129,7 @@ function fleetShipRow(ship: PersistentShip, state: UniverseState, actionState: U
   );
   const warn = keyDestroyed ? ' <span class="ship-warn">⚠关键组件损毁</span>' : '';
   const repairBtn = ship.disabled && canRepairShip(actionState, ship.campaignShipId)
-    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(!!state.pendingBattle)}>维修</button>`
+    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked)}>维修</button>`
     : '';
   return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}</div>`;
 }
@@ -143,13 +156,16 @@ export class StrategicUniversePanel {
     const fleetCounts = strategicFleetCounts(state.fleet);
     const fleetPower = strategicFleetPower(state);
     const hasPending = !!state.pendingBattle;
+    const commandLocked = isStrategicCommandLocked(state);
     // pending 只锁定行动，不应令原本可执行的管理操作从界面消失；保留按钮并禁用，
     // 让玩家清楚哪些操作会在结算战斗后恢复。
     const actionState = hasPending ? { ...state, pendingBattle: undefined } : state;
     const pendingBanner = hasPending
       ? '<div class="strategy-banner pending">当前存在尚未结算的战略战斗。完成战斗前，战略时间与其他行动已锁定。</div>'
-      : '';
-    const actionLocked = hasPending;
+      : commandLocked
+        ? '<div class="strategy-banner pending">现任指挥官无法履职。完成继任前，战略时间与其他行动已锁定。</div>'
+        : '';
+    const actionLocked = hasPending || commandLocked;
     const blueprintText = state.faction.legacy.blueprints.length
       ? state.faction.legacy.blueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
       : '无';
@@ -161,7 +177,7 @@ export class StrategicUniversePanel {
   <h2>舰队与跨域资产</h2>
   <p>总舰船 ${fleetCounts.total} · 可作战 ${fleetCounts.operational} · 失能 ${fleetCounts.disabled}${fleetCounts.escaped ? ` · 逃脱 ${fleetCounts.escaped}` : ''} · 战力 ${fleetPower}</p>
   <div class="fleet-ship-list">
-    ${state.fleet.ships.map((ship) => fleetShipRow(ship, state, actionState)).join('')}
+    ${state.fleet.ships.map((ship) => fleetShipRow(ship, actionState, actionLocked)).join('')}
   </div>
   <p>永久蓝图：${blueprintText}</p>
   <p>本星域新获蓝图：${recoveredText}</p>
@@ -201,7 +217,7 @@ export class StrategicUniversePanel {
       const enemyCount = pb.enemyFleet.reduce((sum, entry) => sum + Math.max(0, Math.floor(entry.count)), 0);
       battle = `<button class="btn danger" id="strategy-engage">继续战斗 · ${escapeHtml(battleSystem?.name ?? pb.systemId)} · ${enemyCount} 敌舰 · seed ${pb.battleSeed} · 战前预算 ${pb.enemyPowerBefore}</button>`;
     } else if (selected.id === current.id && canEngageEnemy(state)) {
-      battle = `<button class="btn danger" id="strategy-engage">攻击当地敌军（战力 ${current.enemyPower}）</button>`;
+      battle = `<button class="btn danger" id="strategy-engage"${disabledAttr(actionLocked)}>攻击当地敌军（战力 ${current.enemyPower}）</button>`;
     }
 
     const selectedEntities = state.entities.filter((entity) => entity.systemId === selected.id);
@@ -269,8 +285,28 @@ export class StrategicUniversePanel {
       : '';
 
     const log = state.log.slice(-12).reverse().map((entry) => `<div>R${entry.turn} · ${escapeHtml(entry.text)}</div>`).join('');
+    const commander = ensureCommanderProfile(state.commander, state.seed);
+    const commanderAttributes = Object.entries(commander.attributes)
+      .map(([key, value]) => `<span>${COMMANDER_ATTRIBUTE_LABEL[key as keyof typeof commander.attributes]} ${value}</span>`)
+      .join('');
+    const commanderDuty = !commander.alive
+      ? '阵亡'
+      : isStrategicCommanderAvailable(state) ? '可履职' : '无法履职';
+    const commanderConditions = commander.conditions.length
+      ? `状况：${commander.conditions.map((condition) => `${COMMANDER_CONDITION_LABEL[condition.id]} ${condition.severity}`).join(' / ')}`
+      : '';
+    const commanderInjuries = commander.injuries.length
+      ? `伤势：${commander.injuries.map((injury) => `${COMMANDER_INJURY_LABEL[injury.id]} ${injury.severity}`).join(' / ')}`
+      : '';
+    const commanderStatus = [
+      `状态：${commanderDuty}`,
+      commanderConditions,
+      commanderInjuries,
+      `候补 ${state.reserveCommanders.length}/3`
+    ].filter(Boolean).join(' · ');
+    const commanderCard = `<section class="strategic-card strategic-commander"><h2>远征指挥官</h2><h3>${escapeHtml(commander.name)} · Lv.${commander.level}</h3><div class="commander-stats">${commanderAttributes}</div><p>特质：${commander.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')}</p><p class="muted">${commanderStatus}</p></section>`;
 
-    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点产出：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${selected.enemyPower ? ` · 敌军战力 ${selected.enemyPower}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management"><section class="strategic-card"><h2>前进基地</h2><p>${baseText}</p><div class="facility-list">${facilities}</div><h3>建造队列</h3><div class="queue-list">${constructionQueue}</div><div class="strategy-button-grid">${constructionButtons}</div></section><section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}<div class="extraction-actions">${stable}${emergency}${rearguard}</div><p class="muted extract-preview">${extractPreview}</p><small>稳定撤离需要 100% 校准、补给 8、燃料 2；紧急撤离只需 40% 校准，但会丢失失能舰和大部分资源。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
+    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点产出：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${selected.enemyPower ? ` · 敌军战力 ${selected.enemyPower}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management">${commanderCard}<section class="strategic-card"><h2>前进基地</h2><p>${baseText}</p><div class="facility-list">${facilities}</div><h3>建造队列</h3><div class="queue-list">${constructionQueue}</div><div class="strategy-button-grid">${constructionButtons}</div></section><section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}<div class="extraction-actions">${stable}${emergency}${rearguard}</div><p class="muted extract-preview">${extractPreview}</p><small>稳定撤离需要 100% 校准、补给 8、燃料 2；紧急撤离只需 40% 校准，但会丢失失能舰和大部分资源。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
 
     this.root.querySelectorAll<HTMLElement>('[data-strategy-system]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'selectSystem', systemId: button.dataset.strategySystem! });

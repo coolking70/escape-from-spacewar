@@ -31,6 +31,10 @@ try {
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.locator('#cm-strategy-new').click();
 
+  const textState = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
+  assert.ok(textState.commander?.id, 'strategic text state must expose the commander identity');
+  assert.equal(textState.commander.alive, true, 'new strategic commander must begin alive');
+
   const screen = page.locator('.strategic-screen');
   await screen.waitFor({ state: 'visible' });
   const before = await screen.evaluate((element) => ({
@@ -64,6 +68,9 @@ try {
   assert.ok(after.scrollTop > 0, 'mouse wheel must move the strategic scroll container');
   assert.ok(after.scrollTop <= after.maxScroll, 'strategic scroll position must remain within bounds');
   assert.equal(managementVisible, true, 'lower strategic management content must become visible after scrolling');
+  await page.locator('.strategic-commander').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('.strategic-commander').isVisible(), true, 'commander card must be reachable in the management area');
+  assert.ok((await page.locator('.strategic-commander').innerText()).includes(textState.commander.name), 'commander UI and text state must agree');
   assert.deepEqual(errors, [], `browser console must stay clean:\n${errors.join('\n')}`);
 
   console.log(

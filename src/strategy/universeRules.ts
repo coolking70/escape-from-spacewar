@@ -32,6 +32,7 @@ import type {
   UniverseAction,
   UniverseState
 } from './universeTypes';
+import { isStrategicCommandLocked } from './universeCommander';
 
 export interface FacilityDefinition {
   label: string;
@@ -345,14 +346,14 @@ export function travelFuelCost(state: UniverseState): number {
 export function canEstablishBase(state: UniverseState, entityId: string): boolean {
   const entity = state.entities.find((candidate) => candidate.id === entityId);
   const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
-  return state.status === 'active' && !state.pendingBattle && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
+  return state.status === 'active' && !state.pendingBattle && !isStrategicCommandLocked(state) && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
     entity.surveyed && entity.systemId === state.fleet.systemId && !entity.ownerId &&
     (system?.enemyPower ?? 0) === 0 && state.faction.resources.minerals >= 10 &&
     state.faction.resources.energy >= 5 && state.faction.resources.supplies >= 4;
 }
 
 export function canQueueFacility(state: UniverseState, facilityType: FacilityType): boolean {
-  if (state.status !== 'active' || state.pendingBattle) return false;
+  if (state.status !== 'active' || state.pendingBattle || isStrategicCommandLocked(state)) return false;
   const base = baseEntity(state);
   if (!base || state.fleet.systemId !== base.systemId) return false;
   const queue = base.constructionQueue ?? [];
@@ -362,7 +363,7 @@ export function canQueueFacility(state: UniverseState, facilityType: FacilityTyp
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
-  if (state.status !== 'active' || !baseEntity(state) || state.pendingBattle) return false;
+  if (state.status !== 'active' || !baseEntity(state) || state.pendingBattle || isStrategicCommandLocked(state)) return false;
   if (state.faction.localResearch.includes(projectId)) return false;
   if (state.faction.researchQueue.some((order) => order.projectId === projectId)) return false;
   if (state.faction.researchQueue.length >= 2) return false;
@@ -371,7 +372,7 @@ export function canQueueResearch(state: UniverseState, projectId: ResearchProjec
 
 export function canEngageEnemy(state: UniverseState): boolean {
   const current = state.systems.find((system) => system.id === state.fleet.systemId);
-  return state.status === 'active' && !state.pendingBattle && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
+  return state.status === 'active' && !state.pendingBattle && !isStrategicCommandLocked(state) && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
 }
 
 export function canRepairFleet(state: UniverseState): boolean {
@@ -381,13 +382,13 @@ export function canRepairFleet(state: UniverseState): boolean {
 export function canRepairShip(state: UniverseState, campaignShipId: string): boolean {
   const base = baseEntity(state);
   const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
-  return state.status === 'active' && !state.pendingBattle && !!base && state.fleet.systemId === base.systemId &&
+  return state.status === 'active' && !state.pendingBattle && !isStrategicCommandLocked(state) && !!base && state.fleet.systemId === base.systemId &&
     facilityCount(base, 'repairDock') > 0 && !!ship && ship.disabled &&
     state.faction.resources.supplies >= 5 && state.faction.resources.minerals >= 4;
 }
 
 export function canCalibrateGate(state: UniverseState): boolean {
-  if (state.pendingBattle) return false;
+  if (state.pendingBattle || isStrategicCommandLocked(state)) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   return state.status === 'active' && !!gate && gate.surveyed && gate.systemId === state.fleet.systemId &&
@@ -400,7 +401,7 @@ export function canExtractSector(
   mode: ExtractionMode,
   rearguardShips = 0
 ): boolean {
-  if (state.pendingBattle) return false;
+  if (state.pendingBattle || isStrategicCommandLocked(state)) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   const fleetCounts = strategicFleetCounts(state.fleet);
@@ -647,7 +648,10 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     sectorIndex: next.sectorIndex + 1,
     targetSectorCount: next.targetSectorCount,
     legacy,
-    fleet: inherited
+    fleet: inherited,
+    commander: next.commander,
+    reserveCommanders: next.reserveCommanders,
+    pendingSuccession: next.pendingSuccession
   });
   generated.log.unshift({
     turn: 0,
@@ -661,6 +665,8 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
   if (state.pendingBattle && action.type !== 'engageEnemy' && action.type !== 'selectSystem') {
     return state;
   }
+  // 继任未完成或现任无法履职时，只允许查看星系；所有会改变战略状态的行动均锁定。
+  if (isStrategicCommandLocked(state) && action.type !== 'selectSystem') return state;
   if (action.type === 'selectSystem') {
     if (!state.systems.some((system) => system.id === action.systemId && system.discovered)) return state;
     const next = cloneState(state);

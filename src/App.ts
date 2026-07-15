@@ -190,7 +190,15 @@ export class App {
         turn: this.universe.turn,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
-        resources: this.universe.faction.resources
+        resources: this.universe.faction.resources,
+        commander: {
+          id: this.universe.commander.id,
+          name: this.universe.commander.name,
+          level: this.universe.commander.level,
+          alive: this.universe.commander.alive,
+          reserves: this.universe.reserveCommanders.length,
+          pendingSuccession: this.universe.pendingSuccession
+        }
       };
     }
     return this.campaign

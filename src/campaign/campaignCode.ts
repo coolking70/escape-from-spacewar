@@ -225,7 +225,7 @@ function validateSummary(state: CampaignState): boolean {
   );
 }
 
-function validateCommander(commander: CampaignCommander): boolean {
+export function validateCampaignCommander(commander: CampaignCommander): boolean {
   const finite = (candidate: unknown): candidate is number => typeof candidate === 'number' && Number.isFinite(candidate);
   if (
     !commander || typeof commander.id !== 'string' || !commander.id ||
@@ -317,9 +317,9 @@ export function validateCampaignState(value: unknown): value is CampaignState {
     state.cargo.items.some((stack) => !CARGO_TYPES.includes(stack.type) || !Number.isInteger(stack.quantity) || stack.quantity <= 0) ||
     new Set(state.cargo.items.map((stack) => stack.type)).size !== state.cargo.items.length || cargoUsed(state.cargo) > state.cargo.capacity
   ) return false;
-  if (!validateCommander(state.commander) || !Array.isArray(state.reserveCommanders) || state.reserveCommanders.length > 3) return false;
+  if (!validateCampaignCommander(state.commander) || !Array.isArray(state.reserveCommanders) || state.reserveCommanders.length > 3) return false;
   const commanderIds = [state.commander.id, ...state.reserveCommanders.map((commander) => commander.id)];
-  if (new Set(commanderIds).size !== commanderIds.length || state.reserveCommanders.some((commander) => !validateCommander(commander))) return false;
+  if (new Set(commanderIds).size !== commanderIds.length || state.reserveCommanders.some((commander) => !validateCampaignCommander(commander))) return false;
   if (state.pendingSuccession && !state.reserveCommanders.some((commander) => isCommanderAvailable(commander, state.campaignSeed))) return false;
 
   if (!state.fleet || !Array.isArray(state.fleet.ships) || !FORMATIONS.includes(state.fleet.formation) || !DOCTRINES.includes(state.fleet.doctrine)) return false;
@@ -367,7 +367,7 @@ export function validateCampaignState(value: unknown): value is CampaignState {
       !nonNegativeInteger(state.pendingRecruitment.supplyCost) ||
       !Array.isArray(state.pendingRecruitment.candidates) || state.pendingRecruitment.candidates.length < 1 || state.pendingRecruitment.candidates.length > 2 ||
       new Set(candidateIds).size !== candidateIds.length || candidateIds.some((id) => commanderIds.includes(id)) ||
-      state.pendingRecruitment.candidates.some((candidate) => !validateCommander(candidate))
+      state.pendingRecruitment.candidates.some((candidate) => !validateCampaignCommander(candidate))
     ) return false;
   }
   if (state.pendingBattle) {

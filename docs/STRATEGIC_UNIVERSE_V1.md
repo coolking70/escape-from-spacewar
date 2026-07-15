@@ -8,7 +8,8 @@
 > V1.0-B.3 进一步闭合低预算敌军生成（子最低成本归一化为空舰队，不再回退标准战斗机）、持久战斗绑定完整性（失能舰/部署/精确集合）、`BattleState` 一致性（死亡清 tick、失能按真实组件损毁、alpha.5 拒绝 `escaped`），并将 UI 锁定升级为真实 DOM 行为测试、集成测试直接消费模拟器权威 `getState()`；策略测试套件扩展至 57 例。
 > V1.0-B.4 固化 `isStrategicShipEligible`、严格 pending deployment/binding 集合、同源组件—`combatState` 校验与 alpha.2 极低战力钳制；escaped 最终定义为结构存活但已离场。真实 DOM 测试改用 jsdom，存档版本保持 `1.0-alpha.5`，策略测试套件扩展至 59 例。
 > V1.0-B.5 将“当前可参战”与“可重新选择部署”分离，统一组件失能、敌袭、维修和写回状态，并使战斗入口严格拒绝空、重复、不存在或不合资格的显式部署；真实 pending/UI 测试夹具可保存，策略测试套件扩展至 64 例。
-> 当前实现与进度请以 `progress.md` 的 V1.0-B.5 小节为准。
+> V1.0-C.1 首个切片将 V0.8 同源指挥官档案加入战略状态、UI 与跨星域继承，Sector Expedition Code 升级为 `1.0-alpha.6`，并显式迁移 alpha.5。现任指挥官可用性与 `pendingSuccession` 必须双向一致；继任期间保存、编码、战略判定、reducer 与 UI 共用行动锁。策略测试套件扩展至 66 例。
+> 当前实现与进度请以 `progress.md` 的 V1.0-C.1 小节为准。
 
 ## Purpose
 

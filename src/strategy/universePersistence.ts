@@ -7,6 +7,9 @@ import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, minimumSt
 import { createStarterFleet, isPersistentShipDestroyed, isPersistentShipDisabled, isShipDeployable } from '../campaign/fleet/persistentFleet';
 import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
+import { validateCampaignCommander } from '../campaign/campaignCode';
+import { createCommander } from '../campaign/commander/commanderSystem';
+import { isStrategicSuccessionStateConsistent } from './universeCommander';
 import {
   SECTOR_EXPEDITION_VERSION,
   type SectorExpeditionVersion
@@ -42,6 +45,15 @@ interface UniverseEnvelope {
 const DISCRETE_TOLERANCE = minimumStrategicFleetCost();
 /** alpha.4 合法敌方预算下限：不得小于最低合法战略舰船成本（1～下限-1 视为非法）。 */
 const MIN_ENEMY_BUDGET = minimumStrategicFleetCost();
+
+function addStrategicCommanderState(state: any): void {
+  if (!state.commander) {
+    const factionName = typeof state.faction?.name === 'string' ? state.faction.name : '深空远征团';
+    state.commander = createCommander(state.seed >>> 0, `${factionName}指挥官`, 'balanced');
+  }
+  if (!Array.isArray(state.reserveCommanders)) state.reserveCommanders = [];
+  if (typeof state.pendingSuccession !== 'boolean') state.pendingSuccession = false;
+}
 
 function b64(source: string): string {
   const bytes = new TextEncoder().encode(source);
@@ -363,7 +375,7 @@ function normalizeLegacyFleet(fleet: any): void {
   }
 }
 
-/** 旧抽象舰队（alpha.2）→ 真实逐舰舰队（alpha.5），并真实使用 combatPower 换算与敌战力重建。 */
+/** 旧抽象舰队（alpha.2）→ 当前真实逐舰舰队，并真实使用 combatPower 换算与敌战力重建。 */
 function migrateAlpha2(raw: any): UniverseState | null {
   if (!raw || raw.version !== '1.0-alpha.2' || !nonNegativeInteger(raw.seed)) return null;
   const fleet = raw.fleet;
@@ -375,6 +387,7 @@ function migrateAlpha2(raw: any): UniverseState | null {
   const ships = migrateAlpha2Fleet(shipCount, disabledShips, fleet.combatPower as number);
   const migrated: any = JSON.parse(JSON.stringify(raw));
   migrated.version = SECTOR_EXPEDITION_VERSION;
+  addStrategicCommanderState(migrated);
   migrated.pendingBattle = undefined;
   migrated.fleet = {
     id: fleet.id,
@@ -400,34 +413,36 @@ function migrateAlpha2(raw: any): UniverseState | null {
   return migrated as UniverseState;
 }
 
-/** alpha.3（已用真实逐舰舰队，但敌战力仍为旧量纲）→ alpha.5（敌战力改用 core-v4 价值量纲 + escaped 语义统一）。 */
+/** alpha.3（已用真实逐舰舰队，但敌战力仍为旧量纲）→ 当前版本（core-v4 价值量纲、escaped 语义与指挥官状态统一）。 */
 function migrateAlpha3(raw: any): UniverseState | null {
   if (!raw || raw.version !== '1.0-alpha.3' || !nonNegativeInteger(raw.seed)) return null;
   const migrated: any = JSON.parse(JSON.stringify(raw));
   migrated.version = SECTOR_EXPEDITION_VERSION;
+  addStrategicCommanderState(migrated);
   normalizeLegacyFleet(migrated.fleet);
   migrated.pendingBattle = raw.pendingBattle ? JSON.parse(JSON.stringify(raw.pendingBattle)) : undefined;
   rebuildLegacyAlpha3EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
   migrated.log.unshift({
     turn: 0,
-    text: '旧版 alpha.3 星域远征已迁移至 alpha.5（敌战力改用 core-v4 舰船价值量纲、escaped 战略语义统一）。'
+    text: `旧版 alpha.3 星域远征已迁移至 ${SECTOR_EXPEDITION_VERSION}（敌战力改用 core-v4 舰船价值量纲、escaped 战略语义统一、接入确定性指挥官档案）。`
   });
   return migrated as UniverseState;
 }
 
-/** alpha.4（结构已与 alpha.5 基本一致，但 escaped 战略语义未统一）→ alpha.5（escaped 仅指脱离本次战斗、敌战力同量纲、存档校验强化）。 */
+/** alpha.4 → 当前版本（escaped 仅指脱离本次战斗、敌战力同量纲、存档校验与指挥官状态强化）。 */
 function migrateAlpha4(raw: any): UniverseState | null {
   if (!raw || raw.version !== '1.0-alpha.4' || !nonNegativeInteger(raw.seed)) return null;
   const migrated: any = JSON.parse(JSON.stringify(raw));
   migrated.version = SECTOR_EXPEDITION_VERSION;
+  addStrategicCommanderState(migrated);
   normalizeLegacyFleet(migrated.fleet);
   migrated.pendingBattle = raw.pendingBattle ? JSON.parse(JSON.stringify(raw.pendingBattle)) : undefined;
   normalizeAlpha4EnemyPowers(migrated);
   if (!validateUniverseState(migrated)) return null;
   migrated.log.unshift({
     turn: 0,
-    text: '旧版 alpha.4 星域远征已迁移至 alpha.5（escaped 战略语义统一、敌战力同量纲、存档校验强化）。'
+    text: `旧版 alpha.4 星域远征已迁移至 ${SECTOR_EXPEDITION_VERSION}（escaped 战略语义统一、敌战力同量纲、存档校验强化、接入确定性指挥官档案）。`
   });
   return migrated as UniverseState;
 }
@@ -442,6 +457,16 @@ function migrateAlpha1(raw: any): UniverseState | null {
   });
   return migrated;
 }
+
+function migrateAlpha5(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.5' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  addStrategicCommanderState(migrated);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.5 星域远征已接入确定性指挥官档案。' });
+  return migrated as UniverseState;
+}
 export function validateUniverseState(value: unknown): value is UniverseState {
   const state = value as UniverseState;
   // 安全顺序：任何缺失/畸形结构都必须安全返回 false，绝不抛出（覆盖 undefined / null / {} / {version} / {fleet:null} / {fleet:{}}）。
@@ -454,6 +479,14 @@ export function validateUniverseState(value: unknown): value is UniverseState {
   if (!state.fleet || typeof state.fleet !== 'object' || !Array.isArray(state.fleet.ships) || state.fleet.ships.length < 1) return false;
   if (!state.crisis || !state.extraction) return false;
   if (!Array.isArray(state.entities) || !state.faction || !Array.isArray(state.log)) return false;
+  if (
+    !validateCampaignCommander(state.commander) || !Array.isArray(state.reserveCommanders) ||
+    state.reserveCommanders.length > 3 || typeof state.pendingSuccession !== 'boolean' ||
+    state.reserveCommanders.some((commander) => !validateCampaignCommander(commander))
+  ) return false;
+  const commanderIds = [state.commander.id, ...state.reserveCommanders.map((commander) => commander.id)];
+  if (new Set(commanderIds).size !== commanderIds.length) return false;
+  if (!isStrategicSuccessionStateConsistent(state)) return false;
   if (
     !state.crisis || !CRISIS_PHASES.includes(state.crisis.phase) || !nonNegativeInteger(state.crisis.pressure) ||
     state.crisis.pressure > 100 || !positiveInteger(state.crisis.finalTurn)
@@ -604,6 +637,10 @@ export function decodeUniverse(code: string): UniverseState {
     const migrated = migrateAlpha4(envelope.state);
     if (migrated) return migrated;
   }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.5') {
+    const migrated = migrateAlpha5(envelope.state);
+    if (migrated) return migrated;
+  }
   if (
     envelope?.type !== 'spacewar-sector-expedition' || envelope?.v !== SECTOR_EXPEDITION_VERSION ||
     !validateUniverseState(envelope.state)
@@ -631,6 +668,13 @@ export function loadUniverse(): UniverseState | null {
     }
     if (parsed && parsed.version === '1.0-alpha.4') {
       const migrated = migrateAlpha4(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.5') {
+      const migrated = migrateAlpha5(parsed);
       if (migrated) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
         return migrated;

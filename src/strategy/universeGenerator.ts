@@ -2,6 +2,8 @@ import { createPRNG } from '../sim/prng';
 import { createStarterFleet, PersistentFleet } from '../campaign/fleet/persistentFleet';
 import { systemEnemyBudget } from '../campaign/fleet/campaignPower';
 import { SECTOR_EXPEDITION_VERSION } from './universeTypes';
+import { createCommander } from '../campaign/commander/commanderSystem';
+import type { CampaignCommander } from '../campaign/campaignTypes';
 import type {
   PermanentBlueprintId,
   SectorLegacy,
@@ -30,6 +32,9 @@ export interface SectorGenerationOptions {
   legacy?: SectorLegacy;
   /** 跨星域继承的真实逐舰舰队；首星域缺省使用三艘初始舰船。 */
   fleet?: PersistentFleet;
+  commander?: CampaignCommander;
+  reserveCommanders?: CampaignCommander[];
+  pendingSuccession?: boolean;
 }
 
 export function hash32(...values: Array<number | string>): number {
@@ -206,6 +211,9 @@ export function generateUniverse(
   }
 
   const inherited = options.fleet ?? createStarterFleet();
+  const commander = options.commander
+    ? JSON.parse(JSON.stringify(options.commander)) as CampaignCommander
+    : createCommander(normalizedSeed, `${factionName.trim() || '深空远征团'}指挥官`, 'balanced');
 
   return {
     version: SECTOR_EXPEDITION_VERSION,
@@ -231,6 +239,11 @@ export function generateUniverse(
       recoveredBlueprints: [],
       legacy
     },
+    commander,
+    reserveCommanders: options.reserveCommanders
+      ? JSON.parse(JSON.stringify(options.reserveCommanders)) as CampaignCommander[]
+      : [],
+    pendingSuccession: options.pendingSuccession ?? false,
     fleet: {
       id: `strategic-fleet-${normalizedSeed}-${sectorIndex}`,
       name: '远征舰队',

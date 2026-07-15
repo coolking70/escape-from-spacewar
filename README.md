@@ -115,7 +115,7 @@ V1.0-A 没有修改 core-v4 舰船模板、默认平衡、AI 或黄金回放。
 ### Sector Expedition Code
 
 - `type: "spacewar-sector-expedition"`
-- 版本：`1.0-alpha.5`（真实逐舰舰队；敌方战力自 V1.0-B.1 起改用 core-v4 舰船成本量纲）；`1.0-alpha.2` 抽象舰队 / `1.0-alpha.3` 旧量纲敌战力 / `1.0-alpha.4` 旧 escaped 语义存档均会确定性迁移为 `1.0-alpha.5`
+- 版本：`1.0-alpha.6`（真实逐舰舰队与 V0.8 同源指挥官档案）；`1.0-alpha.2` 至 `1.0-alpha.5` 存档均会确定性迁移到当前版本
 - 保存当前星域、实体、敌军、设施、队列、危机、星门、真实舰队与跨域继承状态
 - 旧 `1.0-alpha.1` 永久宇宙实验存档会重置迁移为新的第一星域
 
@@ -151,7 +151,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（64 项，无 `as unknown as` 伪造 BattleState）。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动和下方管理区可达性：
+`npm run test:strategy` 覆盖（66 项，无 `as unknown as` 伪造 BattleState）。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动和下方管理区可达性：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；
@@ -209,16 +209,17 @@ npm run build:static
 - 战略舰船状态复用共享组件规则：当前 operational 必须满足 `!disabled && !escaped && deployed !== false`；仅取消部署的舰船仍可由玩家重新选择。
 - `deploymentFleet` 与 `prepareStrategicBattle` 对显式部署执行严格校验，空集合、重复 ID、不存在 ID、失能舰、逃脱舰和 `deployed=false` 舰均直接报错，不再静默回退为默认舰队。
 - 失能状态按 core-v4 的“同类系统全部损毁”规则计算；敌袭通过真实组件损伤造成失能，维修和战斗写回均从组件 HP 重新计算 `disabled`。
-- alpha.2 的零值、极低值和高值迁移保持确定、合法并按最近可达战力钳制；Sector Expedition Code 仍为 `1.0-alpha.5`。
+- alpha.2 的零值、极低值和高值迁移保持确定、合法并按最近可达战力钳制；Sector Expedition Code 当前为 `1.0-alpha.6`。
 - jsdom 测试使用可通过 `validateUniverseState` 的真实状态：所有战略按钮在各自合法上下文中派发正确 action，pending 状态在 DOM 与 reducer 两层锁定行动。
+- 指挥官可用性与继任状态执行双向一致性校验；现任不可履职时，保存、编码、`can*` 判定、reducer 与 UI 共用同一行动锁。
 
 > V1.0-B.1 修复了一处真实写回缺陷：`applyStrategicBattleResult` 原先将战后 `enemyPower` / `control` 写到了原始 `state` 的星系对象上，而返回值是深拷贝的 `next`，导致敌方剩余战力从未真正生效、星系清零逻辑失效；现改为写入克隆后的 `target` 星系。
 
 ## 当前边界
 
-V1.0-B.5 已完成战略参战/可选择资格拆分、严格 deployment/binding 集合、组件状态、敌袭与维修持久化、低战力迁移和真实 DOM 行为的闭环；策略套件现为 64 项，真实 DOM 覆盖采用 jsdom。以下内容仍属于 V1.0-C：
+V1.0-C.1 首个切片已接入 V0.8 同源指挥官档案、确定性 alpha.5 迁移、跨星域继承及继任状态/行动锁不变量；策略套件现为 66 项，真实 DOM 覆盖采用 jsdom。以下内容仍属于 V1.0-C：
 
-- 将 V0.8 指挥官与候补系统接入新模式；
+- 指挥官招募、伤病后果、治疗和实际继任任命操作；
 - 多据点与真实运输航线；
 - 舰船生产和模块装配；
 - 更完整的敌方舰队移动、围攻和星门决战；

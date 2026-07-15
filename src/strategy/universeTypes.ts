@@ -1,10 +1,11 @@
 import type { PersistentFleet } from '../campaign/fleet/persistentFleet';
 import type { DeploymentSelection } from '../campaign/deployment/deploymentSystem';
 import type { FleetEntry } from '../sim/battleTypes';
+import type { CampaignCommander } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-B.2 起为 1.0-alpha.5（低于最低舰队成本的敌方残余归零、escaped 战略语义统一、BattleState 深层结构校验、UI 锁定修复）。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.5';
-export type SectorExpeditionVersion = '1.0-alpha.5';
+/** 当前 Sector Expedition Code 版本。V1.0-C.1 升级为 1.0-alpha.6，加入复用 V0.8 模型的指挥官状态。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.6';
+export type SectorExpeditionVersion = '1.0-alpha.6';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
@@ -162,6 +163,9 @@ export interface UniverseState {
   systems: StarSystem[];
   entities: SpaceEntity[];
   faction: StrategicFaction;
+  commander: CampaignCommander;
+  reserveCommanders: CampaignCommander[];
+  pendingSuccession: boolean;
   fleet: StrategicFleet;
   crisis: CrisisState;
   extraction: ExtractionState;

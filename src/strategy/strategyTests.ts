@@ -880,6 +880,7 @@ export function runStrategicTests(): SuiteResult {
       const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.3', state: alpha3 });
       const migrated = decodeUniverse(code);
       test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.3 迁移为当前版本');
+      test.true_(migrated.log[0].text.includes(`迁移至 ${SECTOR_EXPEDITION_VERSION}`), 'alpha.3 迁移日志报告真实目标版本');
       test.true_(validateUniverseState(migrated), '迁移后状态通过深层校验');
       const rebuiltSys = migrated.systems.find((s) => s.id === enemySys.id)!;
       const isGate = migrated.entities.some((e) => e.systemId === enemySys.id && e.kind === 'jumpGate');
@@ -1121,6 +1122,7 @@ export function runStrategicTests(): SuiteResult {
       const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.4', state: alpha4 });
       const migrated = decodeUniverse(code);
       test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.4 迁移为当前版本');
+      test.true_(migrated.log[0].text.includes(`迁移至 ${SECTOR_EXPEDITION_VERSION}`), 'alpha.4 迁移日志报告真实目标版本');
       test.true_(migrated.fleet.ships.every((s) => s.escaped === false), '迁移后所有舰 escaped 归零');
       test.true_(migrated.fleet.ships.every((s) => s.deployed === true), '迁移后所有舰 deployed 归 true');
       test.true_(migrated.fleet.ships.every((s) => s.towed === false), '迁移后所有舰 towed 归 false');
@@ -1735,6 +1737,154 @@ export function runStrategicTests(): SuiteResult {
         test.true_(left.fleet.ships.filter((ship) => !ship.disabled).every((ship) => ship.componentHp!.every((hp) => hp > 0)), `combatPower=${combatPower} 不生成零组件 operational 舰`);
         test.true_(validateUniverseState(left), `combatPower=${combatPower} 迁移后通过深层校验`);
       }
+      add(test);
+    }
+
+    // V1.0-C.1：战略状态直接复用 V0.8 指挥官档案，并为 alpha.5 提供确定性迁移。
+    {
+      const test = new Case('战略指挥官确定生成、持久化、跨星域继承与 alpha.5 迁移');
+      const first = generateUniverse(1401, '指挥官测试团');
+      const same = generateUniverse(1401, '指挥官测试团');
+      test.eq(JSON.stringify(first.commander), JSON.stringify(same.commander), '相同 seed 生成完全一致的指挥官档案');
+      test.eq(first.version, SECTOR_EXPEDITION_VERSION, '新远征使用当前 alpha.6 版本');
+      test.true_(validateUniverseState(first), '含指挥官的新战略状态通过深层校验');
+
+      const roundTrip = decodeUniverse(encodeUniverse(first));
+      test.eq(JSON.stringify(roundTrip.commander), JSON.stringify(first.commander), '指挥官档案编码解码往返一致');
+      const rendered = renderPanelToRoot(first);
+      test.true_(!!rendered.root.querySelector('.strategic-commander'), '战略 UI 显示远征指挥官卡片');
+      test.true_(rendered.html.includes(first.commander.name), '指挥官姓名显示在战略 UI');
+      test.true_(rendered.html.includes('状态：可履职'), '健康指挥官显示可履职');
+
+      const malformed: any = JSON.parse(JSON.stringify(first));
+      malformed.commander.attributes.command = 99;
+      test.true_(!validateUniverseState(malformed), '非法指挥官属性被战略存档校验拒绝');
+
+      const legacy: any = JSON.parse(JSON.stringify(first));
+      legacy.version = '1.0-alpha.5';
+      delete legacy.commander;
+      delete legacy.reserveCommanders;
+      delete legacy.pendingSuccession;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.5', state: legacy }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.5 存档迁移到 alpha.6');
+      test.true_(validateUniverseState(migrated), 'alpha.5 迁移补齐合法指挥官档案');
+      test.eq(migrated.commander.id, first.commander.id, 'alpha.5 迁移按原 seed 确定生成同一指挥官 ID');
+
+      const extraction = prepareGate(first, 100);
+      extraction.faction.resources.supplies = 20;
+      extraction.fleet.fuel = extraction.fleet.maxFuel;
+      const nextSector = applyUniverseAction(extraction, { type: 'extractSector', mode: 'stable' });
+      test.eq(nextSector.commander.id, first.commander.id, '指挥官 ID 跨星域保持稳定');
+      test.eq(JSON.stringify(nextSector.commander), JSON.stringify(first.commander), '完整指挥官档案跨星域继承');
+      add(test);
+    }
+
+    // V1.0-C.1 收尾：继任状态必须与现任真实可用性一致，且继任期间不得推进战略状态。
+    {
+      const test = new Case('战略指挥官继任不变量、持久化往返与行动锁');
+      const base = generateUniverse(1402, '继任测试团');
+      const reserve = generateUniverse(2402, '候补测试团').commander;
+      const throws = (fn: () => unknown): boolean => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+
+      const deadWithoutSuccession = JSON.parse(JSON.stringify(base)) as typeof base;
+      deadWithoutSuccession.commander.alive = false;
+      test.true_(!validateUniverseState(deadWithoutSuccession), '现任阵亡但未进入继任时拒绝存档');
+      test.true_(throws(() => encodeUniverse(deadWithoutSuccession)), '现任阵亡但未继任时编码直接失败');
+      test.true_(throws(() => decodeUniverse(b64urlEncode({
+        type: 'spacewar-sector-expedition',
+        v: SECTOR_EXPEDITION_VERSION,
+        state: deadWithoutSuccession,
+      }))), '导入现任阵亡但未继任的远征码直接失败');
+
+      const incapacitatedWithoutSuccession = JSON.parse(JSON.stringify(base)) as typeof base;
+      incapacitatedWithoutSuccession.commander.injuries = [{
+        id: 'trauma', severity: 3, acquiredTurn: 0, permanent: false, cause: '继任不变量测试'
+      }];
+      test.true_(!validateUniverseState(incapacitatedWithoutSuccession), '现任重伤无法履职但未进入继任时拒绝存档');
+
+      const healthyPending = JSON.parse(JSON.stringify(base)) as typeof base;
+      healthyPending.reserveCommanders = [reserve];
+      healthyPending.pendingSuccession = true;
+      test.true_(!validateUniverseState(healthyPending), '现任可履职却等待继任时拒绝存档');
+
+      const deadWithoutReserve = JSON.parse(JSON.stringify(deadWithoutSuccession)) as typeof base;
+      deadWithoutReserve.pendingSuccession = true;
+      test.true_(!validateUniverseState(deadWithoutReserve), '没有可用候补的继任状态拒绝存档');
+
+      const endedPending = JSON.parse(JSON.stringify(base)) as typeof base;
+      endedPending.status = 'collapsed';
+      endedPending.reserveCommanders = [reserve];
+      endedPending.pendingSuccession = true;
+      test.true_(!validateUniverseState(endedPending), '已结束远征不得残留继任流程');
+
+      const succession = JSON.parse(JSON.stringify(base)) as typeof base;
+      succession.commander.alive = false;
+      succession.reserveCommanders = [reserve];
+      succession.pendingSuccession = true;
+      test.true_(validateUniverseState(succession), '现任不可履职且有可用候补时继任状态合法');
+      const round = decodeUniverse(encodeUniverse(succession));
+      test.true_(validateUniverseState(round), '合法继任状态编码解码往返后仍有效');
+      test.eq(round.pendingSuccession, true, '往返保持继任标记');
+      test.eq(round.commander.alive, false, '往返保持现任不可履职事实');
+
+      const incapacitatedSuccession = JSON.parse(JSON.stringify(incapacitatedWithoutSuccession)) as typeof base;
+      incapacitatedSuccession.reserveCommanders = [reserve];
+      incapacitatedSuccession.pendingSuccession = true;
+      test.true_(validateUniverseState(incapacitatedSuccession), '现任重伤无法履职且有候补时继任状态合法');
+      const incapacitatedRendered = renderPanelToRoot(incapacitatedSuccession);
+      test.true_(incapacitatedRendered.html.includes('状态：无法履职'), '重伤指挥官卡片与行动锁一致显示无法履职');
+      test.true_(incapacitatedRendered.html.includes('伤势：严重创伤 3'), '指挥官卡片使用中文标签显示真实伤势');
+      test.true_(!incapacitatedRendered.html.includes('状态：可履职'), '重伤指挥官不会错误显示可履职');
+
+      const deadRendered = renderPanelToRoot(succession);
+      test.true_(deadRendered.html.includes('状态：阵亡'), '阵亡指挥官显示阵亡状态');
+
+      const selected = succession.systems.find((system) => system.discovered && system.id !== succession.selectedSystemId);
+      if (selected) {
+        const selectedState = applyUniverseAction(succession, { type: 'selectSystem', systemId: selected.id });
+        test.eq(selectedState.selectedSystemId, selected.id, '继任期间仍允许只读星系选择');
+      }
+      const lockedActions: UniverseAction[] = [
+        { type: 'advanceTurn' },
+        { type: 'travel', systemId: succession.systems[0].id },
+        { type: 'surveyEntity', entityId: succession.entities[0].id },
+        { type: 'extractAsteroid', entityId: succession.entities.find((entity) => entity.kind === 'asteroidField')!.id },
+        { type: 'establishBase', entityId: succession.entities.find((entity) => entity.kind === 'station')!.id },
+        { type: 'queueConstruction', facilityType: 'solarArray' },
+        { type: 'queueResearch', projectId: 'routeAnalysis' },
+        { type: 'engageEnemy' },
+        { type: 'repairShip', campaignShipId: succession.fleet.ships[0].campaignShipId },
+        { type: 'calibrateGate' },
+        { type: 'extractSector', mode: 'stable' },
+      ];
+      for (const action of lockedActions) {
+        test.true_(applyUniverseAction(succession, action) === succession, `继任 reducer 拒绝 ${action.type}`);
+      }
+      test.eq(succession.turn, base.turn, '继任行动锁不会推进回合');
+      test.true_(!canEngageEnemy(succession), '继任期间 canEngageEnemy=false');
+      test.true_(!canQueueResearch(succession, 'routeAnalysis'), '继任期间 canQueueResearch=false');
+
+      const rendered = renderPanelToRoot(succession);
+      const nextTurn = rendered.root.querySelector<HTMLButtonElement>('#strategy-next-turn');
+      test.true_(!!nextTurn && nextTurn.disabled, '继任期间推进回合按钮真实 disabled');
+      if (nextTurn) {
+        const before = rendered.calls.actions;
+        nextTurn.click();
+        test.eq(rendered.calls.actions, before, '点击继任锁定按钮不触发回调');
+      }
+      test.true_(rendered.html.includes('完成继任前'), '战略界面明确显示继任行动锁原因');
+      const systemButton = rendered.root.querySelector<HTMLButtonElement>('[data-strategy-system]');
+      test.true_(!!systemButton && !systemButton.disabled, '继任期间系统选择保持可用');
+      const exportButton = rendered.root.querySelector<HTMLButtonElement>('#strategy-export');
+      const exitButton = rendered.root.querySelector<HTMLButtonElement>('#strategy-exit');
+      test.true_(!!exportButton && !exportButton.disabled && !!exitButton && !exitButton.disabled, '继任期间导出与返回保持可用');
       add(test);
     }
   });

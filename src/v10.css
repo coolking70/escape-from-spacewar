@@ -91,6 +91,19 @@
   box-shadow: 0 16px 45px rgba(0, 0, 0, .28);
 }
 
+.commander-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.commander-stats span {
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: rgba(67, 122, 177, .14);
+  text-align: center;
+}
+
 .strategic-map-card {
   position: relative;
   min-height: 520px;
