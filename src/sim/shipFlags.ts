@@ -7,7 +7,7 @@
 //
 // 注意：结构存活与在场刻意分离：escaped 是结构存活但不在场，destroyed 才是结构死亡。
 
-import { Ship, CombatState } from './battleTypes';
+import { Ship, CombatState, ShipComponent } from './battleTypes';
 import { isCombatCapable as _isCombatCapable } from './combatState';
 import { engineRatioFrom, weaponSystemFrom, sensorSystemFrom } from './derivedStats';
 
@@ -97,13 +97,23 @@ export interface DisableFlags {
   sensorsDisabled: boolean;
 }
 
-export function expectedDisableFlags(ship: Ship): DisableFlags {
-  const eng = engineRatioFrom(ship.components.filter((component) => component.def.type === 'engine'));
-  const wpn = weaponSystemFrom(ship.components.filter((component) => component.def.type === 'weapon'));
-  const sen = sensorSystemFrom(ship.components.filter((component) => component.def.type === 'sensor'));
+/**
+ * 从组件事实推导失能标志。某系统必须“该类型全部组件”均被摧毁才失能；
+ * 这是 simulator 与持久舰层共享的唯一规则。
+ */
+export function computeDisableFlagsFromComponents(
+  components: ShipComponent[]
+): DisableFlags {
+  const eng = engineRatioFrom(components.filter((component) => component.def.type === 'engine'));
+  const wpn = weaponSystemFrom(components.filter((component) => component.def.type === 'weapon'));
+  const sen = sensorSystemFrom(components.filter((component) => component.def.type === 'sensor'));
   return {
     mobilityDisabled: eng.mobilityDisabled,
     weaponsDisabled: wpn.weaponsDisabled,
     sensorsDisabled: sen.sensorsDisabled
   };
+}
+
+export function expectedDisableFlags(ship: Ship): DisableFlags {
+  return computeDisableFlagsFromComponents(ship.components);
 }

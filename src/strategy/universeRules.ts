@@ -6,7 +6,7 @@ import {
   normalizeStrategicEnemyPower,
   systemEnemyBudget
 } from '../campaign/fleet/campaignPower';
-import { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
+import { disablePersistentShip, isPersistentShipDisabled, isShipDeployable, PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import { importBattleResult } from '../campaign/fleet/battleResultImporter';
 import {
   PersistentBattleBinding,
@@ -192,7 +192,7 @@ export function strategicFleetCounts(fleet: StrategicFleet): StrategicFleetCount
   for (const ship of fleet.ships) {
     if (ship.disabled) disabled++;
     else if (ship.escaped) escaped++;
-    else operational++;
+    else if (isShipDeployable(ship)) operational++;
     if (ship.towed) towed++;
   }
   return { total: fleet.ships.length, operational, disabled, escaped, towed };
@@ -283,10 +283,10 @@ function enemyExpansion(state: UniverseState): void {
     const counts = strategicFleetCounts(state.fleet);
     if (supplyLoss >= 5 && counts.disabled < counts.operational) {
       const target = state.fleet.ships
-        .filter((ship) => !ship.disabled)
+        .filter(isShipDeployable)
         .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId))
         .pop();
-      if (target) target.disabled = true;
+      if (target) disablePersistentShip(target);
     }
     appendLog(state, `敌方袭击前进基地，损失补给 ${supplyLoss}${defense ? '；防御网降低了损失' : ''}。`);
     return;
@@ -403,9 +403,11 @@ export function canExtractSector(
   if (state.pendingBattle) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
+  const fleetCounts = strategicFleetCounts(state.fleet);
   if (
     state.status !== 'active' || !gate || !gate.surveyed || gate.systemId !== state.fleet.systemId ||
-    (system?.enemyPower ?? 0) > 0 || rearguardShips < 0 || rearguardShips >= strategicFleetCounts(state.fleet).operational
+    (system?.enemyPower ?? 0) > 0 || fleetCounts.operational <= 0 ||
+    rearguardShips < 0 || rearguardShips >= fleetCounts.operational
   ) return false;
   // 任何成功撤离必须至少保留一艘舰船（含失能舰），不得产生空舰队或零舰船 victory。
   const wouldLose = previewExtractLosses(state, mode, rearguardShips).length;
@@ -500,11 +502,11 @@ function engageEnemy(state: UniverseState): UniverseState {
   return next;
 }
 
-/** 逐舰维修：优先恢复被摧毁的 core/engine/weapon 关键组件；否则维修缺口最大的组件；关键系统恢复后解除 disabled。 */
+/** 逐舰维修：恢复一个损伤组件后，以共享组件规则重新计算 disabled。 */
 function repairShipComponents(ship: PersistentShip): void {
   const { def } = getShipDef(ship.shipClass, ship.variant);
   if (!ship.componentHp) ship.componentHp = def.components.map((component) => component.maxHp);
-  const keyTypes = new Set(['core', 'engine', 'weapon']);
+  const keyTypes = new Set(['engine', 'weapon', 'sensor']);
   let target = -1;
   for (let i = 0; i < def.components.length; i++) {
     if (keyTypes.has(def.components[i].type) && (ship.componentHp[i] ?? 0) <= 0) {
@@ -527,11 +529,7 @@ function repairShipComponents(ship: PersistentShip): void {
     const healed = Math.max(1, Math.ceil(maxHp * 0.5));
     ship.componentHp[target] = Math.min(maxHp, (ship.componentHp[target] ?? 0) + healed);
   }
-  const keyAlive = ['core', 'engine', 'weapon'].every((type) => {
-    const index = def.components.findIndex((component) => component.type === type);
-    return index >= 0 && (ship.componentHp?.[index] ?? 0) > 0;
-  });
-  if (keyAlive) ship.disabled = false;
+  ship.disabled = isPersistentShipDisabled(ship);
 }
 
 function repairShip(state: UniverseState, campaignShipId: string): UniverseState {
@@ -571,7 +569,7 @@ function calibrateGate(state: UniverseState): UniverseState {
  */
 function selectExtractLosses(fleet: StrategicFleet, mode: ExtractionMode, rearguard: number, extraLoss: number): string[] {
   const operational = fleet.ships
-    .filter((ship) => !ship.disabled)
+    .filter(isShipDeployable)
     .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
   const disabledSorted = fleet.ships
     .filter((ship) => ship.disabled)

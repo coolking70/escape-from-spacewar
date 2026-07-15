@@ -241,6 +241,13 @@ The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` 
 - alpha.2 migration preserves the frozen power formula, clamps impossible low targets to the nearest legal component state (each operational component at least 1 HP), and records the clamp. alpha.3/alpha.4 pending migration restores nonempty fleets to enemy control, or clears empty pending battles to neutral.
 - Added jsdom (`HTMLElement` / native disabled click behavior) and removed FakeRoot/FakeNode UI testing. The strategic suite now has **59 cases**.
 
+## V1.0-B.5 strategic fleet state and persistence closure
+
+- Persistent ship state is now derived through one shared component rule: a ship is operational only when it is not disabled, not escaped and not explicitly undeployed; a ship remains eligible for re-selection when it is merely undeployed.
+- Component disable flags reuse core-v4’s all-components-per-system rule. Enemy raids now destroy a complete real critical system; repair and battle writeback recompute `disabled` from component HP before a state can be saved.
+- Alpha.2 accepts zero combat power, remains deterministic at extreme values, and normalizes legacy disabled ships by destroying an entire critical system rather than one arbitrary component.
+- Pending UI tests originate from real `engageEnemy` states. jsdom verifies native disabled-click behavior for every strategic action button, while continue battle, export and exit stay enabled.
+
 ## Next milestone: V1.0-C
 
 The next development slice should replace strategic placeholders with existing mature systems:

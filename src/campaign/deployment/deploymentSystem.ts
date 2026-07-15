@@ -1,4 +1,4 @@
-import { isStrategicShipEligible, PersistentFleet } from '../fleet/persistentFleet';
+import { isShipDeployable, isShipEligibleForDeployment, PersistentFleet } from '../fleet/persistentFleet';
 
 export interface DeploymentSelection {
   selectedShipIds: string[];
@@ -7,7 +7,7 @@ export interface DeploymentSelection {
 export function defaultDeployment(fleet: PersistentFleet): DeploymentSelection {
   return {
     selectedShipIds: fleet.ships
-      .filter(isStrategicShipEligible)
+      .filter(isShipDeployable)
       .map((ship) => ship.campaignShipId)
       .sort()
   };
@@ -18,7 +18,7 @@ export function normalizeDeployment(
   selectedShipIds: string[] | undefined
 ): DeploymentSelection {
   const eligible = new Set(
-    fleet.ships.filter(isStrategicShipEligible).map((ship) => ship.campaignShipId)
+    fleet.ships.filter(isShipEligibleForDeployment).map((ship) => ship.campaignShipId)
   );
   const selected = [...new Set(selectedShipIds ?? [])]
     .filter((id) => eligible.has(id))
@@ -28,7 +28,7 @@ export function normalizeDeployment(
 
 function applySelection(fleet: PersistentFleet, selection: DeploymentSelection): void {
   const selected = new Set(selection.selectedShipIds);
-  for (const ship of fleet.ships) ship.deployed = isStrategicShipEligible(ship) && selected.has(ship.campaignShipId);
+  for (const ship of fleet.ships) ship.deployed = isShipEligibleForDeployment(ship) && selected.has(ship.campaignShipId);
 }
 
 export function toggleDeploymentShip(
@@ -37,7 +37,7 @@ export function toggleDeploymentShip(
   campaignShipId: string
 ): DeploymentSelection {
   const ship = fleet.ships.find((item) => item.campaignShipId === campaignShipId);
-  if (!ship || !isStrategicShipEligible(ship)) return normalizeDeployment(fleet, selection.selectedShipIds);
+  if (!ship || !isShipEligibleForDeployment(ship)) return normalizeDeployment(fleet, selection.selectedShipIds);
 
   const selected = new Set(normalizeDeployment(fleet, selection.selectedShipIds).selectedShipIds);
   if (selected.has(campaignShipId)) {

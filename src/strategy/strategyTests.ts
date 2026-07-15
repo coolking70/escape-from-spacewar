@@ -6,6 +6,7 @@ import {
   RESEARCH_DEFINITIONS,
   applyStrategicBattleResult,
   applyUniverseAction,
+  advanceUniverseTurn,
   canCalibrateGate,
   canEngageEnemy,
   canEstablishBase,
@@ -35,7 +36,13 @@ import {
   normalizeStrategicEnemyPower
 } from '../campaign/fleet/campaignPower';
 import { getShipDef, VARIANTS } from '../sim/shipVariants';
-import { activeShips } from '../campaign/fleet/persistentFleet';
+import {
+  activeShips,
+  computePersistentDisableFlags,
+  isPersistentShipDisabled,
+  isShipDeployable
+} from '../campaign/fleet/persistentFleet';
+import { defaultDeployment, toggleDeploymentShip } from '../campaign/deployment/deploymentSystem';
 import { boxStrategicEnemyFleet, strategicEnemyFleetFor, prepareStrategicBattle, validatePersistentBattleBindings } from '../campaign/fleet/battleAdapter';
 import type { PersistentBattleBinding } from '../campaign/fleet/battleAdapter';
 import type { BattleState, CombatState } from '../sim/battleTypes';
@@ -201,14 +208,6 @@ function syncBattleCounts(battle: BattleState): void {
   }
   battle.teamACount = a;
   battle.teamBCount = b;
-}
-
-/** 注入一个最小合法的待处理战斗，用于验证 can* 逻辑层锁定（不依赖具体敌军舰队）。 */
-function withPending(state: ReturnType<typeof generateUniverse>, systemId: string, enemyPower: number) {
-  return {
-    ...state,
-    pendingBattle: { battleId: 'test-pending', systemId, battleSeed: 7, enemyPowerBefore: enemyPower, enemyFleet: [] as never[] }
-  };
 }
 
 /** 将战斗舰置为低完整度 operational 状态（用于制造"低残余敌方战力"场景，且不触发任何失能/脱离标记）。 */
@@ -497,39 +496,15 @@ export function runStrategicTests(): SuiteResult {
     // 14. 待处理战斗逻辑层锁定：can* 全部返回 false
     {
       const test = new Case('待处理战斗逻辑层锁定：canExtractSector/canQueueFacility/canQueueResearch/canCalibrateGate/canEngageEnemy 均 false');
-      // 撤离 / 校准：先构造允许状态，再注入 pending，确认被锁定。
-      let gate = prepareGate(generateUniverse(1018), 100);
-      test.true_(canExtractSector(gate, 'stable'), '满校准时可稳定撤离');
-      test.true_(!canCalibrateGate(gate), '满校准时无需再校准');
-      const gateHostile = gate.systems.find((s) => s.control === 'enemy')!;
-      const gateLocked = withPending(gate, gateHostile.id, gateHostile.enemyPower);
-      test.true_(!canExtractSector(gateLocked, 'stable'), '注入待处理战斗后撤离被锁定');
-      test.true_(!canExtractSector(gateLocked, 'emergency'), '注入待处理战斗后紧急撤离被锁定');
-
-      let gateCal = prepareGate(generateUniverse(1019), 50);
-      test.true_(canCalibrateGate(gateCal), '校准未满时可校准星门');
-      const gateCalHostile = gateCal.systems.find((s) => s.control === 'enemy')!;
-      const gateCalLocked = withPending(gateCal, gateCalHostile.id, gateCalHostile.enemyPower);
-      test.true_(!canCalibrateGate(gateCalLocked), '注入待处理战斗后校准被锁定');
-
-      // 建造 / 科研：先构造有基地的允许状态，再注入 pending，确认被锁定。
-      let baseState = establishStartingBase(generateUniverse(1044));
-      test.true_(canQueueFacility(baseState, 'miningArray'), '有基地时可建造');
-      test.true_(canQueueResearch(baseState, 'routeAnalysis'), '有基地时可科研');
-      const baseLocked = withPending(baseState, baseState.fleet.systemId, 999);
-      test.true_(!canQueueFacility(baseLocked, 'miningArray'), '注入待处理战斗后建造被锁定');
-      test.true_(!canQueueResearch(baseLocked, 'routeAnalysis'), '注入待处理战斗后科研被锁定');
-
-      // 攻击：位于敌军星系且有作战舰时可攻击，注入 pending 后不可。
-      let eng = generateUniverse(1045);
-      const h = eng.systems.find((s) => s.control === 'enemy')!;
-      eng.fleet.systemId = h.id;
-      eng.selectedSystemId = h.id;
-      h.discovered = true;
-      h.enemyPower = 18;
-      test.true_(canEngageEnemy(eng), '位于敌军星系且有作战舰时可攻击');
-      const engLocked = withPending(eng, h.id, 18);
-      test.true_(!canEngageEnemy(engLocked), '存在待处理战斗时不可发起新攻击');
+      // pending 必须来自真实 engageEnemy 流程，不能使用空 enemyFleet 手写测试桩。
+      const { state: locked } = lockPendingBattle(1018, ENEMY_BUDGET);
+      test.true_(locked.pendingBattle!.enemyFleet.length > 0, 'pending 由真实敌军交战流程生成');
+      test.true_(!canExtractSector(locked, 'stable'), '真实 pending 时稳定撤离被锁定');
+      test.true_(!canExtractSector(locked, 'emergency'), '真实 pending 时紧急撤离被锁定');
+      test.true_(!canCalibrateGate(locked), '真实 pending 时星门校准被锁定');
+      test.true_(!canQueueFacility(locked, 'miningArray'), '真实 pending 时建造被锁定');
+      test.true_(!canQueueResearch(locked, 'routeAnalysis'), '真实 pending 时科研被锁定');
+      test.true_(!canEngageEnemy(locked), '真实 pending 时不可发起新攻击');
       add(test);
     }
 
@@ -1178,10 +1153,8 @@ export function runStrategicTests(): SuiteResult {
     // 46. UI 锁定（jsdom 真实 DOM）：禁用按钮真实 disabled===true 且 click() 不触发回调；继续战斗/导出/返回真实可用
     {
       const test = new Case('UI 锁定：真实 DOM——禁用按钮 disabled 且不触发回调、继续/导出/返回可用');
-      let gate = prepareGate(generateUniverse(1071), 100);
-      const enabled = establishStartingBase(gate);
-      const hostile = enabled.systems.find((s) => s.control === 'enemy')!;
-      const locked = withPending(enabled, hostile.id, 999);
+      const { state: locked } = lockPendingBattle(1071, ENEMY_BUDGET);
+      test.true_(locked.pendingBattle!.enemyFleet.length > 0, 'pending 来自真实 engageEnemy 流程');
       const { root, html, calls } = renderPanelToRoot(locked);
       // 禁用按钮：推进一回合
       const next = root.querySelector<HTMLButtonElement>('#strategy-next-turn');
@@ -1236,6 +1209,72 @@ export function runStrategicTests(): SuiteResult {
         test.eq(calls.actions, before + 1, '点击"推进一回合"触发 onAction 回调');
       }
       test.true_(!root.innerHTML.includes('disableddisabled'), '活跃状态不存在非法"disableddisabled"重复属性');
+      add(test);
+    }
+
+    // 47.1 真实 pending 的完整 UI 锁定覆盖：按钮来自真实 DOM，禁用 click 不得触发回调。
+    {
+      const test = new Case('UI 锁定：真实 pending 覆盖全部战略行动按钮');
+      const { state: pendingState } = lockPendingBattle(1073, ENEMY_BUDGET);
+      const makeFixture = () => JSON.parse(JSON.stringify(pendingState)) as ReturnType<typeof generateUniverse>;
+      const prepareActions = (state: ReturnType<typeof generateUniverse>, calibration: number, keepBase = true) => {
+        const current = state.systems[0];
+        current.control = 'neutral'; current.enemyPower = 0; current.discovered = true; current.surveyed = true;
+        state.fleet.systemId = current.id; state.selectedSystemId = current.id;
+        if (!state.faction.knownSystemIds.includes(current.id)) state.faction.knownSystemIds.push(current.id);
+        state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+        state.fleet.fuel = state.fleet.maxFuel;
+        const station = state.entities.find((entity) => entity.kind === 'station')!;
+        station.systemId = current.id; station.discovered = true; station.surveyed = true;
+        station.ownerId = keepBase ? state.faction.id : undefined;
+        station.facilities = keepBase ? [{ id: 'ui-repair', type: 'repairDock', level: 1 }] : [];
+        state.faction.baseEntityId = keepBase ? station.id : undefined;
+        const asteroid = state.entities.find((entity) => entity.kind === 'asteroidField')!;
+        asteroid.systemId = current.id; asteroid.discovered = true; asteroid.surveyed = true; asteroid.deposits = { minerals: 12, energy: 0 };
+        const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId)!;
+        gate.systemId = current.id; gate.discovered = true; gate.surveyed = true;
+        state.extraction.discovered = true; state.extraction.calibration = calibration;
+        const frigate = state.fleet.ships.find((ship) => ship.shipClass === 'Frigate')!;
+        const def = getShipDef(frigate.shipClass, frigate.variant).def;
+        frigate.componentHp = def.components.map((component) => component.maxHp);
+        def.components.forEach((component, index) => { if (component.type === 'engine') frigate.componentHp![index] = 0; });
+        frigate.disabled = true;
+        return state;
+      };
+      const assertLocked = (root: HTMLDivElement, calls: { actions: number }, selector: string, label: string) => {
+        const button = root.querySelector<HTMLButtonElement>(selector);
+        test.true_(!!button && button.disabled === true, `${label} 在 pending 时真实 disabled===true`);
+        if (button) {
+          const before = calls.actions;
+          button.click();
+          test.eq(calls.actions, before, `${label} 的禁用 click 不触发 onAction`);
+        }
+      };
+      const management = renderPanelToRoot(prepareActions(makeFixture(), 100));
+      assertLocked(management.root, management.calls, '#strategy-next-turn', 'next turn');
+      assertLocked(management.root, management.calls, '[data-strategy-survey]', 'survey');
+      assertLocked(management.root, management.calls, '[data-strategy-extract]', 'asteroid extract');
+      assertLocked(management.root, management.calls, '[data-strategy-build]', 'build');
+      assertLocked(management.root, management.calls, '[data-strategy-research]', 'research');
+      assertLocked(management.root, management.calls, '[data-strategy-repair]', 'repair');
+      assertLocked(management.root, management.calls, '#strategy-extract-stable', 'stable extraction');
+      assertLocked(management.root, management.calls, '#strategy-extract-emergency', 'emergency extraction');
+      assertLocked(management.root, management.calls, '#strategy-extract-rearguard', 'rearguard extraction');
+      const calibrating = renderPanelToRoot(prepareActions(makeFixture(), 50));
+      assertLocked(calibrating.root, calibrating.calls, '#strategy-calibrate', 'calibrate');
+      const base = renderPanelToRoot(prepareActions(makeFixture(), 100, false));
+      assertLocked(base.root, base.calls, '[data-strategy-base]', 'establish base');
+      const travelState = prepareActions(makeFixture(), 100);
+      const current = travelState.systems.find((system) => system.id === travelState.fleet.systemId)!;
+      travelState.selectedSystemId = current.neighbors[0];
+      const travel = renderPanelToRoot(travelState);
+      assertLocked(travel.root, travel.calls, '[data-strategy-travel]', 'travel');
+      const continueBattle = management.root.querySelector<HTMLButtonElement>('#strategy-engage');
+      test.true_(!!continueBattle && continueBattle.disabled === false, 'continue battle 在真实 pending 时保持可用');
+      if (continueBattle) { const before = management.calls.actions; continueBattle.click(); test.eq(management.calls.actions, before + 1, 'continue battle click 触发回调'); }
+      const exportButton = management.root.querySelector<HTMLButtonElement>('#strategy-export');
+      const exitButton = management.root.querySelector<HTMLButtonElement>('#strategy-exit');
+      test.true_(!!exportButton && exportButton.disabled === false && !!exitButton && exitButton.disabled === false, 'export 与 exit 保持可用');
       add(test);
     }
 
@@ -1483,6 +1522,96 @@ export function runStrategicTests(): SuiteResult {
       const boxed = boxStrategicEnemyFleet(1204, 137, { sectorIndex: 1, gateGuard: false, cruiserAllowed: false }, pool);
       const cost = campaignFleetEntryCost(boxed);
       test.true_(cost > 0 && cost <= 137 && 137 - cost < min, '敌军装箱满足剩余预算后置条件');
+      add(test);
+    }
+
+    // 60. deployed 是“当前部署”而不是“是否可被重新选择”；战略作战资格仅承认当前可用舰。
+    {
+      const test = new Case('deployed=false 不计 operational，取消部署后可重新选择');
+      const fleet = toPersistentFleet(generateUniverse(1301).fleet);
+      const id = fleet.ships[0].campaignShipId;
+      let selection = defaultDeployment(fleet);
+      selection = toggleDeploymentShip(fleet, selection, id);
+      test.true_(fleet.ships.find((ship) => ship.campaignShipId === id)!.deployed === false, '取消选择会写入 deployed=false');
+      selection = toggleDeploymentShip(fleet, selection, id);
+      test.true_(selection.selectedShipIds.includes(id) && fleet.ships.find((ship) => ship.campaignShipId === id)!.deployed === true, '取消部署后仍可重新选择并恢复 deployed=true');
+
+      const state = generateUniverse(1302);
+      state.fleet.ships.forEach((ship) => { ship.deployed = false; });
+      const hostile = state.systems.find((system) => system.control === 'enemy')!;
+      state.fleet.systemId = hostile.id;
+      state.selectedSystemId = hostile.id;
+      test.eq(strategicFleetCounts(state.fleet).operational, 0, 'deployed=false 舰不计 strategic operational');
+      test.true_(state.fleet.ships.every((ship) => !isShipDeployable(ship)), 'deployed=false 舰均不具备当前战斗资格');
+      test.true_(!canEngageEnemy(state), '全体 deployed=false 时不能创建无法启动的 pending battle');
+      add(test);
+    }
+
+    // 61. 持久舰失能严格复用 core-v4 的“同类组件全部毁坏”语义。
+    {
+      const test = new Case('持久舰组件失能、敌袭与维修全过程保持可保存');
+      let state = establishStartingBase(generateUniverse(1303));
+      const frigate = state.fleet.ships.find((ship) => ship.shipClass === 'Frigate')!;
+      const def = getShipDef(frigate.shipClass, frigate.variant).def;
+      frigate.componentHp = def.components.map((component) => component.maxHp);
+      const engines = def.components.map((component, index) => component.type === 'engine' ? index : -1).filter((index) => index >= 0);
+      frigate.componentHp[engines[0]] = 0;
+      test.true_(!computePersistentDisableFlags(frigate).mobilityDisabled && !isPersistentShipDisabled(frigate), '仅损毁一个多引擎组件不会误判 disabled');
+      frigate.componentHp[engines[1]] = 0;
+      frigate.disabled = isPersistentShipDisabled(frigate);
+      test.true_(computePersistentDisableFlags(frigate).mobilityDisabled && frigate.disabled, '全部引擎损毁才产生 mobility disabled');
+      const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      base.facilities = [{ id: 'test-repair', type: 'repairDock', level: 1 }];
+      state.faction.resources.supplies = 30;
+      state.faction.resources.minerals = 30;
+      state = applyUniverseAction(state, { type: 'repairShip', campaignShipId: frigate.campaignShipId });
+      let repaired = state.fleet.ships.find((ship) => ship.campaignShipId === frigate.campaignShipId)!;
+      test.true_(!repaired.disabled && validateUniverseState(state), '修复一个引擎即按 core-v4 真实组件规则解除 disabled');
+      state = applyUniverseAction(state, { type: 'repairShip', campaignShipId: frigate.campaignShipId });
+      repaired = state.fleet.ships.find((ship) => ship.campaignShipId === frigate.campaignShipId)!;
+      test.true_(!repaired.disabled && validateUniverseState(state), '继续维修保持可作战且状态仍合法');
+
+      // 让敌方只能袭击基地；真实 advanceUniverseTurn 必须把组件伤害同步写入可保存状态。
+      const raid = establishStartingBase(generateUniverse(1304));
+      const raidBase = raid.entities.find((entity) => entity.id === raid.faction.baseEntityId)!;
+      const baseSystem = raid.systems.find((system) => system.id === raidBase.systemId)!;
+      for (const system of raid.systems) {
+        if (system.id === baseSystem.id) {
+          system.control = 'player';
+          system.enemyPower = 0;
+        } else {
+          system.control = 'enemy';
+          system.enemyPower = minimumStrategicFleetCost();
+        }
+      }
+      raid.turn = 3;
+      const afterRaid = advanceUniverseTurn(raid, 'B.5 敌袭验证');
+      const disabled = afterRaid.fleet.ships.find((ship) => ship.disabled);
+      test.true_(!!disabled && isPersistentShipDisabled(disabled), '敌袭通过真实组件损伤产生 disabled');
+      test.true_(validateUniverseState(afterRaid), '敌袭后的真实状态可保存');
+      const round = decodeUniverse(encodeUniverse(afterRaid));
+      test.true_(validateUniverseState(round), '敌袭状态编码/解码后仍合法');
+      add(test);
+    }
+
+    // 62. alpha.2 极端战力迁移必须完全确定，不产生非法 operational 舰。
+    {
+      const test = new Case('alpha.2 极端 combatPower 迁移完全确定且合法');
+      for (const combatPower of [0, 1, 5, 10, 999]) {
+        const source: any = JSON.parse(JSON.stringify(generateUniverse(1305)));
+        source.version = '1.0-alpha.2';
+        source.fleet = {
+          id: source.fleet.id, name: source.fleet.name, systemId: source.fleet.systemId,
+          fuel: source.fleet.fuel, maxFuel: source.fleet.maxFuel,
+          shipCount: 4, disabledShips: 1, combatPower
+        };
+        const code = b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.2', state: source });
+        const left = decodeUniverse(code);
+        const right = decodeUniverse(code);
+        test.eq(JSON.stringify(left.fleet), JSON.stringify(right.fleet), `combatPower=${combatPower} 迁移结果完全确定`);
+        test.true_(left.fleet.ships.filter((ship) => !ship.disabled).every((ship) => ship.componentHp!.every((hp) => hp > 0)), `combatPower=${combatPower} 不生成零组件 operational 舰`);
+        test.true_(validateUniverseState(left), `combatPower=${combatPower} 迁移后通过深层校验`);
+      }
       add(test);
     }
   });

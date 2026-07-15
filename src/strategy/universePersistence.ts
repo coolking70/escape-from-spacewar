@@ -4,7 +4,7 @@ import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import { validateFleet } from '../sim/fleetValidator';
 import { strategicEnemyFleetFor } from '../campaign/fleet/battleAdapter';
 import { campaignFleetEntryCost, campaignFleetPower, campaignShipCost, minimumStrategicFleetCost, normalizeStrategicEnemyPower } from '../campaign/fleet/campaignPower';
-import { createStarterFleet, isStrategicShipEligible, persistentShipHasCriticalDamage } from '../campaign/fleet/persistentFleet';
+import { createStarterFleet, isPersistentShipDestroyed, isPersistentShipDisabled, isShipDeployable } from '../campaign/fleet/persistentFleet';
 import type { FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentFleet, PersistentShip } from '../campaign/fleet/persistentFleet';
 import {
@@ -116,9 +116,8 @@ function validateStrategicShips(ships: unknown): ships is PersistentShip[] {
     // core 归零意味着结构摧毁，写回流程必须删除该舰，不能把它存为 disabled。
     const persistent = record as unknown as PersistentShip;
     const def = getShipDef(persistent.shipClass, persistent.variant).def;
-    const coreIndex = def.components.findIndex((component) => component.type === 'core');
-    if (persistent.componentHp && coreIndex >= 0 && persistent.componentHp[coreIndex] <= 0) return false;
-    if (persistent.disabled !== persistentShipHasCriticalDamage(persistent)) return false;
+    if (isPersistentShipDestroyed(persistent)) return false;
+    if (persistent.disabled !== isPersistentShipDisabled(persistent)) return false;
   }
   return true;
 }
@@ -150,7 +149,7 @@ function validatePendingBattle(pending: unknown, state: UniverseState): boolean 
     if (!ids.length) return false;
     const ships = new Map(state.fleet.ships.map((ship) => [ship.campaignShipId, ship]));
     if (!ids.every((id) => ships.has(id as string))) return false;
-    if (ids.some((id) => !isStrategicShipEligible(ships.get(id as string)!))) return false;
+    if (ids.some((id) => !isShipDeployable(ships.get(id as string)!))) return false;
   }
   return true;
 }
@@ -270,10 +269,14 @@ function migrateAlpha2Fleet(shipCount: number, disabledShips: number, combatPowe
     const forceKeyZero = disabledSet.has(index);
     const componentHp = def.components.map((component) => component.maxHp);
     if (forceKeyZero) {
-      const keyIndex = def.components.findIndex(
+      const keyType = def.components.find(
         (component) => component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor'
-      );
-      if (keyIndex >= 0) componentHp[keyIndex] = 0;
+      )?.type;
+      if (keyType) {
+        def.components.forEach((component, componentIndex) => {
+          if (component.type === keyType) componentHp[componentIndex] = 0;
+        });
+      }
     }
     return {
       campaignShipId: `cs-${index}`,
@@ -345,12 +348,16 @@ function normalizeLegacyFleet(fleet: any): void {
       if (!Array.isArray(ship.componentHp) || ship.componentHp.length !== def.components.length) {
         ship.componentHp = def.components.map((component) => component.maxHp);
       }
-      const damaged = def.components.some((component, index) =>
-        (component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor') && ship.componentHp[index] <= 0
-      );
-      if (!damaged) {
-        const index = def.components.findIndex((component) => component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor');
-        if (index >= 0) ship.componentHp[index] = 0;
+      const alreadyDisabled = isPersistentShipDisabled(ship as PersistentShip);
+      if (!alreadyDisabled) {
+        const targetType = def.components.find((component) =>
+          component.type === 'engine' || component.type === 'weapon' || component.type === 'sensor'
+        )?.type;
+        if (targetType) {
+          def.components.forEach((component, index) => {
+            if (component.type === targetType) ship.componentHp[index] = 0;
+          });
+        }
       }
     }
   }
@@ -360,7 +367,7 @@ function normalizeLegacyFleet(fleet: any): void {
 function migrateAlpha2(raw: any): UniverseState | null {
   if (!raw || raw.version !== '1.0-alpha.2' || !nonNegativeInteger(raw.seed)) return null;
   const fleet = raw.fleet;
-  if (!fleet || !positiveInteger(fleet.shipCount) || !nonNegativeInteger(fleet.disabledShips) || !positiveInteger(fleet.combatPower)) {
+  if (!fleet || !positiveInteger(fleet.shipCount) || !nonNegativeInteger(fleet.disabledShips) || !nonNegativeInteger(fleet.combatPower)) {
     return null;
   }
   const shipCount = fleet.shipCount as number;

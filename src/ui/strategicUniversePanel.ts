@@ -101,7 +101,7 @@ function disabledAttr(disabled: boolean): string {
 }
 
 /** 单艘舰的卡片：ID / 舰种 / 改型 / 状态 / 组件完整度 / 关键组件损毁提示 / 维修按钮。 */
-function fleetShipRow(ship: PersistentShip, state: UniverseState): string {
+function fleetShipRow(ship: PersistentShip, state: UniverseState, actionState: UniverseState): string {
   const def = getShipDef(ship.shipClass, ship.variant).def;
   const maxTotal = def.components.reduce((sum, component) => sum + component.maxHp, 0);
   const curTotal = ship.componentHp
@@ -115,7 +115,7 @@ function fleetShipRow(ship: PersistentShip, state: UniverseState): string {
       (ship.componentHp?.[i] ?? component.maxHp) <= 0
   );
   const warn = keyDestroyed ? ' <span class="ship-warn">⚠关键组件损毁</span>' : '';
-  const repairBtn = ship.disabled && canRepairShip(state, ship.campaignShipId)
+  const repairBtn = ship.disabled && canRepairShip(actionState, ship.campaignShipId)
     ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(!!state.pendingBattle)}>维修</button>`
     : '';
   return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}</div>`;
@@ -143,6 +143,9 @@ export class StrategicUniversePanel {
     const fleetCounts = strategicFleetCounts(state.fleet);
     const fleetPower = strategicFleetPower(state);
     const hasPending = !!state.pendingBattle;
+    // pending 只锁定行动，不应令原本可执行的管理操作从界面消失；保留按钮并禁用，
+    // 让玩家清楚哪些操作会在结算战斗后恢复。
+    const actionState = hasPending ? { ...state, pendingBattle: undefined } : state;
     const pendingBanner = hasPending
       ? '<div class="strategy-banner pending">当前存在尚未结算的战略战斗。完成战斗前，战略时间与其他行动已锁定。</div>'
       : '';
@@ -158,7 +161,7 @@ export class StrategicUniversePanel {
   <h2>舰队与跨域资产</h2>
   <p>总舰船 ${fleetCounts.total} · 可作战 ${fleetCounts.operational} · 失能 ${fleetCounts.disabled}${fleetCounts.escaped ? ` · 逃脱 ${fleetCounts.escaped}` : ''} · 战力 ${fleetPower}</p>
   <div class="fleet-ship-list">
-    ${state.fleet.ships.map((ship) => fleetShipRow(ship, state)).join('')}
+    ${state.fleet.ships.map((ship) => fleetShipRow(ship, state, actionState)).join('')}
   </div>
   <p>永久蓝图：${blueprintText}</p>
   <p>本星域新获蓝图：${recoveredText}</p>
@@ -213,7 +216,7 @@ export class StrategicUniversePanel {
             (entity.deposits?.minerals ?? 0) > 0 && state.faction.resources.supplies > 0 && state.status === 'active'
             ? `<button class="btn small primary" data-strategy-extract="${escapeHtml(entity.id)}"${disabledAttr(actionLocked)}>快速采集</button>`
             : '';
-          const establish = canEstablishBase(state, entity.id)
+          const establish = canEstablishBase(actionState, entity.id)
             ? `<button class="btn small primary" data-strategy-base="${escapeHtml(entity.id)}"${disabledAttr(actionLocked)}>建立前进基地</button>`
             : '';
           return `<div class="strategic-entity ${entity.ownerId ? 'owned' : ''}"><div class="entity-icon">${ENTITY_ICON[entity.kind]}</div><div><b>${escapeHtml(entity.name)}</b><small>${ENTITY_LABEL[entity.kind]} · 轨道 ${entity.orbit}</small><small>${escapeHtml(entityDetails(entity))}</small></div><div class="entity-actions">${survey}${extract}${establish}</div></div>`;
@@ -229,7 +232,7 @@ export class StrategicUniversePanel {
     const constructionButtons = base
       ? (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
           const definition = FACILITY_DEFINITIONS[type];
-          return `<button class="btn small" data-strategy-build="${type}"${disabledAttr(!canQueueFacility(state, type) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
+          return `<button class="btn small" data-strategy-build="${type}"${disabledAttr(!canQueueFacility(actionState, type) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
         }).join('')
       : '<p class="muted">先在无敌军的已测绘空间站建立前进基地。</p>';
 
@@ -239,7 +242,7 @@ export class StrategicUniversePanel {
     const researchButtons = (Object.keys(RESEARCH_DEFINITIONS) as ResearchProjectId[]).map((projectId) => {
       const definition = RESEARCH_DEFINITIONS[projectId];
       const researched = state.faction.localResearch.includes(projectId);
-      return `<button class="btn small ${researched ? 'complete' : ''}" data-strategy-research="${projectId}"${disabledAttr(!canQueueResearch(state, projectId) || actionLocked)}>${researched ? '已完成：' : ''}${definition.label}<small>科学 ${definition.scienceCost} · ${definition.turns}回合 · ${definition.description}</small></button>`;
+      return `<button class="btn small ${researched ? 'complete' : ''}" data-strategy-research="${projectId}"${disabledAttr(!canQueueResearch(actionState, projectId) || actionLocked)}>${researched ? '已完成：' : ''}${definition.label}<small>科学 ${definition.scienceCost} · ${definition.turns}回合 · ${definition.description}</small></button>`;
     }).join('');
 
     const baseText = base
@@ -249,16 +252,16 @@ export class StrategicUniversePanel {
     const gateKnown = state.extraction.discovered
       ? `<p>${escapeHtml(gateSystem.name)} · 校准 ${state.extraction.calibration}/${state.extraction.requiredCalibration}% · 敌军 ${gateSystem.enemyPower}</p>`
       : '<p>星门位置尚未确认。需要抵达远端星系并测绘跃迁设施。</p>';
-    const calibrate = canCalibrateGate(state)
+    const calibrate = canCalibrateGate(actionState)
       ? `<button class="btn primary" id="strategy-calibrate"${disabledAttr(actionLocked)}>校准星门（能源 6 / 科学 2 / 补给 1）</button>`
       : '';
-    const stable = canExtractSector(state, 'stable')
+    const stable = canExtractSector(actionState, 'stable')
       ? `<button class="btn primary" id="strategy-extract-stable"${disabledAttr(actionLocked)}>稳定撤离并携带较多资产</button>`
       : '';
-    const emergency = canExtractSector(state, 'emergency')
+    const emergency = canExtractSector(actionState, 'emergency')
       ? `<button class="btn danger" id="strategy-extract-emergency"${disabledAttr(actionLocked)}>紧急撤离（可能损失舰船与物资）</button>`
       : '';
-    const rearguard = fleetCounts.total > 1 && canExtractSector(state, 'emergency', 1)
+    const rearguard = fleetCounts.total > 1 && canExtractSector(actionState, 'emergency', 1)
       ? `<button class="btn danger" id="strategy-extract-rearguard"${disabledAttr(actionLocked)}>留下 1 艘舰断后并紧急撤离</button>`
       : '';
     const extractPreview = state.status === 'active'
