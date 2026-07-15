@@ -17,6 +17,8 @@ export function normalizeDeployment(
   fleet: PersistentFleet,
   selectedShipIds: string[] | undefined
 ): DeploymentSelection {
+  // UI 编辑辅助：过滤已经失效的选择，并在没有有效选择时恢复当前默认部署。
+  // 战斗入口不得使用此函数吞掉非法显式输入；deploymentFleet 会执行严格校验。
   const eligible = new Set(
     fleet.ships.filter(isShipEligibleForDeployment).map((ship) => ship.campaignShipId)
   );
@@ -54,8 +56,17 @@ export function deploymentFleet(
   fleet: PersistentFleet,
   selection: DeploymentSelection | undefined
 ): PersistentFleet {
-  const normalized = normalizeDeployment(fleet, selection?.selectedShipIds);
-  if (!normalized.selectedShipIds.length) throw new Error('部署不能为空（至少须选择一艘可参战舰）。');
-  const selected = new Set(normalized.selectedShipIds);
+  const selectedShipIds = selection?.selectedShipIds ?? defaultDeployment(fleet).selectedShipIds;
+  if (!selectedShipIds.length) throw new Error('部署不能为空（至少须选择一艘可参战舰）。');
+  if (new Set(selectedShipIds).size !== selectedShipIds.length) throw new Error('部署包含重复的舰船 ID。');
+
+  const ships = new Map(fleet.ships.map((ship) => [ship.campaignShipId, ship]));
+  for (const campaignShipId of selectedShipIds) {
+    const ship = ships.get(campaignShipId);
+    if (!ship) throw new Error(`部署引用了不存在的舰船 ID：${campaignShipId}。`);
+    if (!isShipDeployable(ship)) throw new Error(`舰船 ${campaignShipId} 当前不可参战（失能、已逃脱或未部署）。`);
+  }
+
+  const selected = new Set(selectedShipIds);
   return { ...fleet, ships: fleet.ships.filter((ship) => selected.has(ship.campaignShipId)) };
 }

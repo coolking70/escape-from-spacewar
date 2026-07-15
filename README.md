@@ -195,7 +195,7 @@ npm run build:static
 
 ### V1.0-B.4 状态不变量与测试真实性
 
-- `isStrategicShipEligible(ship)` 是战略参战的单一权威：仅 `!disabled && deployed !== false` 的舰船可进入默认部署、部署归一化、Team A、pending battle 与 binding；空、重复、不存在或不合资格的 deployment 不能保存。
+- `isStrategicShipEligible(ship)` 是“当前可参战”的权威判断：仅 `!disabled && !escaped && deployed !== false` 的舰船可进入默认部署、Team A、pending battle 与 binding；B.5 另以 `!disabled && !escaped` 判断舰船是否可在 UI 中重新选择。空、重复、不存在或不合资格的显式 deployment 不能保存或启动。
 - 战斗 binding 必须精确覆盖部署集合与实际 Team A；少绑、多绑、未部署或失能舰一律拒绝。
 - `combatState` 与真实组件损伤使用模拟器同源逻辑校验。引擎/武器失能不得伪装为 normal/damaged；持久舰也拒绝“关键组件全毁而 disabled=false”。
 - `escaped` 的最终 core-v4 语义为：`alive`/结构存活为 true，但 `isPresentOnBattlefield` 为 false；只有 destroyed 才结构死亡。
@@ -203,11 +203,19 @@ npm run build:static
 - alpha.3/alpha.4 的非空 pending enemyFleet 恢复真实舰队成本与 `enemy` 控制权；空 pending 清除为 `neutral`。战略敌军装箱现在有成本/剩余预算后置断言。
 - UI 锁定测试使用 **jsdom** 的真实 `HTMLElement` / `HTMLButtonElement`，不再使用 FakeRoot/FakeNode。
 
+### V1.0-B.5 战略舰队状态与持久化闭环
+
+- 战略舰船状态复用共享组件规则：当前 operational 必须满足 `!disabled && !escaped && deployed !== false`；仅取消部署的舰船仍可由玩家重新选择。
+- `deploymentFleet` 与 `prepareStrategicBattle` 对显式部署执行严格校验，空集合、重复 ID、不存在 ID、失能舰、逃脱舰和 `deployed=false` 舰均直接报错，不再静默回退为默认舰队。
+- 失能状态按 core-v4 的“同类系统全部损毁”规则计算；敌袭通过真实组件损伤造成失能，维修和战斗写回均从组件 HP 重新计算 `disabled`。
+- alpha.2 的零值、极低值和高值迁移保持确定、合法并按最近可达战力钳制；Sector Expedition Code 仍为 `1.0-alpha.5`。
+- jsdom 测试使用可通过 `validateUniverseState` 的真实状态：所有战略按钮在各自合法上下文中派发正确 action，pending 状态在 DOM 与 reducer 两层锁定行动。
+
 > V1.0-B.1 修复了一处真实写回缺陷：`applyStrategicBattleResult` 原先将战后 `enemyPower` / `control` 写到了原始 `state` 的星系对象上，而返回值是深拷贝的 `next`，导致敌方剩余战力从未真正生效、星系清零逻辑失效；现改为写入克隆后的 `target` 星系。
 
 ## 当前边界
 
-V1.0-B.4 完成了战略参战资格、pending deployment / binding 精确集合、组件状态、低战力迁移与 pending 迁移控制权的不变量收尾；策略套件现为 59 项，真实 DOM 覆盖采用 jsdom。以下内容仍属于 V1.0-C：
+V1.0-B.5 已完成战略参战/可选择资格拆分、严格 deployment/binding 集合、组件状态、敌袭与维修持久化、低战力迁移和真实 DOM 行为的闭环；策略套件现为 64 项，真实 DOM 覆盖采用 jsdom。以下内容仍属于 V1.0-C：
 
 - 将 V0.8 指挥官与候补系统接入新模式；
 - 多据点与真实运输航线；

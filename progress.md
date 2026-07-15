@@ -234,7 +234,7 @@ The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` 
 
 ## V1.0-B.4 state invariants and test authenticity
 
-- Added the single strategic eligibility rule: `!ship.disabled && ship.deployed !== false`. It is shared by active ships, default deployment, deployment normalization, deployment fleets, pending-save validation and battle bindings.
+- Added the strategic current-participation rule `!ship.disabled && !ship.escaped && ship.deployed !== false` for active ships, default deployment, battle fleets, pending-save validation and battle bindings. B.5 subsequently separated UI re-selection eligibility (`!disabled && !escaped`) so an undeployed ship can be selected again without weakening battle-entry validation.
 - Pending deployments now reject empty, duplicate, missing, disabled and undeployed IDs; bindings must match the deployment / Team A set exactly.
 - Deep battle validation checks component-derived combat states, and strategic persistent ships reject a destroyed core or mismatched `disabled` / critical-component damage.
 - `escaped` now means structurally alive (`alive=true`) but absent from the battlefield. Only `destroyed` is structurally dead.
@@ -246,20 +246,23 @@ The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` 
 - Persistent ship state is now derived through one shared component rule: a ship is operational only when it is not disabled, not escaped and not explicitly undeployed; a ship remains eligible for re-selection when it is merely undeployed.
 - Component disable flags reuse core-v4’s all-components-per-system rule. Enemy raids now destroy a complete real critical system; repair and battle writeback recompute `disabled` from component HP before a state can be saved.
 - Alpha.2 accepts zero combat power, remains deterministic at extreme values, and normalizes legacy disabled ships by destroying an entire critical system rather than one arbitrary component.
-- Pending UI tests originate from real `engageEnemy` states. jsdom verifies native disabled-click behavior for every strategic action button, while continue battle, export and exit stay enabled.
+- Pending UI tests originate from real `engageEnemy` states and the fixture itself passes `validateUniverseState`. jsdom verifies every strategic action button is enabled and dispatches the correct action in its own legal context; under pending it verifies native disabled-click behavior for the buttons that can actually render, while the reducer rejects the complete action set and continue battle, system selection, export and exit stay enabled.
+- Battle-state mismatch coverage now constructs a genuinely weapon-disabled ship (all weapon components at 0 while engines remain intact), instead of relying on the engine-first generic disabled helper. The helper itself now destroys a complete component system, matching core-v4 for multi-component hulls.
+- Repair intentionally follows the frozen core-v4 rule: mobility is disabled only while **all** engine components are destroyed, so repairing either one of two engines immediately restores mobility; the second repair improves integrity but is not required to clear `disabled`.
+- `deploymentFleet` / `prepareStrategicBattle` now strictly reject an explicit empty deployment, duplicate or missing IDs, and disabled, escaped or undeployed ships. Tolerant normalization remains confined to UI editing and can no longer silently turn malformed battle input into the default fleet.
+- `npm run test:strategy` passes with 64 strategic cases after these invariant and test-authenticity corrections.
+- Full local verification passed: `npm run build`, `npm test`, `npm run test:det`, `npm run test:campaign`, `npm run test:strategy`, `npm run test:stress`, `npm run build:static` and `git diff --check`. The develop-web-game Playwright client also entered a fresh strategic expedition, produced a correct strategic-map screenshot/state (`turn=0`, matching selected/fleet system), and reported no console-error artifact.
 
 ## Next milestone: V1.0-C
 
-The next development slice should replace strategic placeholders with existing mature systems:
+The next development slice should extend the now-real persistent fleet and core-v4 strategic battle foundation:
 
-1. use the V0.7 persistent fleet and component HP model instead of abstract ship count/power;
-2. launch core-v4 battles for strategic interceptions and hostile-system assaults;
-3. connect V0.8 commanders, injuries, reserves and succession;
-4. support multiple temporary outposts and abstract transport links;
-5. simulate moving enemy fleets, sieges and a real gate-defense battle;
-6. assign individual ships to cargo escort, early extraction and rearguard roles.
+1. connect V0.8 commanders, injuries, reserves and succession;
+2. support multiple temporary outposts and abstract transport links;
+3. simulate moving enemy fleets, sieges and a real gate-defense battle;
+4. assign individual ships to cargo escort, early extraction and rearguard roles.
 
-## Still out of scope for V1.0-A
+## Still out of scope for V1.0-C
 
 - Multiple independently controlled player fleets.
 - Population and worker micromanagement.
