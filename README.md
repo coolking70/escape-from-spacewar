@@ -1,6 +1,6 @@
 # Escape from SpaceWar · 太空搜打撤 SLG 原型
 
-基于 TypeScript、Vite 和 Three.js 的确定性太空战斗与战役原型。
+基于 TypeScript、Vite 7 和 Three.js 的确定性太空战斗与战役原型。
 
 项目当前同时保留三条入口：
 
@@ -137,6 +137,8 @@ npm install
 npm run dev
 ```
 
+开发服务器默认只监听 `127.0.0.1`。生产构建不会打包浏览器调试测试套件；Three.js 战舰图鉴与战斗场景按需加载。`npm run build:static` 则将动态模块和内联 Worker 合并回单个 HTML，并在写出前检查不存在外部 `assets/` 引用。
+
 ## 验证矩阵
 
 ```bash
@@ -151,7 +153,7 @@ npm run test:stress
 npm run build:static
 ```
 
-`npm run test:strategy` 覆盖（66 项，无 `as unknown as` 伪造 BattleState）。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动和下方管理区可达性：
+`npm run test:strategy` 覆盖（66 项，无 `as unknown as` 伪造 BattleState）。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动、下方管理区可达性、Three.js 图鉴/战斗按需加载和浏览器控制台无错误；也可通过 `BROWSER_TEST_URL` 验收已经启动的单文件静态站点：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；

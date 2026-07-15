@@ -291,3 +291,14 @@ The next development slice should extend the now-real persistent fleet and core-
 - Full diplomacy, markets or trade simulation.
 - Detailed ship production and equipment fitting.
 - Real-time strategic movement.
+
+## Build security and rendering-load closeout
+
+- Upgraded the build toolchain from Vite 5 to Vite 7.3.6; the resolved esbuild is 0.28.1 and `npm audit --audit-level=moderate` reports zero vulnerabilities.
+- Upgraded the real-DOM test environment to jsdom 29.1.1 / `@types/jsdom` 28.0.3, removing the deprecated `whatwg-encoding` transitive dependency and its clean-install warning.
+- The development server now listens on `127.0.0.1` by default instead of exposing source modules to the LAN.
+- Browser-only debug/test globals moved to a DEV-only dynamic module and are absent from production/static output.
+- Ship preview and battle Three.js renderers now load only when opened. The standard production entry fell from about 903 kB to 354 kB; the shared renderer chunk is about 492 kB and the default 500 kB warning is clean.
+- The static builder intentionally recombines dynamic modules into one file, uses an inline balance Worker and fails if CSS/JS inlining is incomplete or any literal external `assets/` reference remains.
+- Chromium regression now covers strategic scrolling, eager-free setup, on-demand ship preview, on-demand battle rendering and console errors. The same regression passed against the generated single-file static site with zero external asset requests.
+- Full verification passed after a clean install: build, acceptance, deterministic, campaign, 66-case strategy, Chromium browser, stress, static build, npm audit and `git diff --check`.

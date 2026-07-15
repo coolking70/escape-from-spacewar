@@ -1,20 +1,29 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
-const server = await createServer({
-  logLevel: 'error',
-  server: {
-    host: '127.0.0.1',
-    port: 4173,
-  },
-});
+const screenshotDir = process.env.BROWSER_SCREENSHOT_DIR;
+if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
+
+const externalUrl = process.env.BROWSER_TEST_URL;
+const expectSingleFile = process.env.BROWSER_EXPECT_SINGLE_FILE === '1';
+const server = externalUrl
+  ? null
+  : await createServer({
+      logLevel: 'error',
+      server: {
+        host: '127.0.0.1',
+        port: 4173,
+      },
+    });
 
 let browser;
 
 try {
-  await server.listen();
-  const url = server.resolvedUrls?.local[0];
+  await server?.listen();
+  const url = externalUrl ?? server?.resolvedUrls?.local[0];
   assert.ok(url, 'Vite did not expose a local test URL');
 
   browser = await chromium.launch({
@@ -76,7 +85,75 @@ try {
   console.log(
     `[PASS] strategic browser scroll: viewport=${before.clientHeight}, content=${before.scrollHeight}, scrollTop=${after.scrollTop}`,
   );
+
+  const battlePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const battleErrors = [];
+  const loadedResources = [];
+  battlePage.on('console', (message) => {
+    if (message.type() === 'error') battleErrors.push(`console: ${message.text()}`);
+  });
+  battlePage.on('pageerror', (error) => battleErrors.push(`page: ${String(error)}`));
+  battlePage.on('requestfinished', (request) => loadedResources.push(request.url()));
+
+  await battlePage.goto(url, { waitUntil: 'networkidle' });
+  await battlePage.locator('#cm-single').click();
+  if (!externalUrl) {
+    assert.equal(
+      loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts') || resource.includes('/src/render/shipPreview.ts')),
+      false,
+      'setup screen must not eagerly load Three.js render entry modules',
+    );
+  }
+
+  await battlePage.locator('#previewBtn').click();
+  await battlePage.locator('#previewCanvas canvas').waitFor({ state: 'visible' });
+  if (screenshotDir) await battlePage.screenshot({ path: path.join(screenshotDir, 'ship-preview.png') });
+  if (!externalUrl) {
+    assert.ok(
+      loadedResources.some((resource) => resource.includes('/src/render/shipPreview.ts')),
+      'opening the ship preview must load its Three.js renderer on demand',
+    );
+  } else if (!expectSingleFile) {
+    assert.ok(
+      loadedResources.some((resource) => resource.includes('/assets/shipPreview-')),
+      'production build must fetch the ship preview chunk on demand',
+    );
+  }
+  await battlePage.locator('#previewClose').click();
+  assert.equal(await battlePage.locator('.preview-overlay').isVisible(), false, 'ship preview must still close normally');
+
+  await battlePage.locator('#startBtn').click();
+  await battlePage.locator('#canvas-root canvas').waitFor({ state: 'visible' });
+  if (!externalUrl) {
+    assert.ok(
+      loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts')),
+      'starting a battle must load the battle renderer on demand',
+    );
+  } else if (expectSingleFile) {
+    assert.equal(
+      loadedResources.some((resource) => resource.includes('/assets/')),
+      false,
+      'single-file static build must not request external asset chunks',
+    );
+  } else {
+    assert.ok(
+      loadedResources.some((resource) => resource.includes('/assets/threeScene-')),
+      'production build must fetch the battle renderer chunk on demand',
+    );
+  }
+  assert.equal(await battlePage.locator('#battle-root').isVisible(), true, 'battle root must become visible');
+  await battlePage.waitForTimeout(300);
+  if (screenshotDir) await battlePage.screenshot({ path: path.join(screenshotDir, 'battle.png') });
+  assert.deepEqual(battleErrors, [], `lazy renderer flows must keep the browser console clean:\n${battleErrors.join('\n')}`);
+
+  console.log(
+    expectSingleFile
+      ? '[PASS] single-file static renderers: preview=loaded, battle=loaded, external assets=0'
+      : externalUrl
+        ? '[PASS] production chunks: preview=lazy, battle=lazy'
+        : '[PASS] lazy Three.js renderers: setup=eager-free, preview=loaded, battle=loaded',
+  );
 } finally {
   await browser?.close();
-  await server.close();
+  await server?.close();
 }

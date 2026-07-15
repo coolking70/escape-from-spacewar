@@ -7,7 +7,8 @@ import { createInitialState, createSimulator, SimContext, V4 } from './sim/rules
 import { encodeReplay, decodeReplay } from './sim/replayCodec';
 import { SIM_VERSION_V5, TICK_MS } from './sim/battleConfig';
 import { BattleState, BattleEvent, TeamConfig, ReplayConfig, Vec3, BudgetConfig } from './sim/battleTypes';
-import { ThreeScene, PosSnapshot } from './render/threeScene';
+import type { ThreeScene, PosSnapshot } from './render/threeScene';
+import BalanceWorker from './sim/balanceWorker?worker&inline';
 import { SetupPanel } from './ui/setupPanel';
 import { BattleHud } from './ui/battleHud';
 import { ShipPreviewPanel } from './ui/shipPreviewPanel';
@@ -70,6 +71,7 @@ export class App {
   private rafId = 0;
   private prev = new Map<number, PosSnapshot>();
   private winnerShown = false;
+  private battleLoadSequence = 0;
   private viewPrefs: ViewFilters = {
     labels: false,
     componentDamage: false,
@@ -107,7 +109,7 @@ export class App {
     this.setupPanel = new SetupPanel(this.setupRoot, {
       onStart: (a, b, seed, budget) => this.startBattle(a, b, seed, budget),
       onImport: (code) => this.importReplay(code),
-      onPreview: () => this.previewPanel.show(),
+      onPreview: () => void this.previewPanel.show(),
       onOpenBalance: () => this.balanceLab.show(),
       onOpenFleet: () => this.fleetLibrary.show(),
       onOpenAnalysis: () => this.analysisPanel.show()
@@ -421,6 +423,24 @@ export class App {
   }
 
   private beginWithReplay(replay: ReplayConfig, context?: PersistentBattleContext): void {
+    const sequence = ++this.battleLoadSequence;
+    void import('./render/threeScene')
+      .then(({ ThreeScene }) => {
+        if (sequence !== this.battleLoadSequence) return;
+        this.beginWithLoadedRenderer(replay, context, ThreeScene);
+      })
+      .catch((error: unknown) => {
+        if (sequence !== this.battleLoadSequence) return;
+        console.error('[battle] 战斗渲染器加载失败：', error);
+        alert('战斗界面加载失败：' + (error instanceof Error ? error.message : String(error)));
+      });
+  }
+
+  private beginWithLoadedRenderer(
+    replay: ReplayConfig,
+    context: PersistentBattleContext | undefined,
+    Scene: typeof import('./render/threeScene').ThreeScene
+  ): void {
     this.replay = replay;
     // 关闭可能仍打开的配置期覆盖层（舰队库 / 战前分析），避免盖住战斗画面
     this.fleetLibrary?.hide();
@@ -432,7 +452,7 @@ export class App {
     this.sim = createSimulator(this.state, this.rng);
 
     if (!this.scene) {
-      this.scene = new ThreeScene(this.canvasRoot);
+      this.scene = new Scene(this.canvasRoot);
     }
     this.scene.buildBattle(this.state);
     this.scene.setAutoCamera(this.autoCam);
@@ -693,7 +713,7 @@ export class App {
     this.cancelBalance();
     let worker: Worker | null = null;
     try {
-      worker = new Worker(new URL('./sim/balanceWorker.ts', import.meta.url), { type: 'module' });
+      worker = new BalanceWorker();
     } catch {
       worker = null;
     }
