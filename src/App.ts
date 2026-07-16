@@ -7,7 +7,8 @@ import { createInitialState, createSimulator, SimContext, V4 } from './sim/rules
 import { encodeReplay, decodeReplay } from './sim/replayCodec';
 import { SIM_VERSION_V5, TICK_MS } from './sim/battleConfig';
 import { BattleState, BattleEvent, TeamConfig, ReplayConfig, Vec3, BudgetConfig } from './sim/battleTypes';
-import { ThreeScene, PosSnapshot } from './render/threeScene';
+import type { ThreeScene, PosSnapshot } from './render/threeScene';
+import BalanceWorker from './sim/balanceWorker?worker&inline';
 import { SetupPanel } from './ui/setupPanel';
 import { BattleHud } from './ui/battleHud';
 import { ShipPreviewPanel } from './ui/shipPreviewPanel';
@@ -29,7 +30,14 @@ import { CampaignBattleContext, PersistentBattleContext, deriveBattleSeed, enemy
 import { defaultDeployment } from './campaign/deployment/deploymentSystem';
 import { StrategicUniversePanel } from './ui/strategicUniversePanel';
 import { generateUniverse } from './strategy/universeGenerator';
-import { applyUniverseAction, applyStrategicBattleResult, toPersistentFleet } from './strategy/universeRules';
+import {
+  applyUniverseAction,
+  applyStrategicBattleResult,
+  ownedStrategicStations,
+  strategicIncomeReport,
+  strategicTransportStatus,
+  toPersistentFleet
+} from './strategy/universeRules';
 import { decodeUniverse, encodeUniverse, loadUniverse, saveUniverse } from './strategy/universePersistence';
 import type { UniverseAction, UniverseState } from './strategy/universeTypes';
 
@@ -70,6 +78,7 @@ export class App {
   private rafId = 0;
   private prev = new Map<number, PosSnapshot>();
   private winnerShown = false;
+  private battleLoadSequence = 0;
   private viewPrefs: ViewFilters = {
     labels: false,
     componentDamage: false,
@@ -107,7 +116,7 @@ export class App {
     this.setupPanel = new SetupPanel(this.setupRoot, {
       onStart: (a, b, seed, budget) => this.startBattle(a, b, seed, budget),
       onImport: (code) => this.importReplay(code),
-      onPreview: () => this.previewPanel.show(),
+      onPreview: () => void this.previewPanel.show(),
       onOpenBalance: () => this.balanceLab.show(),
       onOpenFleet: () => this.fleetLibrary.show(),
       onOpenAnalysis: () => this.analysisPanel.show()
@@ -187,10 +196,82 @@ export class App {
     if (this.universe) {
       return {
         screen: 'strategic-universe',
+        sector: this.universe.sectorIndex,
+        targetSectors: this.universe.targetSectorCount,
         turn: this.universe.turn,
+        finalTurn: this.universe.crisis.finalTurn,
+        status: this.universe.status,
+        pressure: this.universe.crisis.pressure,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
-        resources: this.universe.faction.resources
+        fleet: {
+          fuel: this.universe.fleet.fuel,
+          maxFuel: this.universe.fleet.maxFuel,
+          ships: this.universe.fleet.ships.map((ship) => ({
+            id: ship.campaignShipId,
+            shipClass: ship.shipClass,
+            variant: ship.variant,
+            disabled: ship.disabled,
+            deployed: ship.deployed !== false
+          }))
+        },
+        resources: this.universe.faction.resources,
+        network: {
+          mainBaseId: this.universe.faction.baseEntityId ?? null,
+          income: strategicIncomeReport(this.universe).total,
+          outposts: ownedStrategicStations(this.universe).map((station) => {
+            const link = this.universe!.transportLinks.find((candidate) => candidate.outpostEntityId === station.id);
+            return {
+              id: station.id,
+              name: station.name,
+              systemId: station.systemId,
+              main: station.id === this.universe!.faction.baseEntityId,
+              facilities: station.facilities?.map((facility) => facility.type) ?? [],
+              queue: station.constructionQueue?.map((order) => order.facilityType) ?? [],
+              transport: link
+                ? strategicTransportStatus(this.universe!, link)
+                : station.id === this.universe!.faction.baseEntityId ? 'local' : 'missing',
+              transportPath: link?.pathSystemIds ?? []
+            };
+          })
+        },
+        enemyOperations: {
+          taskForces: this.universe.enemyTaskForces.map((force) => ({ ...force })),
+          sieges: this.universe.sieges.map((siege) => ({ ...siege })),
+          gateDefense: this.universe.extraction.gateDefense
+        },
+        extraction: {
+          discovered: this.universe.extraction.discovered,
+          calibration: this.universe.extraction.calibration,
+          requiredCalibration: this.universe.extraction.requiredCalibration,
+          gateDefense: this.universe.extraction.gateDefense
+        },
+        commander: {
+          id: this.universe.commander.id,
+          name: this.universe.commander.name,
+          level: this.universe.commander.level,
+          alive: this.universe.commander.alive,
+          conditions: this.universe.commander.conditions ?? [],
+          injuries: this.universe.commander.injuries ?? [],
+          reserves: this.universe.reserveCommanders.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            level: candidate.level,
+            alive: candidate.alive
+          })),
+          reserveCount: this.universe.reserveCommanders.length,
+          pendingSuccession: this.universe.pendingSuccession,
+          pendingRecruitment: this.universe.pendingRecruitment
+            ? {
+                supplyCost: this.universe.pendingRecruitment.supplyCost,
+                candidates: this.universe.pendingRecruitment.candidates.map((candidate) => ({
+                  id: candidate.id,
+                  name: candidate.name
+                }))
+              }
+            : null,
+          recruitmentUsedThisSector: this.universe.recruitmentUsedThisSector
+        }
       };
     }
     return this.campaign
@@ -330,10 +411,14 @@ export class App {
   private strategicAction(action: UniverseAction): void {
     if (!this.universe) return;
     const wasInBattle = this.battleOrigin === 'strategy';
+    const pendingBefore = this.universe.pendingBattle?.battleId;
     this.universe = applyUniverseAction(this.universe, action);
     saveUniverse(this.universe);
-    // 点击攻击（首次生成或重复点击“继续战斗”）且存在待处理战斗时，进入真实 core-v4 作战。
-    if (action.type === 'engageEnemy' && this.universe.pendingBattle && !wasInBattle) {
+    // 主动攻击、继续战斗，或星门校准自动触发的新防御战，都复用同一真实 core-v4 场景。
+    if (
+      this.universe.pendingBattle && !wasInBattle &&
+      (action.type === 'engageEnemy' || this.universe.pendingBattle.battleId !== pendingBefore)
+    ) {
       this.launchStrategicBattle(this.universe);
       return;
     }
@@ -413,6 +498,24 @@ export class App {
   }
 
   private beginWithReplay(replay: ReplayConfig, context?: PersistentBattleContext): void {
+    const sequence = ++this.battleLoadSequence;
+    void import('./render/threeScene')
+      .then(({ ThreeScene }) => {
+        if (sequence !== this.battleLoadSequence) return;
+        this.beginWithLoadedRenderer(replay, context, ThreeScene);
+      })
+      .catch((error: unknown) => {
+        if (sequence !== this.battleLoadSequence) return;
+        console.error('[battle] 战斗渲染器加载失败：', error);
+        alert('战斗界面加载失败：' + (error instanceof Error ? error.message : String(error)));
+      });
+  }
+
+  private beginWithLoadedRenderer(
+    replay: ReplayConfig,
+    context: PersistentBattleContext | undefined,
+    Scene: typeof import('./render/threeScene').ThreeScene
+  ): void {
     this.replay = replay;
     // 关闭可能仍打开的配置期覆盖层（舰队库 / 战前分析），避免盖住战斗画面
     this.fleetLibrary?.hide();
@@ -424,7 +527,7 @@ export class App {
     this.sim = createSimulator(this.state, this.rng);
 
     if (!this.scene) {
-      this.scene = new ThreeScene(this.canvasRoot);
+      this.scene = new Scene(this.canvasRoot);
     }
     this.scene.buildBattle(this.state);
     this.scene.setAutoCamera(this.autoCam);
@@ -685,7 +788,7 @@ export class App {
     this.cancelBalance();
     let worker: Worker | null = null;
     try {
-      worker = new Worker(new URL('./sim/balanceWorker.ts', import.meta.url), { type: 'module' });
+      worker = new BalanceWorker();
     } catch {
       worker = null;
     }

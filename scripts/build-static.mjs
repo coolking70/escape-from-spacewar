@@ -12,8 +12,21 @@ const root = path.resolve(__dirname, '..');
 const distDir = path.join(root, 'dist');
 const outDir = path.join(root, 'static');
 
-// 1) 先做一次标准构建（相对 base），产物在 dist/
-await build({ root, base: './', outDir: 'dist', logLevel: 'info' });
+// 1) 静态发布显式使用单包模式。标准构建仍可按需加载 Three.js；这里把动态模块
+// 合回入口，确保最终 HTML 不依赖额外 chunk。Worker 使用源码中的 inline worker。
+await build({
+  root,
+  base: './',
+  outDir: 'dist',
+  logLevel: 'info',
+  build: {
+    // 单文件产物按设计会超过普通分包的 500 kB 提示线；标准 build 仍保留默认阈值。
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: { inlineDynamicImports: true }
+    }
+  }
+});
 
 // 2) 读取 index.html，内联 CSS / JS
 let html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
@@ -22,22 +35,33 @@ let html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
 html = html.replace(/<link\b[^>]*\brel="modulepreload"[^>]*>/g, '');
 
 // 内联样式表
+let inlinedStylesheets = 0;
 html = html.replace(
   /<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"[^>]*>/,
   (_m, href) => {
+    inlinedStylesheets++;
     const css = fs.readFileSync(path.join(distDir, href), 'utf-8');
     return `<style>\n${css}\n</style>`;
   }
 );
 
 // 内联模块脚本
+let inlinedScripts = 0;
 html = html.replace(
   /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"[^>]*><\/script>/,
   (_m, src) => {
+    inlinedScripts++;
     const js = fs.readFileSync(path.join(distDir, src), 'utf-8');
     return `<script type="module">\n${js}\n</script>`;
   }
 );
+
+if (inlinedStylesheets !== 1 || inlinedScripts !== 1) {
+  throw new Error(`静态构建内联失败：CSS=${inlinedStylesheets}，JS=${inlinedScripts}`);
+}
+if (/(?:src|href)=["'](?:\.\/|\/)?assets\//.test(html)) {
+  throw new Error('静态构建仍包含外部 assets 引用。');
+}
 
 // 3) 写出到 static/ 单文件
 fs.mkdirSync(outDir, { recursive: true });

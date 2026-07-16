@@ -14,16 +14,18 @@
     "test:acceptance": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/acceptance-test.js",
     "test:stress": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/stress-test.js",
     "test:campaign": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/campaign-test.js",
-    "test:strategy": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/strategic-test.js"
+    "test:strategy": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/strategic-test.js",
+    "test:browser": "node scripts/strategy-browser-test.mjs"
   },
   "dependencies": {
     "three": "0.160.0"
   },
   "devDependencies": {
-    "@types/jsdom": "^21.1.7",
+    "@types/jsdom": "^28.0.3",
     "@types/three": "0.160.0",
-    "jsdom": "^26.1.0",
+    "jsdom": "^29.1.1",
+    "playwright": "^1.58.2",
     "typescript": "^5.4.0",
-    "vite": "^5.2.0"
+    "vite": "^7.3.6"
   }
 }

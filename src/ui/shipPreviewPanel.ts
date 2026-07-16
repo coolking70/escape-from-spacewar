@@ -4,7 +4,7 @@
 
 import { ShipTypeName, ShipClass, ShipVariant, Team, ComponentTypeName } from '../sim/battleTypes';
 import { SHIP_DEFS } from '../sim/shipFactory';
-import { ShipPreview } from '../render/shipPreview';
+import type { ShipPreview } from '../render/shipPreview';
 import {
   SHIP_CN,
   VARIANT_CN,
@@ -51,7 +51,8 @@ export class ShipPreviewPanel {
   private overlay: HTMLElement;
   private canvasEl: HTMLElement;
   private infoEl: HTMLElement;
-  private preview: ShipPreview;
+  private preview: ShipPreview | null = null;
+  private previewLoad: Promise<ShipPreview> | null = null;
 
   private curType: ShipTypeName = 'Fighter';
   private curTeam: Team = 'A';
@@ -64,8 +65,6 @@ export class ShipPreviewPanel {
 
     this.canvasEl = this.overlay.querySelector('#previewCanvas') as HTMLElement;
     this.infoEl = this.overlay.querySelector('#previewInfo') as HTMLElement;
-    this.preview = new ShipPreview(this.canvasEl);
-
     this.bindTabs();
     this.renderVariantTabs();
     this.renderInfo();
@@ -124,7 +123,7 @@ export class ShipPreviewPanel {
         // 切换舰种后，改型重置为该类别的首个改型（standard）
         this.curVariant = VARIANTS_BY_CLASS[this.curType][0];
         this.renderVariantTabs();
-        this.preview.setShip(this.curType, this.curTeam, this.curVariant);
+        this.preview?.setShip(this.curType, this.curTeam, this.curVariant);
         this.renderInfo();
       });
     });
@@ -135,7 +134,7 @@ export class ShipPreviewPanel {
         this.curTeam = (btn as HTMLElement).dataset.team as Team;
         teamTabs.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        this.preview.setShip(this.curType, this.curTeam, this.curVariant);
+        this.preview?.setShip(this.curType, this.curTeam, this.curVariant);
         this.renderInfo();
       });
     });
@@ -155,7 +154,7 @@ export class ShipPreviewPanel {
         this.curVariant = v;
         host.querySelectorAll('button').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        this.preview.setShip(this.curType, this.curTeam, this.curVariant);
+        this.preview?.setShip(this.curType, this.curTeam, this.curVariant);
         this.renderInfo();
       });
       host.appendChild(btn);
@@ -220,14 +219,33 @@ export class ShipPreviewPanel {
     `;
   }
 
-  show(): void {
+  async show(): Promise<void> {
     this.overlay.style.display = 'flex';
-    this.preview.setShip(this.curType, this.curTeam, this.curVariant);
-    this.preview.start();
+    try {
+      const preview = await this.loadPreview();
+      if (this.overlay.style.display === 'none') return;
+      preview.setShip(this.curType, this.curTeam, this.curVariant);
+      preview.start();
+    } catch (error) {
+      this.overlay.style.display = 'none';
+      console.error('[preview] 舰船图鉴加载失败：', error);
+      alert('舰船图鉴加载失败：' + (error instanceof Error ? error.message : String(error)));
+    }
   }
 
   hide(): void {
     this.overlay.style.display = 'none';
-    this.preview.stop();
+    this.preview?.stop();
+  }
+
+  private loadPreview(): Promise<ShipPreview> {
+    if (this.preview) return Promise.resolve(this.preview);
+    if (!this.previewLoad) {
+      this.previewLoad = import('../render/shipPreview').then(({ ShipPreview }) => {
+        this.preview = new ShipPreview(this.canvasEl);
+        return this.preview;
+      });
+    }
+    return this.previewLoad;
   }
 }

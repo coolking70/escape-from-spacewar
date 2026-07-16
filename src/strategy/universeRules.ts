@@ -18,6 +18,19 @@ import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
 import { isPresentOnBattlefield, isStructurallyDestroyed, expectedDisableFlags } from '../sim/shipFlags';
 import { computeCombatState } from '../sim/combatState';
 import type { BattleState, FleetEntry } from '../sim/battleTypes';
+import {
+  applyBattleCommanderConsequences,
+  isCommanderAvailable,
+  isCommanderIncapacitated,
+  tickCommanderConditions,
+  treatCommander
+} from '../campaign/commander/commanderHealth';
+import { ensureCommanderProfile, gainCommanderDomainExperience } from '../campaign/commander/commanderSystem';
+import {
+  MAX_RESERVE_COMMANDERS,
+  commanderRecruitmentSupplyCost,
+  generateCommanderRecruitmentCandidates
+} from '../campaign/commander/commanderRecruitment';
 import type {
   ConstructionOrder,
   CrisisPhase,
@@ -28,10 +41,18 @@ import type {
   ResearchProjectId,
   SpaceEntity,
   StrategicFleet,
+  StrategicEnemyTaskForce,
+  StrategicSiege,
   StrategicResources,
+  StrategicTransportLink,
   UniverseAction,
   UniverseState
 } from './universeTypes';
+import {
+  isStrategicCommandLocked,
+  reconcileStrategicCommanderContinuity
+} from './universeCommander';
+import { strategicMobileEnemyBudget, strategicPressurePerTurn } from './universePacing';
 
 export interface FacilityDefinition {
   label: string;
@@ -126,6 +147,14 @@ export const RESEARCH_DEFINITIONS: Record<ResearchProjectId, ResearchDefinition>
   }
 };
 
+export const COMMANDER_TREATMENT_SUPPLY_COST = 2;
+export const OUTPOST_ESTABLISH_COST: StrategicResources = {
+  minerals: 8,
+  energy: 4,
+  science: 0,
+  supplies: 3
+};
+
 function cloneState(state: UniverseState): UniverseState {
   return JSON.parse(JSON.stringify(state)) as UniverseState;
 }
@@ -135,10 +164,91 @@ function appendLog(state: UniverseState, text: string): void {
   if (state.log.length > 180) state.log = state.log.slice(-180);
 }
 
+/** 当前星系的全部敌对战略力量；驻军与移动舰队使用同一 core-v4 成本量纲。 */
+export function strategicHostilePowerAt(state: UniverseState, systemId: string): number {
+  const garrison = state.systems.find((system) => system.id === systemId)?.enemyPower ?? 0;
+  const mobile = state.enemyTaskForces
+    .filter((force) => force.systemId === systemId)
+    .reduce((sum, force) => sum + force.power, 0);
+  return garrison + mobile;
+}
+
 function baseEntity(state: UniverseState): SpaceEntity | undefined {
   return state.faction.baseEntityId
     ? state.entities.find((entity) => entity.id === state.faction.baseEntityId)
     : undefined;
+}
+
+/** 当前星域所有我方据点；baseEntityId 仅负责从中标出唯一主基地。 */
+export function ownedStrategicStations(state: UniverseState): SpaceEntity[] {
+  return state.entities
+    .filter((entity) => entity.kind === 'station' && entity.ownerId === state.faction.id)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function stationForConstruction(state: UniverseState, entityId?: string): SpaceEntity | undefined {
+  const id = entityId ?? state.faction.baseEntityId;
+  return id
+    ? ownedStrategicStations(state).find((entity) => entity.id === id)
+    : undefined;
+}
+
+function stationInFleetSystem(state: UniverseState): SpaceEntity | undefined {
+  return ownedStrategicStations(state).find((entity) => entity.systemId === state.fleet.systemId);
+}
+
+/** 仅使用已发现星系的稳定最短路；同层候选按 ID 排序，避免泄露隐藏航线且保证确定性。 */
+export function strategicTransportPath(state: UniverseState, fromSystemId: string, toSystemId: string): string[] | null {
+  const known = new Set(state.faction.knownSystemIds);
+  if (!known.has(fromSystemId) || !known.has(toSystemId)) return null;
+  const queue: string[][] = [[fromSystemId]];
+  const visited = new Set([fromSystemId]);
+  while (queue.length) {
+    const path = queue.shift()!;
+    const current = path[path.length - 1];
+    if (current === toSystemId) return path;
+    const system = state.systems.find((candidate) => candidate.id === current);
+    const neighbors = [...(system?.neighbors ?? [])]
+      .filter((id) => known.has(id) && !visited.has(id))
+      .sort((left, right) => left.localeCompare(right));
+    for (const neighbor of neighbors) {
+      visited.add(neighbor);
+      queue.push([...path, neighbor]);
+    }
+  }
+  return null;
+}
+
+/** 敌方战略航路使用完整星系图；稳定 BFS 与 ID 排序保证相同状态得到完全相同的移动。 */
+export function strategicEnemyPath(state: UniverseState, fromSystemId: string, toSystemId: string): string[] | null {
+  if (!state.systems.some((system) => system.id === fromSystemId) || !state.systems.some((system) => system.id === toSystemId)) return null;
+  const queue: string[][] = [[fromSystemId]];
+  const visited = new Set([fromSystemId]);
+  while (queue.length) {
+    const path = queue.shift()!;
+    const current = path[path.length - 1];
+    if (current === toSystemId) return path;
+    const system = state.systems.find((candidate) => candidate.id === current);
+    for (const neighbor of [...(system?.neighbors ?? [])].sort((a, b) => a.localeCompare(b))) {
+      if (visited.has(neighbor)) continue;
+      visited.add(neighbor);
+      queue.push([...path, neighbor]);
+    }
+  }
+  return null;
+}
+
+export type StrategicTransportStatus = 'active' | 'blocked';
+
+export function strategicTransportStatus(state: UniverseState, link: StrategicTransportLink): StrategicTransportStatus {
+  return link.pathSystemIds.some((id) => {
+    const system = state.systems.find((candidate) => candidate.id === id);
+    return !system || system.control === 'enemy' || strategicHostilePowerAt(state, id) > 0;
+  }) ? 'blocked' : 'active';
+}
+
+function hasBlockingStrategicDecision(state: UniverseState): boolean {
+  return !!state.pendingBattle || !!state.pendingRecruitment || isStrategicCommandLocked(state);
 }
 
 function facilityCount(base: SpaceEntity | undefined, type: FacilityType): number {
@@ -228,30 +338,60 @@ export function crisisPhaseForTurn(turn: number, finalTurn: number): CrisisPhase
   return 'evacuation';
 }
 
-export function universeTurnIncome(state: UniverseState): StrategicResources {
-  const base = baseEntity(state);
+export interface StrategicIncomeSource {
+  entityId: string;
+  status: 'local' | StrategicTransportStatus;
+  produced: StrategicResources;
+  delivered: StrategicResources;
+}
+
+export interface StrategicIncomeReport {
+  total: StrategicResources;
+  sources: StrategicIncomeSource[];
+}
+
+function stationIncome(station: SpaceEntity): StrategicResources {
   return {
-    minerals: facilityCount(base, 'miningArray') * 4,
-    energy: facilityCount(base, 'solarArray') * 4,
-    science: facilityCount(base, 'researchLab') * 3,
-    supplies: facilityCount(base, 'supplyWorks') * 3
+    minerals: facilityCount(station, 'miningArray') * 4,
+    energy: facilityCount(station, 'solarArray') * 4,
+    science: facilityCount(station, 'researchLab') * 3,
+    supplies: facilityCount(station, 'supplyWorks') * 3
   };
 }
 
-function processConstruction(state: UniverseState): void {
-  const base = baseEntity(state);
-  const queue = base?.constructionQueue ?? [];
-  if (!base || !queue.length) return;
-  queue[0].turnsRemaining--;
-  if (queue[0].turnsRemaining > 0) return;
-  const completed = queue.shift()!;
-  base.facilities = base.facilities ?? [];
-  base.facilities.push({
-    id: `${base.id}-${completed.facilityType}-${state.sectorIndex}-${state.turn}`,
-    type: completed.facilityType,
-    level: 1
+export function strategicIncomeReport(state: UniverseState): StrategicIncomeReport {
+  const zero = (): StrategicResources => ({ minerals: 0, energy: 0, science: 0, supplies: 0 });
+  const total = zero();
+  const sources = ownedStrategicStations(state).map((station): StrategicIncomeSource => {
+    const produced = stationIncome(station);
+    const link = state.transportLinks.find((candidate) => candidate.outpostEntityId === station.id);
+    const status = station.id === state.faction.baseEntityId ? 'local' : link ? strategicTransportStatus(state, link) : 'blocked';
+    const delivered = status === 'blocked' ? zero() : { ...produced };
+    for (const key of Object.keys(total) as Array<keyof StrategicResources>) total[key] += delivered[key];
+    return { entityId: station.id, status, produced, delivered };
   });
-  appendLog(state, `${FACILITY_DEFINITIONS[completed.facilityType].label}建造完成。`);
+  return { total, sources };
+}
+
+export function universeTurnIncome(state: UniverseState): StrategicResources {
+  return strategicIncomeReport(state).total;
+}
+
+function processConstruction(state: UniverseState): void {
+  for (const station of ownedStrategicStations(state)) {
+    const queue = station.constructionQueue ?? [];
+    if (!queue.length) continue;
+    queue[0].turnsRemaining--;
+    if (queue[0].turnsRemaining > 0) continue;
+    const completed = queue.shift()!;
+    station.facilities = station.facilities ?? [];
+    station.facilities.push({
+      id: `${station.id}-${completed.facilityType}-${state.sectorIndex}-${state.turn}`,
+      type: completed.facilityType,
+      level: 1
+    });
+    appendLog(state, `${station.name}的${FACILITY_DEFINITIONS[completed.facilityType].label}建造完成。`);
+  }
 }
 
 function processResearch(state: UniverseState): void {
@@ -263,10 +403,132 @@ function processResearch(state: UniverseState): void {
   appendLog(state, `本地研究完成：${RESEARCH_DEFINITIONS[completed.projectId].label}。`);
 }
 
+function siegeDuration(station: SpaceEntity): number {
+  return 2 + Math.min(2, facilityCount(station, 'defenseGrid'));
+}
+
+function startSiegeIfNeeded(state: UniverseState, force: StrategicEnemyTaskForce): void {
+  if (force.role !== 'raider' || state.sieges.some((siege) => siege.taskForceId === force.id)) return;
+  const station = ownedStrategicStations(state).find((candidate) => candidate.systemId === force.systemId);
+  if (!station) return;
+  const duration = siegeDuration(station);
+  state.sieges.push({
+    id: `siege-${force.id}-${station.id}`,
+    taskForceId: force.id,
+    stationEntityId: station.id,
+    turnsRemaining: duration,
+    totalTurns: duration
+  });
+  appendLog(state, `${station.name}遭到敌方特遣舰队围攻；若 ${duration} 回合内未击退，前哨将失守。`);
+}
+
+function loseSecondaryOutpost(state: UniverseState, station: SpaceEntity): void {
+  station.ownerId = undefined;
+  station.facilities = [];
+  station.constructionQueue = [];
+  state.transportLinks = state.transportLinks.filter((link) => link.outpostEntityId !== station.id);
+  const system = state.systems.find((candidate) => candidate.id === station.systemId);
+  if (system && system.enemyPower === 0) system.control = 'neutral';
+  appendLog(state, `${station.name}在围攻中失守；设施、队列和运输链全部损失。`);
+}
+
+/** 先结算既有围攻；新抵达的舰队从下一回合开始消耗倒计时。 */
+export function processStrategicSieges(state: UniverseState): void {
+  const remaining: StrategicSiege[] = [];
+  for (const siege of state.sieges) {
+    const force = state.enemyTaskForces.find((candidate) => candidate.id === siege.taskForceId);
+    const station = ownedStrategicStations(state).find((candidate) => candidate.id === siege.stationEntityId);
+    if (!force || !station || force.systemId !== station.systemId) continue;
+    if (state.fleet.systemId === station.systemId) {
+      remaining.push(siege);
+      appendLog(state, `${state.fleet.name}已抵达${station.name}，围攻倒计时暂停；必须击退当地特遣舰队。`);
+      continue;
+    }
+    siege.turnsRemaining--;
+    if (siege.turnsRemaining > 0) {
+      remaining.push(siege);
+      appendLog(state, `${station.name}仍在围攻中，失守倒计时 ${siege.turnsRemaining} 回合。`);
+      continue;
+    }
+    if (station.id === state.faction.baseEntityId) {
+      state.status = 'collapsed';
+      state.pendingSuccession = false;
+      state.pendingRecruitment = undefined;
+      appendLog(state, `${station.name}主基地失守，远征后勤与指挥链崩溃。`);
+    } else {
+      loseSecondaryOutpost(state, station);
+    }
+  }
+  state.sieges = remaining;
+}
+
+function nearestOwnedStationPath(state: UniverseState, force: StrategicEnemyTaskForce): { station: SpaceEntity; path: string[] } | null {
+  const candidates = ownedStrategicStations(state)
+    .map((station) => ({ station, path: strategicEnemyPath(state, force.systemId, station.systemId) }))
+    .filter((entry): entry is { station: SpaceEntity; path: string[] } => !!entry.path)
+    .sort((left, right) => left.path.length - right.path.length || left.station.id.localeCompare(right.station.id));
+  return candidates[0] ?? null;
+}
+
+/** 每个 raider 每个战略回合最多沿一条边移动；gateDefense 永远固守星门。 */
+export function advanceStrategicEnemyTaskForces(state: UniverseState): void {
+  for (const force of [...state.enemyTaskForces].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (force.role !== 'raider' || state.sieges.some((siege) => siege.taskForceId === force.id)) continue;
+    const target = nearestOwnedStationPath(state, force);
+    if (!target) continue;
+    if (target.path.length > 1) force.systemId = target.path[1];
+    startSiegeIfNeeded(state, force);
+    const destination = state.systems.find((system) => system.id === force.systemId);
+    if (destination?.discovered) appendLog(state, `侦测到敌方特遣舰队进入${destination.name}（战力 ${force.power}）。`);
+  }
+}
+
+/** 敌袭据点的确定性补给损失；本地防御网与驻防舰队都必须真实降低损失。 */
+export function strategicOutpostRaidSupplyLoss(state: UniverseState, stationId: string): number {
+  const station = ownedStrategicStations(state).find((candidate) => candidate.id === stationId);
+  if (!station) return 0;
+  const defense = facilityCount(station, 'defenseGrid');
+  const fleetPresent = state.fleet.systemId === station.systemId;
+  return Math.max(0, 7 + state.sectorIndex * 2 - defense * 5 - (fleetPresent ? 4 : 0));
+}
+
+function applyStrategicOutpostRaidInPlace(state: UniverseState, attackedStation: SpaceEntity): void {
+  const defense = facilityCount(attackedStation, 'defenseGrid');
+  const fleetPresent = state.fleet.systemId === attackedStation.systemId;
+  const supplyLoss = strategicOutpostRaidSupplyLoss(state, attackedStation.id);
+  state.faction.resources.supplies = Math.max(0, state.faction.resources.supplies - supplyLoss);
+  const counts = strategicFleetCounts(state.fleet);
+  if (fleetPresent && supplyLoss >= 5 && counts.disabled < counts.operational) {
+    const damaged = state.fleet.ships
+      .filter(isShipDeployable)
+      .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId))
+      .pop();
+    if (damaged) disablePersistentShip(damaged);
+  }
+  appendLog(
+    state,
+    `敌方袭击${attackedStation.name}，损失补给 ${supplyLoss}` +
+    `${defense ? '；据点防御网降低了损失' : ''}${fleetPresent ? '；驻防舰队参与拦截' : ''}。`
+  );
+}
+
+/** 无头模拟与测试可直接调用的确定性据点敌袭结算；真实敌方扩张复用同一实现。 */
+export function resolveStrategicOutpostRaid(state: UniverseState, stationId: string): UniverseState {
+  if (state.status !== 'active') return state;
+  const station = ownedStrategicStations(state).find((candidate) => candidate.id === stationId);
+  if (!station) return state;
+  const next = cloneState(state);
+  applyStrategicOutpostRaidInPlace(next, ownedStrategicStations(next).find((candidate) => candidate.id === stationId)!);
+  return next;
+}
+
 function enemyExpansion(state: UniverseState): void {
   const enemySystems = state.systems.filter((system) => system.control === 'enemy');
+  const gateSystemId = state.entities.find((entity) => entity.id === state.extraction.gateEntityId)?.systemId;
   const candidates = state.systems.filter((system) =>
     system.control !== 'enemy' &&
+    system.id !== gateSystemId &&
+    !ownedStrategicStations(state).some((station) => station.systemId === system.id) &&
     enemySystems.some((enemy) => enemy.neighbors.includes(system.id))
   );
   if (!candidates.length) return;
@@ -274,23 +536,7 @@ function enemyExpansion(state: UniverseState): void {
     hash32(state.seed, state.sectorIndex, state.turn, left.id, 'enemy-spread') -
     hash32(state.seed, state.sectorIndex, state.turn, right.id, 'enemy-spread')
   );
-  const target = ordered.find((system) => !baseEntity(state) || system.id !== baseEntity(state)!.systemId) ?? ordered[0];
-  const base = baseEntity(state);
-  if (base && target.id === base.systemId) {
-    const defense = facilityCount(base, 'defenseGrid');
-    const supplyLoss = Math.max(0, 7 + state.sectorIndex * 2 - defense * 5);
-    state.faction.resources.supplies = Math.max(0, state.faction.resources.supplies - supplyLoss);
-    const counts = strategicFleetCounts(state.fleet);
-    if (supplyLoss >= 5 && counts.disabled < counts.operational) {
-      const target = state.fleet.ships
-        .filter(isShipDeployable)
-        .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId))
-        .pop();
-      if (target) disablePersistentShip(target);
-    }
-    appendLog(state, `敌方袭击前进基地，损失补给 ${supplyLoss}${defense ? '；防御网降低了损失' : ''}。`);
-    return;
-  }
+  const target = ordered[0];
   target.control = 'enemy';
   target.enemyPower = Math.max(
     target.enemyPower,
@@ -301,22 +547,31 @@ function enemyExpansion(state: UniverseState): void {
 
 function advanceCrisis(state: UniverseState): void {
   const previous = state.crisis.phase;
-  const forecasting = state.faction.localResearch.includes('crisisForecasting') ? 2 : 0;
-  state.crisis.pressure = Math.min(100, state.crisis.pressure + Math.max(3, 5 + state.sectorIndex - forecasting));
+  const forecasting = state.faction.localResearch.includes('crisisForecasting');
+  state.crisis.pressure = Math.min(
+    100,
+    state.crisis.pressure + strategicPressurePerTurn(state.sectorIndex, forecasting)
+  );
   state.crisis.phase = crisisPhaseForTurn(state.turn, state.crisis.finalTurn);
   if (state.crisis.phase !== previous) appendLog(state, `星域危机进入“${CRISIS_PHASE_LABEL[state.crisis.phase]}”。`);
   const expansionInterval = state.crisis.phase === 'foothold' ? 4 : state.crisis.phase === 'contest' ? 3 : 2;
   if (state.turn > 0 && state.turn % expansionInterval === 0) enemyExpansion(state);
   if (state.turn > state.crisis.finalTurn) {
     state.status = 'collapsed';
+    state.pendingSuccession = false;
+    state.pendingRecruitment = undefined;
     appendLog(state, '星域彻底崩溃，远征舰队未能及时撤离。');
   }
 }
 
-export function advanceUniverseTurn(state: UniverseState, reason = '战略时间推进'): UniverseState {
-  if (state.status !== 'active') return state;
+/** 已被 reducer 验证通过的行动所使用的时间结算；即使行动结果触发继任，也必须完成本回合。 */
+function resolveUniverseTurn(state: UniverseState, reason: string): UniverseState {
   const next = cloneState(state);
   next.turn++;
+  next.commander = tickCommanderConditions(next.commander, next.seed);
+  next.reserveCommanders = next.reserveCommanders.map((commander) =>
+    tickCommanderConditions(commander, next.seed)
+  );
   const income = universeTurnIncome(next);
   next.faction.resources.minerals += income.minerals;
   next.faction.resources.energy += income.energy;
@@ -324,16 +579,27 @@ export function advanceUniverseTurn(state: UniverseState, reason = '战略时间
   next.faction.resources.supplies += income.supplies;
   processConstruction(next);
   processResearch(next);
-  const base = baseEntity(next);
-  if (base && next.fleet.systemId === base.systemId) {
+  const localStation = stationInFleetSystem(next);
+  if (localStation) {
     next.fleet.fuel = Math.min(next.fleet.maxFuel, next.fleet.fuel + 1);
   }
   appendLog(
     next,
     `${reason}；产出 矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}。`
   );
+  processStrategicSieges(next);
+  if (next.status !== 'active') return next;
+  advanceStrategicEnemyTaskForces(next);
   advanceCrisis(next);
   return next;
+}
+
+export function advanceUniverseTurn(state: UniverseState, reason = '战略时间推进'): UniverseState {
+  if (
+    state.status !== 'active' || state.pendingBattle || state.pendingRecruitment ||
+    isStrategicCommandLocked(state)
+  ) return state;
+  return resolveUniverseTurn(state, reason);
 }
 
 export function travelFuelCost(state: UniverseState): number {
@@ -345,24 +611,35 @@ export function travelFuelCost(state: UniverseState): number {
 export function canEstablishBase(state: UniverseState, entityId: string): boolean {
   const entity = state.entities.find((candidate) => candidate.id === entityId);
   const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
-  return state.status === 'active' && !state.pendingBattle && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
+  return state.status === 'active' && !hasBlockingStrategicDecision(state) && !state.faction.baseEntityId && !!entity && entity.kind === 'station' &&
     entity.surveyed && entity.systemId === state.fleet.systemId && !entity.ownerId &&
-    (system?.enemyPower ?? 0) === 0 && state.faction.resources.minerals >= 10 &&
+    !!system && strategicHostilePowerAt(state, system.id) === 0 && state.faction.resources.minerals >= 10 &&
     state.faction.resources.energy >= 5 && state.faction.resources.supplies >= 4;
 }
 
-export function canQueueFacility(state: UniverseState, facilityType: FacilityType): boolean {
-  if (state.status !== 'active' || state.pendingBattle) return false;
-  const base = baseEntity(state);
-  if (!base || state.fleet.systemId !== base.systemId) return false;
-  const queue = base.constructionQueue ?? [];
-  const occupied = (base.facilities?.length ?? 0) + queue.length;
-  if (queue.length >= 2 || occupied >= (base.facilitySlots ?? 3)) return false;
+export function canEstablishOutpost(state: UniverseState, entityId: string): boolean {
+  const entity = state.entities.find((candidate) => candidate.id === entityId);
+  const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
+  return state.status === 'active' && !hasBlockingStrategicDecision(state) && !!state.faction.baseEntityId &&
+    !!entity && entity.kind === 'station' && entity.id !== state.faction.baseEntityId &&
+    entity.surveyed && entity.systemId === state.fleet.systemId && !entity.ownerId &&
+    !!system && strategicHostilePowerAt(state, system.id) === 0 && !!strategicTransportPath(state, entity.systemId, baseEntity(state)!.systemId) &&
+    hasResources(state.faction.resources, OUTPOST_ESTABLISH_COST);
+}
+
+export function canQueueFacility(state: UniverseState, facilityType: FacilityType, entityId?: string): boolean {
+  if (state.status !== 'active' || hasBlockingStrategicDecision(state)) return false;
+  const station = stationForConstruction(state, entityId);
+  if (!station || state.fleet.systemId !== station.systemId) return false;
+  if (state.sieges.some((siege) => siege.stationEntityId === station.id)) return false;
+  const queue = station.constructionQueue ?? [];
+  const occupied = (station.facilities?.length ?? 0) + queue.length;
+  if (queue.length >= 2 || occupied >= (station.facilitySlots ?? 3)) return false;
   return hasResources(state.faction.resources, effectiveFacilityCost(state, facilityType));
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
-  if (state.status !== 'active' || !baseEntity(state) || state.pendingBattle) return false;
+  if (state.status !== 'active' || !baseEntity(state) || hasBlockingStrategicDecision(state)) return false;
   if (state.faction.localResearch.includes(projectId)) return false;
   if (state.faction.researchQueue.some((order) => order.projectId === projectId)) return false;
   if (state.faction.researchQueue.length >= 2) return false;
@@ -371,7 +648,8 @@ export function canQueueResearch(state: UniverseState, projectId: ResearchProjec
 
 export function canEngageEnemy(state: UniverseState): boolean {
   const current = state.systems.find((system) => system.id === state.fleet.systemId);
-  return state.status === 'active' && !state.pendingBattle && !!current && current.enemyPower > 0 && strategicFleetCounts(state.fleet).operational > 0;
+  return state.status === 'active' && !hasBlockingStrategicDecision(state) && !!current &&
+    strategicHostilePowerAt(state, current.id) > 0 && strategicFleetCounts(state.fleet).operational > 0;
 }
 
 export function canRepairFleet(state: UniverseState): boolean {
@@ -379,19 +657,40 @@ export function canRepairFleet(state: UniverseState): boolean {
 }
 
 export function canRepairShip(state: UniverseState, campaignShipId: string): boolean {
-  const base = baseEntity(state);
+  const station = stationInFleetSystem(state);
   const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
-  return state.status === 'active' && !state.pendingBattle && !!base && state.fleet.systemId === base.systemId &&
-    facilityCount(base, 'repairDock') > 0 && !!ship && ship.disabled &&
+  return state.status === 'active' && !hasBlockingStrategicDecision(state) && !!station &&
+    facilityCount(station, 'repairDock') > 0 && !!ship && ship.disabled &&
     state.faction.resources.supplies >= 5 && state.faction.resources.minerals >= 4;
 }
 
+export function canOpenCommanderRecruitment(state: UniverseState): boolean {
+  const base = baseEntity(state);
+  return state.status === 'active' && !state.pendingBattle && !state.pendingRecruitment &&
+    !isStrategicCommandLocked(state) && !state.recruitmentUsedThisSector &&
+    state.reserveCommanders.length < MAX_RESERVE_COMMANDERS && !!base && state.fleet.systemId === base.systemId;
+}
+
+export function canTreatStrategicCommander(state: UniverseState): boolean {
+  const base = baseEntity(state);
+  return state.status === 'active' && !state.pendingBattle && !state.pendingRecruitment &&
+    !!base && state.fleet.systemId === base.systemId && state.commander.alive &&
+    state.faction.resources.supplies >= COMMANDER_TREATMENT_SUPPLY_COST &&
+    treatCommander(state.commander, state.seed) !== null;
+}
+
+export function canAppointStrategicCommander(state: UniverseState, commanderId: string): boolean {
+  const candidate = state.reserveCommanders.find((commander) => commander.id === commanderId);
+  return state.status === 'active' && !state.pendingBattle && !state.pendingRecruitment &&
+    state.pendingSuccession && !!candidate && isCommanderAvailable(candidate, state.seed);
+}
+
 export function canCalibrateGate(state: UniverseState): boolean {
-  if (state.pendingBattle) return false;
+  if (hasBlockingStrategicDecision(state)) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   return state.status === 'active' && !!gate && gate.surveyed && gate.systemId === state.fleet.systemId &&
-    (system?.enemyPower ?? 0) === 0 && state.extraction.calibration < state.extraction.requiredCalibration &&
+    !!system && strategicHostilePowerAt(state, system.id) === 0 && state.extraction.calibration < state.extraction.requiredCalibration &&
     state.faction.resources.energy >= 6 && state.faction.resources.science >= 2 && state.faction.resources.supplies >= 1;
 }
 
@@ -400,13 +699,13 @@ export function canExtractSector(
   mode: ExtractionMode,
   rearguardShips = 0
 ): boolean {
-  if (state.pendingBattle) return false;
+  if (hasBlockingStrategicDecision(state)) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
   const fleetCounts = strategicFleetCounts(state.fleet);
   if (
     state.status !== 'active' || !gate || !gate.surveyed || gate.systemId !== state.fleet.systemId ||
-    (system?.enemyPower ?? 0) > 0 || fleetCounts.operational <= 0 ||
+    !system || strategicHostilePowerAt(state, system.id) > 0 || state.extraction.gateDefense !== 'resolved' || fleetCounts.operational <= 0 ||
     rearguardShips < 0 || rearguardShips >= fleetCounts.operational
   ) return false;
   // 任何成功撤离必须至少保留一艘舰船（含失能舰），不得产生空舰队或零舰船 victory。
@@ -419,23 +718,90 @@ export function canExtractSector(
   return state.extraction.calibration >= state.extraction.emergencyThreshold && state.faction.resources.supplies >= 4;
 }
 
-function queueConstruction(state: UniverseState, facilityType: FacilityType): UniverseState {
-  if (!canQueueFacility(state, facilityType)) return state;
+function queueConstruction(state: UniverseState, facilityType: FacilityType, entityId?: string): UniverseState {
+  if (!canQueueFacility(state, facilityType, entityId)) return state;
   const next = cloneState(state);
   const definition = FACILITY_DEFINITIONS[facilityType];
   spendResources(next.faction.resources, effectiveFacilityCost(next, facilityType));
-  const base = baseEntity(next)!;
-  base.constructionQueue = base.constructionQueue ?? [];
+  const station = stationForConstruction(next, entityId)!;
+  station.constructionQueue = station.constructionQueue ?? [];
   const reduction = next.faction.localResearch.includes('rapidFabrication') ? 1 : 0;
   const turns = Math.max(1, definition.turns - reduction);
   const order: ConstructionOrder = {
-    id: `build-${facilityType}-s${next.sectorIndex}-t${next.turn}-${base.constructionQueue.length}`,
+    id: `build-${facilityType}-${station.id}-s${next.sectorIndex}-t${next.turn}-${station.constructionQueue.length}`,
     facilityType,
     turnsRemaining: turns,
     totalTurns: turns
   };
-  base.constructionQueue.push(order);
-  appendLog(next, `加入建造队列：${definition.label}（${turns} 回合）。`);
+  station.constructionQueue.push(order);
+  appendLog(next, `${station.name}加入建造队列：${definition.label}（${turns} 回合）。`);
+  return next;
+}
+
+function openCommanderRecruitment(state: UniverseState): UniverseState {
+  if (!canOpenCommanderRecruitment(state)) return state;
+  const next = cloneState(state);
+  const base = baseEntity(next)!;
+  const usedIds = [next.commander.id, ...next.reserveCommanders.map((commander) => commander.id)];
+  next.pendingRecruitment = {
+    nodeId: base.id,
+    candidates: generateCommanderRecruitmentCandidates(
+      next.seed,
+      next.sectorIndex,
+      base.id,
+      usedIds
+    ),
+    supplyCost: commanderRecruitmentSupplyCost(next.reserveCommanders.length)
+  };
+  next.recruitmentUsedThisSector = true;
+  appendLog(next, `前进基地发现两名可招募指挥人员；本星域招募机会已锁定。`);
+  return next;
+}
+
+function resolveCommanderRecruitment(state: UniverseState, candidateId?: string): UniverseState {
+  if (!state.pendingRecruitment) return state;
+  if (!candidateId) {
+    const next = cloneState(state);
+    next.pendingRecruitment = undefined;
+    appendLog(next, '放弃本星域的指挥官招募机会。');
+    return next;
+  }
+  const offer = state.pendingRecruitment;
+  const candidate = offer.candidates.find((commander) => commander.id === candidateId);
+  if (!candidate || state.reserveCommanders.length >= MAX_RESERVE_COMMANDERS ||
+    state.faction.resources.supplies < offer.supplyCost) return state;
+  const next = cloneState(state);
+  next.faction.resources.supplies -= offer.supplyCost;
+  next.reserveCommanders.push(ensureCommanderProfile(candidate, next.seed));
+  next.pendingRecruitment = undefined;
+  appendLog(next, `招募 ${candidate.name} 加入候补名单，消耗补给 ${offer.supplyCost}。`);
+  return next;
+}
+
+function treatStrategicCommander(state: UniverseState): UniverseState {
+  if (!canTreatStrategicCommander(state)) return state;
+  const treatment = treatCommander(state.commander, state.seed)!;
+  const next = cloneState(state);
+  next.faction.resources.supplies -= COMMANDER_TREATMENT_SUPPLY_COST;
+  next.commander = treatment.commander;
+  reconcileStrategicCommanderContinuity(next);
+  appendLog(next, `${treatment.text} 消耗补给 ${COMMANDER_TREATMENT_SUPPLY_COST}。`);
+  // 治疗本身已经通过入口校验，即使一次治疗后仍有另一处三级伤势、继任锁仍存在，
+  // 也必须结算其明确承诺的一个战略回合。
+  return resolveUniverseTurn(next, '指挥官治疗完成');
+}
+
+function appointStrategicCommander(state: UniverseState, commanderId: string): UniverseState {
+  if (!canAppointStrategicCommander(state, commanderId)) return state;
+  const next = cloneState(state);
+  const index = next.reserveCommanders.findIndex((commander) => commander.id === commanderId);
+  const candidate = ensureCommanderProfile(next.reserveCommanders[index], next.seed);
+  const former = ensureCommanderProfile(next.commander, next.seed);
+  next.reserveCommanders.splice(index, 1);
+  if (former.alive && isCommanderIncapacitated(former, next.seed)) next.reserveCommanders.push(former);
+  next.commander = candidate;
+  reconcileStrategicCommanderContinuity(next);
+  appendLog(next, `${candidate.name} 接任远征指挥官${former.alive ? `；${former.name} 转入伤病候补名单` : ''}。`);
   return next;
 }
 
@@ -472,33 +838,82 @@ function establishBase(state: UniverseState, entityId: string): UniverseState {
   return next;
 }
 
-function engageEnemy(state: UniverseState): UniverseState {
-  if (!canEngageEnemy(state)) return state;
-  // 幂等：已存在待处理战斗时保持原有 seed 与敌军，不重新抽取（刷新 / 重读 / 重复点击均不重抽）。
-  if (state.pendingBattle) return state;
+function establishOutpost(state: UniverseState, entityId: string): UniverseState {
+  if (!canEstablishOutpost(state, entityId)) return state;
   let next = cloneState(state);
-  const system = next.systems.find((candidate) => candidate.id === next.fleet.systemId)!;
-  const gateSystem = next.entities.find((entity) => entity.id === next.extraction.gateEntityId);
-  const isGate = gateSystem ? system.id === gateSystem.systemId : false;
-  const seed = hash32(next.seed, next.sectorIndex, next.turn, system.id, 'strategic-battle') >>> 0;
-  const cruiserAllowed = next.sectorIndex >= 2 || isGate;
-  const enemyFleet = strategicEnemyFleetFor(seed, system.enemyPower, {
-    sectorIndex: next.sectorIndex,
-    gateGuard: isGate,
-    cruiserAllowed
+  const station = next.entities.find((entity) => entity.id === entityId)!;
+  const hub = baseEntity(next)!;
+  const path = strategicTransportPath(next, station.systemId, hub.systemId)!;
+  spendResources(next.faction.resources, OUTPOST_ESTABLISH_COST);
+  station.ownerId = next.faction.id;
+  station.facilities = station.facilities ?? [];
+  station.constructionQueue = station.constructionQueue ?? [];
+  const system = next.systems.find((candidate) => candidate.id === station.systemId)!;
+  system.control = 'player';
+  next.transportLinks.push({
+    id: `transport-${station.id}-${hub.id}`,
+    outpostEntityId: station.id,
+    hubEntityId: hub.id,
+    pathSystemIds: path
   });
+  appendLog(next, `在${station.name}建立补给前哨，并开通至${hub.name}的 ${Math.max(0, path.length - 1)} 跳运输链。`);
+  next = advanceUniverseTurn(next, '补给前哨部署完成');
+  return next;
+}
+
+function preferredTaskForceAt(state: UniverseState, systemId: string): StrategicEnemyTaskForce | undefined {
+  return [...state.enemyTaskForces]
+    .filter((force) => force.systemId === systemId)
+    .sort((left, right) => Number(right.role === 'gateDefense') - Number(left.role === 'gateDefense') || left.id.localeCompare(right.id))[0];
+}
+
+function lockStrategicBattleInPlace(state: UniverseState): void {
+  if (state.pendingBattle) return;
+  const system = state.systems.find((candidate) => candidate.id === state.fleet.systemId);
+  if (!system) return;
+  const gateDefense = preferredTaskForceAt(state, system.id)?.role === 'gateDefense'
+    ? preferredTaskForceAt(state, system.id)
+    : state.enemyTaskForces.find((force) => force.systemId === system.id && force.role === 'gateDefense');
+  // 固定驻军必须先被清除；唯一例外是星门拦截舰队，它代表撤离流程的强制终战。
+  const taskForce = gateDefense ?? (system.enemyPower > 0 ? undefined : preferredTaskForceAt(state, system.id));
+  const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
+  const isGate = taskForce?.role === 'gateDefense' || gate?.systemId === system.id;
+  const source: PendingStrategicBattle['source'] = taskForce?.role === 'gateDefense'
+    ? 'gateDefense'
+    : taskForce ? 'taskForce' : 'garrison';
+  const power = taskForce?.power ?? system.enemyPower;
+  if (power <= 0) return;
+  const seed = hash32(state.seed, state.sectorIndex, state.turn, system.id, taskForce?.id ?? 'garrison', 'strategic-battle') >>> 0;
+  const enemyFleet = strategicEnemyFleetFor(seed, power, {
+    sectorIndex: state.sectorIndex,
+    gateGuard: isGate,
+    cruiserAllowed: state.sectorIndex >= 2 || isGate
+  });
+  const actualPower = campaignFleetEntryCost(enemyFleet);
+  if (taskForce) taskForce.power = actualPower;
+  else system.enemyPower = actualPower;
   const pending: PendingStrategicBattle = {
-    battleId: `sb-${next.seed}-${next.sectorIndex}-${system.id}-${next.turn}`,
+    battleId: `sb-${state.seed}-${state.sectorIndex}-${system.id}-${state.turn}-${taskForce?.id ?? 'garrison'}`,
     systemId: system.id,
     battleSeed: seed,
-    enemyPowerBefore: system.enemyPower,
-    enemyFleet
+    enemyPowerBefore: actualPower,
+    enemyFleet,
+    source,
+    taskForceId: taskForce?.id
   };
-  next.pendingBattle = pending;
+  state.pendingBattle = pending;
   appendLog(
-    next,
-    `在${system.name}锁定敌军（战力 ${system.enemyPower}），已生成待处理战斗（battleId ${pending.battleId}）。点击“继续战斗”进入真实 core-v4 作战。`
+    state,
+    `${source === 'gateDefense' ? '星门防御战开始' : `在${system.name}锁定敌军`}（战力 ${actualPower}），` +
+    `已生成待处理真实战斗（battleId ${pending.battleId}）。点击“继续战斗”进入 core-v4 作战。`
   );
+}
+
+function engageEnemy(state: UniverseState): UniverseState {
+  if (!canEngageEnemy(state)) return state;
+  if (state.pendingBattle) return state;
+  const next = cloneState(state);
+  lockStrategicBattleInPlace(next);
   return next;
 }
 
@@ -559,6 +974,38 @@ function calibrateGate(state: UniverseState): UniverseState {
   );
   appendLog(next, `星门校准推进至 ${next.extraction.calibration}% 。`);
   next = advanceUniverseTurn(next, '星门校准作业完成');
+  if (
+    next.status === 'active' && next.extraction.calibration >= next.extraction.emergencyThreshold &&
+    next.extraction.gateDefense === 'dormant'
+  ) {
+    const gate = next.entities.find((entity) => entity.id === next.extraction.gateEntityId)!;
+    const seed = hash32(next.seed, next.sectorIndex, gate.systemId, 'gate-defense');
+    // 固定星门驻军已经使用更高 gateGuard 预算；启动时的机动拦截队使用同星域普通舰队预算，
+    // 保证在尚无造舰系统的 C.4 切片中，修整后的继承舰队仍有可完成的终战窗口。
+    const fleet = strategicEnemyFleetFor(
+      seed,
+      strategicMobileEnemyBudget(next.sectorIndex, strategicFleetPower(next), 'gateDefense'),
+      {
+      sectorIndex: next.sectorIndex,
+      gateGuard: true,
+      cruiserAllowed: true
+      }
+    );
+    if (!fleet.length) {
+      // 入口已保证至少一艘可作战舰；若未来成本表使预算无法装入合法舰船，必须明确失败而非生成空 pending。
+      throw new Error('当前舰队战力不足以生成合法的星门防御舰队。');
+    }
+    next.enemyTaskForces.push({
+      id: `gate-defense-${next.seed}-${next.sectorIndex}`,
+      systemId: gate.systemId,
+      power: campaignFleetEntryCost(fleet),
+      role: 'gateDefense',
+      spawnedTurn: next.turn
+    });
+    next.extraction.gateDefense = 'pending';
+    appendLog(next, '星门达到可启动阈值时侦测到敌方拦截舰队；必须完成真实星门防御战后才能撤离。');
+    lockStrategicBattleInPlace(next);
+  }
   return next;
 }
 
@@ -647,7 +1094,10 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     sectorIndex: next.sectorIndex + 1,
     targetSectorCount: next.targetSectorCount,
     legacy,
-    fleet: inherited
+    fleet: inherited,
+    commander: next.commander,
+    reserveCommanders: next.reserveCommanders,
+    pendingSuccession: next.pendingSuccession
   });
   generated.log.unshift({
     turn: 0,
@@ -661,16 +1111,30 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
   if (state.pendingBattle && action.type !== 'engageEnemy' && action.type !== 'selectSystem') {
     return state;
   }
+  // 招募候选人出现后必须先接受或放弃；期间只允许查看星系与处理该招募。
+  if (state.pendingRecruitment && action.type !== 'resolveRecruitment' && action.type !== 'selectSystem') {
+    return state;
+  }
+  // 指挥权中断时只允许查看、治疗现任或任命继任者。
+  if (
+    isStrategicCommandLocked(state) && action.type !== 'selectSystem' &&
+    action.type !== 'treatCommander' && action.type !== 'appointCommander'
+  ) return state;
   if (action.type === 'selectSystem') {
     if (!state.systems.some((system) => system.id === action.systemId && system.discovered)) return state;
     const next = cloneState(state);
     next.selectedSystemId = action.systemId;
     return next;
   }
-  if (action.type === 'queueConstruction') return queueConstruction(state, action.facilityType);
+  if (action.type === 'queueConstruction') return queueConstruction(state, action.facilityType, action.entityId);
   if (action.type === 'queueResearch') return queueResearch(state, action.projectId);
   if (action.type === 'establishBase') return establishBase(state, action.entityId);
+  if (action.type === 'establishOutpost') return establishOutpost(state, action.entityId);
   if (action.type === 'engageEnemy') return engageEnemy(state);
+  if (action.type === 'openRecruitment') return openCommanderRecruitment(state);
+  if (action.type === 'resolveRecruitment') return resolveCommanderRecruitment(state, action.candidateId);
+  if (action.type === 'treatCommander') return treatStrategicCommander(state);
+  if (action.type === 'appointCommander') return appointStrategicCommander(state, action.commanderId);
   if (action.type === 'repairShip') return repairShip(state, action.campaignShipId);
   if (action.type === 'calibrateGate') return calibrateGate(state);
   if (action.type === 'extractSector') return extractSector(state, action.mode, action.rearguardShips ?? 0);
@@ -707,7 +1171,7 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
     const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
     if (
       !entity || !entity.discovered || entity.surveyed || entity.systemId !== state.fleet.systemId ||
-      (system?.enemyPower ?? 0) > 0
+      !system || strategicHostilePowerAt(state, system.id) > 0
     ) return state;
     let next = cloneState(state);
     const target = next.entities.find((candidate) => candidate.id === entity.id)!;
@@ -737,7 +1201,7 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
     const system = entity ? state.systems.find((candidate) => candidate.id === entity.systemId) : undefined;
     if (
       !entity || entity.kind !== 'asteroidField' || !entity.surveyed || entity.systemId !== state.fleet.systemId ||
-      (system?.enemyPower ?? 0) > 0 || (entity.deposits?.minerals ?? 0) <= 0 || state.faction.resources.supplies < 1
+      !system || strategicHostilePowerAt(state, system.id) > 0 || (entity.deposits?.minerals ?? 0) <= 0 || state.faction.resources.supplies < 1
     ) return state;
     let next = cloneState(state);
     const target = next.entities.find((candidate) => candidate.id === entity.id)!;
@@ -789,8 +1253,18 @@ export function applyStrategicBattleResult(
   if (pending.systemId !== state.fleet.systemId) {
     throw new Error('待处理战斗的星系与舰队当前所在星系不一致。');
   }
-  if (system.control !== 'enemy' || system.enemyPower !== pending.enemyPowerBefore) {
-    throw new Error('待处理战斗对应星系的控制状态 / 战前预算与存档不一致。');
+  const pendingForce = pending.taskForceId
+    ? state.enemyTaskForces.find((force) => force.id === pending.taskForceId)
+    : undefined;
+  if (pending.source === 'garrison') {
+    if (pending.taskForceId || system.control !== 'enemy' || system.enemyPower !== pending.enemyPowerBefore) {
+      throw new Error('驻军战斗对应星系的控制状态 / 战前预算与存档不一致。');
+    }
+  } else if (
+    !pendingForce || pendingForce.systemId !== pending.systemId || pendingForce.power !== pending.enemyPowerBefore ||
+    (pending.source === 'gateDefense') !== (pendingForce.role === 'gateDefense')
+  ) {
+    throw new Error('移动敌军战斗对应特遣舰队的来源 / 位置 / 战前预算与存档不一致。');
   }
   if (!teamBMatchesPending(battle, pending.enemyFleet)) {
     throw new Error('战斗敌方舰队（Team B）与待处理战斗的 enemyFleet 不一致。');
@@ -815,15 +1289,47 @@ export function applyStrategicBattleResult(
   next.fleet.ships = standardizedShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
   const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
 
+  // 指挥官后果使用 V0.8 同源健康规则：真实舰损与胜负决定疲劳、动摇和创伤；
+  // 战斗经验同样写入持久档案，且整个结果只随已验证的 BattleState 决定。
+  next.commander = gainCommanderDomainExperience(
+    next.commander,
+    next.seed,
+    'combat',
+    battle.winner === 'A' ? 12 : 6
+  );
+  next.commander = applyBattleCommanderConsequences(
+    next.commander,
+    next.seed,
+    next.turn,
+    shipsLost,
+    battle.winner === 'A'
+  );
+
   // 战后敌方残余战力归一化：低于最低合法舰船成本（无法代表一艘合法舰船）一律归零并转为 neutral，
   // 既修复"严重受损但存活的敌舰产生低于最低成本的残余战力导致无法保存"，也防止"低残余被下一战膨胀成整舰"。
-  const enemyRemaining = normalizeStrategicEnemyPower(enemyRemainingPower(battle));
+  const calculatedEnemyRemaining = normalizeStrategicEnemyPower(enemyRemainingPower(battle));
+  // 星门防御是“守住启动窗口”目标：敌方被击毁、失能或撤出战场且玩家获胜，都表示拦截失败。
+  // 普通驻军/特遣舰队仍按真实剩余价值写回，只有这一明确目标战采用战场控制语义。
+  const enemyRemaining = pending.source === 'gateDefense' && battle.winner === 'A'
+    ? 0
+    : calculatedEnemyRemaining;
   // 无增援 / 敌方恢复 / 新单位生成时，战后战力不得高于战前（离散装箱误差已在共享函数层归整）。
   if (enemyRemaining > pending.enemyPowerBefore) {
     throw new Error(`敌方战后战力 ${enemyRemaining} 高于战前 ${pending.enemyPowerBefore}，拒绝写回。`);
   }
-  target.enemyPower = enemyRemaining;
-  target.control = enemyRemaining === 0 ? 'neutral' : 'enemy';
+  if (pending.source === 'garrison') {
+    target.enemyPower = enemyRemaining;
+    target.control = enemyRemaining === 0 ? 'neutral' : 'enemy';
+  } else {
+    const force = next.enemyTaskForces.find((candidate) => candidate.id === pending.taskForceId)!;
+    if (enemyRemaining === 0) {
+      next.enemyTaskForces = next.enemyTaskForces.filter((candidate) => candidate.id !== force.id);
+      next.sieges = next.sieges.filter((siege) => siege.taskForceId !== force.id);
+      if (pending.source === 'gateDefense') next.extraction.gateDefense = 'resolved';
+    } else {
+      force.power = enemyRemaining;
+    }
+  }
 
   const destroyedIds = teamACombatIds(battle, bindings, 'destroyed');
   const disabledIds = teamACombatIds(battle, bindings, 'disabled');
@@ -832,7 +1338,8 @@ export function applyStrategicBattleResult(
     next,
     `战斗结束于${system.name}（battleId ${pending.battleId} / seed ${pending.battleSeed}）：` +
       `玩家损毁 [${destroyedIds.join(', ')}]，失能 [${disabledIds.join(', ')}]，脱离 [${escapedIds.size ? [...escapedIds].sort().join(', ') : '无'}]；` +
-      `敌方战力 ${pending.enemyPowerBefore} → ${target.enemyPower}${target.enemyPower === 0 ? '；星系已清除' : ''}。`
+      `敌方战力 ${pending.enemyPowerBefore} → ${enemyRemaining}` +
+      `${enemyRemaining === 0 ? pending.source === 'garrison' ? '；星系已清除' : '；特遣舰队已消灭' : ''}。`
   );
 
   next.pendingBattle = undefined;
@@ -840,7 +1347,18 @@ export function applyStrategicBattleResult(
   // 玩家无任何可作战舰船 → 失败（不清除敌方据点）。
   if (strategicFleetCounts(next.fleet).operational <= 0) {
     next.status = 'collapsed';
+    next.pendingSuccession = false;
     appendLog(next, '远征舰队已无可用作战舰船。');
+    return next;
+  }
+
+  const continuity = reconcileStrategicCommanderContinuity(next);
+  if (continuity === 'succession') {
+    appendLog(next, `${next.commander.name} 已无法履职；必须从候补名单任命继任者。`);
+    return resolveUniverseTurn(next, '战斗行动结束');
+  }
+  if (continuity === 'collapsed') {
+    appendLog(next, `${next.commander.name} 已无法履职且没有可用继任者，远征指挥体系崩溃。`);
     return next;
   }
 
