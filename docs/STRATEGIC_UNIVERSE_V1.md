@@ -13,7 +13,8 @@
 > V1.0-C.3 完成多据点与抽象运输网络：唯一主基地、次级补给前哨、独立建造、已知航路运输阻断，以及防御网和舰队驻防共同影响的敌袭；Sector Expedition Code 升级为 `1.0-alpha.8`，策略测试套件扩展至 73 例。
 > V1.0-C.4 完成持久移动敌军、据点围攻与真实星门防御战：特遣舰队按回合确定性移动，围攻与据点失守保持网络不变量，驻军/特遣舰队/星门拦截统一复用 core-v4 与 Three.js 战斗闭环；Sector Expedition Code 升级为 `1.0-alpha.9`，策略测试套件扩展至 78 例。
 > V1.0-C.5 完成三星域发布闭环与压力校准：星门只保留校准触发的唯一强制防御战，移动敌军随星域增长且受继承舰队战力上限约束，普通扩张不再隔空伤害据点；三个星域共享 17 回合行动预算。81 项策略用例、65-seed 正式矩阵、额外 1000-seed 探针与真实 Chromium 三星域流程均通过。
-> 当前实现与进度请以 `progress.md` 的 V1.0-C.5 小节为准。
+> V1.0-D.1 完成唯一主基地轻型船坞与确定性舰船生产：生产仅使用既有 core-v4 舰体/改型和价值，排产分配稳定舰船 ID，交付舰以完整合法组件加入唯一战略舰队；Sector Expedition Code 升级为 `1.0-alpha.10`，策略测试套件扩展至 85 例。
+> 当前实现与进度请以 `progress.md` 的 V1.0-D.1 小节为准。
 
 ## Purpose
 
@@ -32,7 +33,8 @@ This milestone begins the transition from an FTL-style route campaign to a persi
 9. Recruit, treat and replace a persistent commander.
 10. Defend a main base and secondary outposts against persistent moving task forces and sieges.
 11. Trigger the single mandatory gate-defense battle through the existing core-v4 / Three.js flow.
-12. Export, import, save, resume and complete three consecutive sectors with persistent ship identity and component damage.
+12. Build a light shipyard at the main base and produce existing legal core-v4 hull/variant combinations.
+13. Export, import, save, resume and complete three consecutive sectors with persistent ship identity and component damage.
 
 ## Persistent entities
 
@@ -58,8 +60,9 @@ Available facilities:
 - supply works
 - field repair dock
 - local defense grid
+- light orbital shipyard (main base only)
 
-The shipyard is currently an infrastructure milestone. Ship production is deliberately deferred until the strategic fleet model supports multiple fleets and persistent ship assignments.
+The light shipyard supports a two-order deterministic queue. Resources are paid when an order is queued; production pauses while the sole fleet is away from the main base or the base is under siege. Delivery creates a full-component persistent ship with an ID allocated at queue time. No multiple-fleet assignment or fitting system is implied.
 
 ## Research
 
@@ -83,15 +86,13 @@ The current relationship is:
 - core-v4 battle: the shared real-time encounter used by garrisons, task forces and gate defense
 - battle results: deterministic bindings write persistent ship identity, component damage, destruction and commander consequences back into the strategic save
 
-## Explicit limitations after V1.0-C.5
+## Explicit limitations after V1.0-D.1
 
 The release-candidate slice does not include:
 
 - multiple player fleets
 - permanent colonies or a long-lived empire map
-- ship production
 - ship fitting or modular equipment
-- multiple independently controlled player fleets
 - diplomacy and markets
 - population and workforce
 - real-time strategic movement

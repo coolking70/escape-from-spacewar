@@ -12,6 +12,7 @@ import {
   canExtractSector,
   canOpenCommanderRecruitment,
   canQueueFacility,
+  canQueueShipProduction,
   canQueueResearch,
   canRepairShip,
   canTreatStrategicCommander,
@@ -22,10 +23,13 @@ import {
   strategicIncomeReport,
   strategicHostilePowerAt,
   strategicTransportStatus,
+  shipProductionCost,
+  shipProductionTurns,
   travelFuelCost,
   universeTurnIncome
 } from '../strategy/universeRules';
-import { SHIP_CN, VARIANT_CN, getShipDef } from '../sim/shipVariants';
+import { SHIP_CN, VARIANT_CN, VARIANTS_BY_CLASS, getShipDef } from '../sim/shipVariants';
+import type { ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentShip } from '../campaign/fleet/persistentFleet';
 import {
   COMMANDER_ATTRIBUTE_LABEL,
@@ -298,12 +302,25 @@ export class StrategicUniversePanel {
         `<div>${FACILITY_DEFINITIONS[order.facilityType].label} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合</div>`
       ).join('') || '<div>建造队列为空</div>';
       const buttons = (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
+        if (type === 'shipyard' && station.id !== state.faction.baseEntityId) return '';
         const definition = FACILITY_DEFINITIONS[type];
         return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
       }).join('');
+      const productionQueue = (station.shipProductionQueue ?? []).map((order) =>
+        `<div data-strategy-production-order="${escapeHtml(order.id)}">${SHIP_CN[order.shipClass]}·${VARIANT_CN[order.variant]} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合 · ${escapeHtml(order.campaignShipId)}</div>`
+      ).join('') || '<div>舰船生产队列为空</div>';
+      const productionButtons = (['Fighter', 'Frigate', 'Cruiser'] as ShipClass[]).flatMap((shipClass) =>
+        VARIANTS_BY_CLASS[shipClass].map((variant) => {
+          const cost = shipProductionCost(shipClass, variant);
+          return `<button class="btn small" data-strategy-produce-class="${shipClass}" data-strategy-produce-variant="${variant}"${disabledAttr(!canQueueShipProduction(actionState, shipClass, variant) || actionLocked)}>${SHIP_CN[shipClass]}·${VARIANT_CN[variant]}<small>${resourceCost(cost)} · ${shipProductionTurns(shipClass, variant)}回合</small></button>`;
+        })
+      ).join('');
+      const production = station.id === state.faction.baseEntityId
+        ? `<div class="ship-production"><h4>轻型船坞生产</h4>${(station.facilities ?? []).some((facility) => facility.type === 'shipyard') ? `<div class="queue-list">${productionQueue}</div><div class="strategy-button-grid ship-production-grid">${productionButtons}</div><small>队列上限 2；舰队离开主基地或基地被围攻时生产暂停。</small>` : '<p class="muted">建设轻型轨道船坞后，可生产现有舰体与改型。</p>'}</div>`
+        : '';
       const siege = state.sieges.find((candidate) => candidate.stationEntityId === station.id);
       const siegeText = siege ? `<div class="siege-warning">围攻中 · ${siege.turnsRemaining}/${siege.totalTurns} 回合后失守</div>` : '';
-      return `<article class="outpost-card ${source.status === 'blocked' ? 'blocked' : ''} ${siege ? 'besieged' : ''}" data-strategy-outpost-card="${escapeHtml(station.id)}"><h3>${station.id === state.faction.baseEntityId ? '主基地' : '补给前哨'} · ${escapeHtml(station.name)}</h3>${siegeText}<p>${escapeHtml(stationSystem.name)} · ${escapeHtml(linkText)}</p><small>本地产出 矿物 +${source.produced.minerals} / 能源 +${source.produced.energy} / 科学 +${source.produced.science} / 补给 +${source.produced.supplies}${source.status === 'blocked' ? '（当前未送达）' : ''}</small><div class="facility-list">${facilities}</div><h4>建造队列</h4><div class="queue-list">${queue}</div><div class="strategy-button-grid">${buttons}</div></article>`;
+      return `<article class="outpost-card ${source.status === 'blocked' ? 'blocked' : ''} ${siege ? 'besieged' : ''}" data-strategy-outpost-card="${escapeHtml(station.id)}"><h3>${station.id === state.faction.baseEntityId ? '主基地' : '补给前哨'} · ${escapeHtml(station.name)}</h3>${siegeText}<p>${escapeHtml(stationSystem.name)} · ${escapeHtml(linkText)}</p><small>本地产出 矿物 +${source.produced.minerals} / 能源 +${source.produced.energy} / 科学 +${source.produced.science} / 补给 +${source.produced.supplies}${source.status === 'blocked' ? '（当前未送达）' : ''}</small><div class="facility-list">${facilities}</div><h4>建造队列</h4><div class="queue-list">${queue}</div><div class="strategy-button-grid">${buttons}</div>${production}</article>`;
     }).join('') || '<p class="muted">先在无敌军的已测绘空间站建立主基地，之后可继续建立补给前哨。</p>';
     const networkCard = `<section class="strategic-card strategic-network"><h2>据点与运输网络</h2><p>据点 ${networkStations.length} · 运输链 ${state.transportLinks.length} · 本回合送达：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</p><div class="outpost-list">${networkCards}</div></section>`;
 
@@ -411,6 +428,13 @@ export class StrategicUniversePanel {
         type: 'queueConstruction',
         facilityType: button.dataset.strategyBuild as FacilityType,
         entityId: button.dataset.strategyBuildEntity
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-produce-class]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({
+        type: 'queueShipProduction',
+        shipClass: button.dataset.strategyProduceClass as ShipClass,
+        variant: button.dataset.strategyProduceVariant as ShipVariant
       });
     });
     this.root.querySelectorAll<HTMLElement>('[data-strategy-research]').forEach((button) => {

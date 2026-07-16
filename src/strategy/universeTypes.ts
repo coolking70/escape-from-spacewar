@@ -3,13 +3,13 @@ import type { DeploymentSelection } from '../campaign/deployment/deploymentSyste
 import type { FleetEntry } from '../sim/battleTypes';
 import type { CampaignCommander, PendingRecruitment } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-C.4 升级为 1.0-alpha.9，加入移动敌军、围攻与星门防御战。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.9';
-export type SectorExpeditionVersion = '1.0-alpha.9';
+/** 当前 Sector Expedition Code 版本。V1.0-D.1 升级为 1.0-alpha.10，加入主基地舰船生产队列。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.10';
+export type SectorExpeditionVersion = '1.0-alpha.10';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
-export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid';
+export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid' | 'shipyard';
 export type ResearchProjectId = 'routeAnalysis' | 'rapidFabrication' | 'crisisForecasting' | 'gateTheory';
 export type PermanentBlueprintId = 'fieldLogistics' | 'hardenedBulkheads' | 'compactFoundry';
 export type CrisisPhase = 'foothold' | 'contest' | 'collapse' | 'evacuation';
@@ -32,6 +32,16 @@ export interface FacilityInstance {
 export interface ConstructionOrder {
   id: string;
   facilityType: FacilityType;
+  turnsRemaining: number;
+  totalTurns: number;
+}
+
+/** 主基地船坞中的确定性生产订单；campaignShipId 在入队时分配，完成后永不变化。 */
+export interface ShipProductionOrder {
+  id: string;
+  campaignShipId: string;
+  shipClass: FleetEntry['shipClass'];
+  variant: FleetEntry['variant'];
   turnsRemaining: number;
   totalTurns: number;
 }
@@ -91,6 +101,7 @@ export interface SpaceEntity {
   facilitySlots?: number;
   facilities?: FacilityInstance[];
   constructionQueue?: ConstructionOrder[];
+  shipProductionQueue?: ShipProductionOrder[];
   blueprint?: PermanentBlueprintId;
 }
 
@@ -221,6 +232,7 @@ export type UniverseAction =
   | { type: 'establishBase'; entityId: string }
   | { type: 'establishOutpost'; entityId: string }
   | { type: 'queueConstruction'; facilityType: FacilityType; entityId?: string }
+  | { type: 'queueShipProduction'; shipClass: FleetEntry['shipClass']; variant: FleetEntry['variant'] }
   | { type: 'queueResearch'; projectId: ResearchProjectId }
   | { type: 'engageEnemy' }
   | { type: 'openRecruitment' }

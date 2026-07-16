@@ -125,6 +125,7 @@ function makeEntity(
     entity.facilitySlots = 3 + (serial % 2);
     entity.facilities = [];
     entity.constructionQueue = [];
+    entity.shipProductionQueue = [];
   }
   if (kind === 'relicSite') {
     entity.blueprint = BLUEPRINTS[rng.int(BLUEPRINTS.length)];
@@ -284,7 +285,7 @@ export function generateUniverse(
     crisis: {
       phase: 'foothold',
       pressure: strategicPressureAtStart(sectorIndex),
-      // 敌军目标与危机压力仍逐域上升；在尚无造舰/多舰队系统的 C 阶段，
+      // 敌军目标与危机压力仍逐域上升；D.1 仍保持单一玩家舰队，
       // 三个星域共享同一 17 回合行动预算，避免图拓扑本身令第三星域无解。
       finalTurn: 17
     },

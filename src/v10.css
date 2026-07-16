@@ -383,6 +383,22 @@
   color: #a9e7ca;
 }
 
+.ship-production {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(105, 177, 225, .24);
+}
+
+.ship-production-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.ship-production > small {
+  display: block;
+  margin-top: 8px;
+  color: #95afc5;
+}
+
 .strategic-log {
   max-height: 430px;
   overflow: auto;

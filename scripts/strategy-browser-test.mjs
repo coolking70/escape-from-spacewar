@@ -158,6 +158,76 @@ try {
   console.log(`[PASS] commander recruitment browser loop: candidates=2, reserve=1, supplies=-${recruitmentCost}`);
   console.log('[PASS] strategic outpost browser loop: outposts=2, transport=active, local queue=1, siege=1, defense battle=Three.js');
 
+  // D.1 独立浏览器闭环：正式 UI 建造轻型船坞、排产并交付一艘现有 core-v4 战斗机。
+  const productionPage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const productionErrors = [];
+  productionPage.on('console', (message) => {
+    if (message.type() === 'error') productionErrors.push(`console: ${message.text()}`);
+  });
+  productionPage.on('pageerror', (error) => productionErrors.push(`page: ${String(error)}`));
+  await productionPage.addInitScript(() => { Date.now = () => 2036; });
+  await productionPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await productionPage.locator('#cm-strategy-new').click();
+  await productionPage.locator('[data-strategy-base]').click();
+
+  const initialProductionState = JSON.parse(await productionPage.evaluate(() => window.render_game_to_text()));
+  const initialShipCount = initialProductionState.fleet.ships.length;
+  const mainBaseId = initialProductionState.network.mainBaseId;
+  assert.ok(mainBaseId, 'D.1 browser flow must establish a main base');
+  assert.equal(await productionPage.locator('[data-strategy-produce-class]').count(), 0, 'production controls must stay hidden before a shipyard exists');
+  const shipyardButton = productionPage.locator(`[data-strategy-build="shipyard"][data-strategy-build-entity="${mainBaseId}"]`);
+  assert.equal(await shipyardButton.isDisabled(), false, 'main base must allow its first light shipyard');
+  await shipyardButton.click();
+  for (let turn = 0; turn < 3; turn++) await productionPage.locator('#strategy-next-turn').click();
+
+  let shipyardState = JSON.parse(await productionPage.evaluate(() => window.render_game_to_text()));
+  assert.ok(shipyardState.network.outposts[0].facilities.includes('shipyard'), 'three real turns must complete the queued shipyard');
+  assert.equal(await productionPage.locator('[data-strategy-produce-class]').count(), 12, 'built shipyard must expose all 12 existing legal hull/variant combinations');
+
+  const engageProductionThreat = productionPage.locator('#strategy-engage');
+  if (await engageProductionThreat.isVisible() && !(await engageProductionThreat.isDisabled())) {
+    await engageProductionThreat.click();
+    await productionPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+    await productionPage.locator('[data-speed="4"]').click();
+    await productionPage.locator('#strategy-root').waitFor({ state: 'visible', timeout: 20000 });
+    await productionPage.locator('.strategic-screen').waitFor({ state: 'visible' });
+    shipyardState = JSON.parse(await productionPage.evaluate(() => window.render_game_to_text()));
+  }
+
+  const resourcesBeforeProduction = { ...shipyardState.resources };
+  const fighterButton = productionPage.locator('[data-strategy-produce-class="Fighter"][data-strategy-produce-variant="standard"]');
+  assert.equal(await fighterButton.isDisabled(), false, 'a safe staffed main base must allow standard fighter production');
+  await fighterButton.click();
+  const queuedProductionState = JSON.parse(await productionPage.evaluate(() => window.render_game_to_text()));
+  const queuedOrder = queuedProductionState.network.outposts.find((outpost) => outpost.id === mainBaseId).shipProductionQueue[0];
+  assert.ok(queuedOrder.campaignShipId, 'queued production must allocate a stable campaign ship ID immediately');
+  assert.equal(queuedOrder.turnsRemaining, 2, 'standard fighter must use the authoritative two-turn production time');
+  assert.equal(queuedProductionState.resources.minerals, resourcesBeforeProduction.minerals - 10, 'production UI must deduct the authoritative mineral cost');
+  assert.equal(queuedProductionState.resources.energy, resourcesBeforeProduction.energy - 5, 'production UI must deduct the authoritative energy cost');
+  assert.equal(queuedProductionState.resources.supplies, resourcesBeforeProduction.supplies - 2, 'production UI must deduct the authoritative supply cost');
+  let completedProductionState = queuedProductionState;
+  for (let turn = 0; turn < 8 && completedProductionState.network.outposts.find((outpost) => outpost.id === mainBaseId).shipProductionQueue.length > 0; turn++) {
+    const engageDuringProduction = productionPage.locator('#strategy-engage');
+    if (await engageDuringProduction.isVisible() && !(await engageDuringProduction.isDisabled())) {
+      await engageDuringProduction.click();
+      await productionPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+      await productionPage.locator('[data-speed="4"]').click();
+      await productionPage.locator('#strategy-root').waitFor({ state: 'visible', timeout: 20000 });
+      await productionPage.locator('.strategic-screen').waitFor({ state: 'visible' });
+    }
+    await productionPage.locator('#strategy-next-turn').click();
+    completedProductionState = JSON.parse(await productionPage.evaluate(() => window.render_game_to_text()));
+  }
+
+  assert.equal(completedProductionState.network.outposts.find((outpost) => outpost.id === mainBaseId).shipProductionQueue.length, 0, 'completed order must leave the main-base production queue');
+  assert.equal(completedProductionState.fleet.ships.length, initialShipCount + 1, 'completed ship must join the sole strategic fleet');
+  assert.ok(completedProductionState.fleet.ships.some((ship) => ship.id === queuedOrder.campaignShipId && ship.shipClass === 'Fighter' && ship.variant === 'standard'), 'delivered ship must preserve its queued stable ID and requested legal configuration');
+  await productionPage.locator('.ship-production').scrollIntoViewIfNeeded();
+  if (screenshotDir) await productionPage.screenshot({ path: path.join(screenshotDir, 'd1-shipyard-production.png'), fullPage: true });
+  assert.deepEqual(productionErrors, [], `D.1 production browser loop must keep the console clean:\n${productionErrors.join('\n')}`);
+  console.log(`[PASS] D.1 ship production browser loop: shipyard=3 turns, fighter=2 turns, ship=${queuedOrder.campaignShipId}`);
+  await productionPage.close();
+
   const battlePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const battleErrors = [];
   const loadedResources = [];
