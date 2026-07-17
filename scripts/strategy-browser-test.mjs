@@ -228,6 +228,47 @@ try {
   console.log(`[PASS] D.1 ship production browser loop: shipyard=3 turns, fighter=2 turns, ship=${queuedOrder.campaignShipId}`);
   await productionPage.close();
 
+  // D.4 独立浏览器闭环：在安全主基地船厂给一艘稳定 ID 舰船装配并卸下战略模块。
+  const fittingPage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const fittingErrors = [];
+  fittingPage.on('console', (message) => {
+    if (message.type() === 'error') fittingErrors.push(`console: ${message.text()}`);
+  });
+  fittingPage.on('pageerror', (error) => fittingErrors.push(`page: ${String(error)}`));
+  await fittingPage.addInitScript(() => { Date.now = () => 2036; });
+  await fittingPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await fittingPage.locator('#cm-strategy-new').click();
+  await fittingPage.locator('[data-strategy-base]').click();
+  const fittingInitialState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  const fittingMainBaseId = fittingInitialState.network.mainBaseId;
+  const fittingShipId = fittingInitialState.fleet.ships[0].id;
+  await fittingPage.locator(`[data-strategy-build="shipyard"][data-strategy-build-entity="${fittingMainBaseId}"]`).click();
+  for (let turn = 0; turn < 3; turn++) await fittingPage.locator('#strategy-next-turn').click();
+  const fittingReadyState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  const maxFuelBeforeFitting = fittingReadyState.fleet.maxFuel;
+  const moduleResourcesBefore = { ...fittingReadyState.resources };
+  const auxiliaryTank = fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"][data-strategy-fit-module="auxiliaryTank"]`);
+  assert.equal(await auxiliaryTank.isDisabled(), false, 'D.4 safe main-base shipyard must allow fitting a stable-ID fleet ship');
+  await auxiliaryTank.click();
+  const fittedState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  assert.deepEqual(
+    fittedState.fleet.fittings.find((fitting) => fitting.campaignShipId === fittingShipId),
+    { campaignShipId: fittingShipId, moduleId: 'auxiliaryTank' },
+    'D.4 browser fitting must bind the exact campaignShipId',
+  );
+  assert.equal(fittedState.fleet.maxFuel, maxFuelBeforeFitting + 1, 'D.4 auxiliary tank must raise strategic max fuel by one');
+  assert.equal(fittedState.resources.minerals, moduleResourcesBefore.minerals - 8, 'D.4 module UI must deduct authoritative minerals');
+  assert.equal(fittedState.resources.energy, moduleResourcesBefore.energy - 4, 'D.4 module UI must deduct authoritative energy');
+  await fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"]`).first().scrollIntoViewIfNeeded();
+  if (screenshotDir) await fittingPage.screenshot({ path: path.join(screenshotDir, 'd4-strategic-fitting.png'), fullPage: true });
+  await fittingPage.locator(`[data-strategy-remove-module="${fittingShipId}"]`).click();
+  const removedState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  assert.equal(removedState.fleet.fittings.some((fitting) => fitting.campaignShipId === fittingShipId), false, 'D.4 remove action must clear the exact fitting');
+  assert.equal(removedState.fleet.maxFuel, maxFuelBeforeFitting, 'D.4 removing the tank must restore derived max fuel');
+  assert.deepEqual(fittingErrors, [], `D.4 fitting browser loop must keep the console clean:\n${fittingErrors.join('\n')}`);
+  console.log(`[PASS] D.4 strategic fitting browser loop: ship=${fittingShipId}, module=auxiliaryTank, maxFuel=+1`);
+  await fittingPage.close();
+
   const battlePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const battleErrors = [];
   const loadedResources = [];

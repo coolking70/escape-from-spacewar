@@ -15,6 +15,7 @@ import {
   canEstablishBase,
   canEstablishOutpost,
   canExtractSector,
+  canFitStrategicModule,
   canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueShipProduction,
@@ -83,6 +84,12 @@ import {
 } from './universePacing';
 import { runStrategicThreeSectorPlaythrough } from './strategicPlaythrough';
 import { STRATEGIC_BLUEPRINT_EFFECTS, strategicMaxFuel } from './strategicBlueprints';
+import {
+  STRATEGIC_MODULE_DEFINITIONS,
+  expectedStrategicMaxFuel,
+  fittingForShip,
+  strategicRepairCost
+} from './strategicFitting';
 
 type Ship = BattleState['ships'][number];
 
@@ -2864,6 +2871,133 @@ export function runStrategicTests(): SuiteResult {
       const rendered = renderPanelToRoot(migrated);
       const blueprint = rendered.root.querySelector<HTMLElement>('[data-strategy-blueprint="fieldLogistics"]');
       test.true_(!!blueprint && blueprint.textContent?.includes(STRATEGIC_BLUEPRINT_EFFECTS.fieldLogistics.description) === true, '真实 DOM 显示永久蓝图的准确战略效果');
+      add(test);
+    }
+
+    // V1.0-D.4：模块按稳定舰 ID 在安全主基地船坞付费装配，替换/卸下同步维护燃料派生量。
+    {
+      const test = new Case('D.4 逐舰战略模块装配、替换与卸下');
+      let state = prepareOperationalShipyard(2201);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const shipId = state.fleet.ships[0].campaignShipId;
+      const before = { ...state.faction.resources };
+      test.true_(canFitStrategicModule(state, shipId, 'auxiliaryTank'), '安全主基地船坞允许逐舰装配');
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: shipId, moduleId: 'auxiliaryTank' });
+      test.eq(fittingForShip(state, shipId)?.moduleId, 'auxiliaryTank', '辅助燃料舱精确绑定 campaignShipId');
+      test.eq(state.faction.resources.minerals, before.minerals - (STRATEGIC_MODULE_DEFINITIONS.auxiliaryTank.cost.minerals ?? 0), '装配扣除权威矿物成本');
+      test.eq(state.faction.resources.energy, before.energy - (STRATEGIC_MODULE_DEFINITIONS.auxiliaryTank.cost.energy ?? 0), '装配扣除权威能源成本');
+      test.eq(state.fleet.maxFuel, strategicMaxFuel(state.faction.legacy.blueprints) + 1, '辅助燃料舱使最大燃料 +1');
+      test.eq(state.fleet.maxFuel, expectedStrategicMaxFuel(state), '保存的最大燃料等于模块派生量');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(state))), '带逐舰模块的状态可保存往返');
+
+      state.fleet.fuel = state.fleet.maxFuel;
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: shipId, moduleId: 'surveyArray' });
+      test.eq(fittingForShip(state, shipId)?.moduleId, 'surveyArray', '同一舰槽可明确替换模块');
+      test.eq(state.fleet.maxFuel, strategicMaxFuel(state.faction.legacy.blueprints), '替换燃料舱后派生上限恢复');
+      test.eq(state.fleet.fuel, state.fleet.maxFuel, '降低燃料上限时当前燃料同步钳制');
+      state = applyUniverseAction(state, { type: 'removeStrategicModule', campaignShipId: shipId });
+      test.true_(fittingForShip(state, shipId) === undefined, '卸下模块清空该舰槽位');
+      add(test);
+    }
+
+    // V1.0-D.4：测绘与维修只消费战略模块效果，不触碰 core-v4 战斗配置。
+    {
+      const test = new Case('D.4 模块战略效果与冻结 core-v4 边界');
+      let surveyState = prepareOperationalShipyard(2202);
+      surveyState.faction.resources = { minerals: 100, energy: 100, science: 10, supplies: 100 };
+      const surveyShipId = surveyState.fleet.ships[0].campaignShipId;
+      surveyState = applyUniverseAction(surveyState, { type: 'fitStrategicModule', campaignShipId: surveyShipId, moduleId: 'surveyArray' });
+      const surveyTarget = surveyState.entities.find((entity) => entity.systemId === surveyState.fleet.systemId && entity.discovered && !entity.surveyed)!;
+      const scienceBefore = surveyState.faction.resources.science;
+      const baseSurveyScience = surveyTarget.kind === 'relicSite' ? 5 : 3;
+      surveyState = applyUniverseAction(surveyState, { type: 'surveyEntity', entityId: surveyTarget.id });
+      test.eq(surveyState.faction.resources.science, scienceBefore + baseSurveyScience + 2, '可作战舰测绘阵列提供 +2 科学');
+
+      let repairState = prepareOperationalShipyard(2203);
+      const repairBase = baseEntityForTest(repairState);
+      repairBase.facilities!.push({ id: 'd4-repair-dock', type: 'repairDock', level: 1 });
+      repairState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const repairShip = repairState.fleet.ships[0];
+      repairState = applyUniverseAction(repairState, { type: 'fitStrategicModule', campaignShipId: repairShip.campaignShipId, moduleId: 'fieldWorkshop' });
+      disablePersistentShip(repairState.fleet.ships.find((ship) => ship.campaignShipId === repairShip.campaignShipId)!);
+      const repairCost = strategicRepairCost(repairState, repairShip.campaignShipId);
+      const repairResources = { ...repairState.faction.resources };
+      repairState = applyUniverseAction(repairState, { type: 'repairShip', campaignShipId: repairShip.campaignShipId });
+      test.eq(repairResources.minerals - repairState.faction.resources.minerals, repairCost.minerals, '舰载工坊维修扣除 2 矿物');
+      test.eq(repairResources.supplies - repairState.faction.resources.supplies, repairCost.supplies, '舰载工坊维修扣除 4 补给');
+
+      const plain = prepareOperationalShipyard(2204);
+      const fitted = JSON.parse(JSON.stringify(plain)) as typeof plain;
+      fitted.fleet.fittings = [{ campaignShipId: fitted.fleet.ships[0].campaignShipId, moduleId: 'surveyArray' }];
+      const plainBattle = prepareStrategicBattle(toPersistentFleet(plain.fleet), [{ shipClass: 'Fighter', variant: 'scout', count: 1 }], 2204);
+      const fittedBattle = prepareStrategicBattle(toPersistentFleet(fitted.fleet), [{ shipClass: 'Fighter', variant: 'scout', count: 1 }], 2204);
+      test.eq(JSON.stringify(fittedBattle.state), JSON.stringify(plainBattle.state), '逐舰战略模块不会进入或改变 core-v4 BattleState');
+
+      const real = simulateStrategicBattle(2208, ENEMY_BUDGET);
+      const realFittedId = real.state.fleet.ships[0].campaignShipId;
+      real.state.fleet.fittings = [{ campaignShipId: realFittedId, moduleId: 'auxiliaryTank' }];
+      real.state.fleet.maxFuel += 1;
+      const written = applyStrategicBattleResult(real.state, real.battle, real.bindings);
+      test.true_(written.fleet.fittings.every((fitting) => written.fleet.ships.some((ship) => ship.campaignShipId === fitting.campaignShipId)), '真实 simulator 写回后模块只引用存活舰');
+      test.true_(validateUniverseState(written), '带模块的真实 simulator 输出可直接写回保存');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(written))), '带模块的真实战斗结果编码往返有效');
+      add(test);
+    }
+
+    // V1.0-D.4：装配随存活舰跨域继承，战损/放弃按舰 ID 清理，不留下悬空引用。
+    {
+      const test = new Case('D.4 模块跨域继承与损失清理');
+      let state = prepareOperationalShipyard(2205);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const fittedId = state.fleet.ships[0].campaignShipId;
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: fittedId, moduleId: 'auxiliaryTank' });
+      const next = applyUniverseAction(prepareGate(state, 100), { type: 'extractSector', mode: 'stable' });
+      test.eq(fittingForShip(next, fittedId)?.moduleId, 'auxiliaryTank', '存活舰模块按稳定 ID 跨域继承');
+      test.eq(next.fleet.maxFuel, strategicMaxFuel(next.faction.legacy.blueprints) + 1, '跨域后模块仍参与燃料派生');
+      test.true_(validateUniverseState(next), '模块跨域继承状态有效');
+
+      let abandon = prepareGate(state, 100);
+      abandon = applyUniverseAction(abandon, { type: 'configureExtraction', mode: 'emergency' });
+      abandon = applyUniverseAction(abandon, { type: 'assignExtractionShip', campaignShipId: fittedId, role: 'abandon' });
+      abandon = applyUniverseAction(abandon, { type: 'extractSector', mode: 'emergency' });
+      test.true_(!abandon.fleet.ships.some((ship) => ship.campaignShipId === fittedId), '主动放弃精确移除装配舰');
+      test.true_(!abandon.fleet.fittings.some((fitting) => fitting.campaignShipId === fittedId), '主动放弃同步清理模块引用');
+      test.true_(validateUniverseState(abandon), '清理损失模块后的状态可保存');
+      add(test);
+    }
+
+    // V1.0-D.4：alpha.12 迁移为空槽；深层校验和真实 DOM 拒绝悬空/重复装配并派发稳定 ID action。
+    {
+      const test = new Case('D.4 alpha.12 迁移、深层校验与真实 DOM');
+      const current = generateUniverse(2206, '模块迁移团');
+      const alpha12: any = JSON.parse(JSON.stringify(current));
+      alpha12.version = '1.0-alpha.12';
+      delete alpha12.fleet.fittings;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.12', state: alpha12 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.12 迁移到 alpha.13');
+      test.eq(migrated.fleet.fittings.length, 0, '旧存档确定迁移为空模块槽');
+      const malformed = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      malformed.fleet.fittings = [{ campaignShipId: 'missing-ship', moduleId: 'auxiliaryTank' }];
+      test.true_(!validateUniverseState(malformed), '深层校验拒绝不存在舰船的模块引用');
+      const duplicate = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      duplicate.fleet.fittings = [
+        { campaignShipId: duplicate.fleet.ships[0].campaignShipId, moduleId: 'auxiliaryTank' },
+        { campaignShipId: duplicate.fleet.ships[0].campaignShipId, moduleId: 'surveyArray' }
+      ];
+      test.true_(!validateUniverseState(duplicate), '深层校验拒绝同舰重复槽位');
+
+      const shipyard = prepareOperationalShipyard(2207);
+      shipyard.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const rendered = renderPanelToRoot(shipyard);
+      const shipId = shipyard.fleet.ships[0].campaignShipId;
+      const buttons = rendered.root.querySelectorAll<HTMLButtonElement>(`[data-strategy-fit-ship="${shipId}"]`);
+      test.eq(buttons.length, 3, '真实 DOM 为单舰渲染三个战略模块选择');
+      test.true_(Array.from(buttons).every((button) => !button.disabled), '安全船坞与充足资源下模块按钮可用');
+      buttons[0].click();
+      test.eq(rendered.calls.actionLog[0]?.type, 'fitStrategicModule', '真实 DOM 派发模块装配 action');
+      if (rendered.calls.actionLog[0]?.type === 'fitStrategicModule') {
+        test.eq(rendered.calls.actionLog[0].campaignShipId, shipId, '模块 action 携带稳定舰船 ID');
+      }
       add(test);
     }
   });

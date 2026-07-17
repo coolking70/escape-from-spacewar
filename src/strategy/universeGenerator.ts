@@ -12,6 +12,7 @@ import type {
   SpaceEntityKind,
   StarSystem,
   StarType,
+  StrategicShipFitting,
   UniverseState
 } from './universeTypes';
 import { strategicMobileEnemyBudget, strategicPressureAtStart } from './universePacing';
@@ -35,6 +36,7 @@ export interface SectorGenerationOptions {
   legacy?: SectorLegacy;
   /** 跨星域继承的真实逐舰舰队；首星域缺省使用三艘初始舰船。 */
   fleet?: PersistentFleet;
+  fittings?: StrategicShipFitting[];
   commander?: CampaignCommander;
   reserveCommanders?: CampaignCommander[];
   pendingSuccession?: boolean;
@@ -275,13 +277,14 @@ export function generateUniverse(
       name: '远征舰队',
       systemId: start.id,
       fuel: 8,
-      maxFuel: strategicMaxFuel(legacy.blueprints),
+      maxFuel: strategicMaxFuel(legacy.blueprints) + (options.fittings ?? []).filter((fitting) => fitting.moduleId === 'auxiliaryTank').length,
       ships: inherited.ships.map((ship) => ({
         ...ship,
         componentHp: ship.componentHp ? [...ship.componentHp] : undefined
       })),
       formation: inherited.formation,
-      doctrine: inherited.doctrine
+      doctrine: inherited.doctrine,
+      fittings: (options.fittings ?? []).map((fitting) => ({ ...fitting }))
     },
     crisis: {
       phase: 'foothold',

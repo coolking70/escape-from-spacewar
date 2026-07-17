@@ -3,15 +3,21 @@ import type { DeploymentSelection } from '../campaign/deployment/deploymentSyste
 import type { FleetEntry } from '../sim/battleTypes';
 import type { CampaignCommander, PendingRecruitment } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-D.3 升级为 1.0-alpha.12，统一永久蓝图战略效果。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.12';
-export type SectorExpeditionVersion = '1.0-alpha.12';
+/** 当前 Sector Expedition Code 版本。V1.0-D.4 升级为 1.0-alpha.13，加入逐舰战略模块装配。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.13';
+export type SectorExpeditionVersion = '1.0-alpha.13';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
 export type FacilityType = 'solarArray' | 'miningArray' | 'researchLab' | 'supplyWorks' | 'repairDock' | 'defenseGrid' | 'shipyard';
 export type ResearchProjectId = 'routeAnalysis' | 'rapidFabrication' | 'crisisForecasting' | 'gateTheory';
 export type PermanentBlueprintId = 'fieldLogistics' | 'hardenedBulkheads' | 'compactFoundry';
+export type StrategicModuleId = 'auxiliaryTank' | 'surveyArray' | 'fieldWorkshop';
+
+export interface StrategicShipFitting {
+  campaignShipId: string;
+  moduleId: StrategicModuleId;
+}
 export type CrisisPhase = 'foothold' | 'contest' | 'collapse' | 'evacuation';
 export type SystemControl = 'unknown' | 'neutral' | 'player' | 'enemy';
 export type ExtractionMode = 'stable' | 'emergency';
@@ -146,6 +152,7 @@ export interface StrategicFleet {
   ships: PersistentFleet['ships'];
   formation: PersistentFleet['formation'];
   doctrine: PersistentFleet['doctrine'];
+  fittings: StrategicShipFitting[];
 }
 
 /**
@@ -256,5 +263,7 @@ export type UniverseAction =
   | { type: 'calibrateGate' }
   | { type: 'configureExtraction'; mode: ExtractionMode }
   | { type: 'assignExtractionShip'; campaignShipId: string; role: ExtractionAssignmentRole }
+  | { type: 'fitStrategicModule'; campaignShipId: string; moduleId: StrategicModuleId }
+  | { type: 'removeStrategicModule'; campaignShipId: string }
   | { type: 'extractSector'; mode: ExtractionMode; rearguardShips?: number }
   | { type: 'advanceTurn' };

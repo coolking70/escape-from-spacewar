@@ -128,8 +128,8 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.12` (D.2 extraction manifests plus unified, cross-sector permanent blueprint effects). `1.0-alpha.2` through `1.0-alpha.11` are migrated deterministically in place.
-- Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship) and inherited assets.
+- Current version: `1.0-alpha.13` (D.2 extraction manifests, D.3 permanent blueprint effects and D.4 per-ship strategic fittings). `1.0-alpha.2` through `1.0-alpha.12` are migrated deterministically in place.
+- Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship), exact fitting references and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
 
@@ -377,4 +377,13 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - Effective costs shown by the UI are the same values consumed by `can*` predicates and formal reducers. Hardened Bulkheads explicitly does not alter core-v4 hull definitions, component maximum HP, battle values or damage semantics.
 - Strategy coverage is now **91 cases**, including each isolated effect, non-activation before extraction, official facility/production deductions, all-blueprint inheritance, final-victory activation, alpha.11 migration, malformed derived-state rejection and jsdom effect text.
 - Real Chromium forks a genuine post-gate-defense save, surveys the actual relic through visible controls, verifies pending status, crosses the gate, checks the same blueprint ID is active with the correct derived effect, and then separately completes the unchanged canonical three-sector/six-battle release flow. The screenshot and standard game client are visually inspected and console-clean.
-- D.3 remains strategic-only. Multiple player fleets, core-v4 stat modification, new hulls/variants, diplomacy, markets, population and real-time movement remain out of scope. D.4 will evaluate a module-fitting slice under the same frozen-core boundary.
+- D.3 remains strategic-only. Multiple player fleets, core-v4 stat modification, new hulls/variants, diplomacy, markets, population and real-time movement remain out of scope. D.4 subsequently adds only strategic fitting effects under the same frozen-core boundary.
+
+### V1.0-D.4 per-ship strategic module fitting
+
+- Sector Expedition Code advances to `1.0-alpha.13`. Alpha.12 saves receive an empty fitting list and a normalized derived `maxFuel`; current saves require each fitting to reference one existing unique `campaignShipId` and reject unknown modules, duplicate slots, stale ship references or contradictory fuel capacity.
+- A safe unique main-base shipyard exposes one strategic slot per persistent ship. Fitting/replacing pays the authoritative mineral/energy/supply cost through the formal reducer; removing is explicit and does not refund resources. Siege, fleet absence, blocking decisions and insufficient resources disable the same action in rules and UI.
+- The three modules have strategic-only effects: Auxiliary Tank adds one derived fleet fuel capacity while its ship survives; Survey Array adds two science when its deployable carrier surveys an entity; Field Workshop reduces only that carrier's repair cost. Fittings are pruned on destruction, survive extraction with their exact ship IDs, and never enter ReplayConfig, BattleState, ship definitions or combat values.
+- Strategy coverage is now **95 cases**, including fit/replace/remove deductions, derived fuel/save round trips, survey and repair effects, extraction inheritance, loss cleanup, alpha.12 migration, malformed references, jsdom action dispatch, identical fitted/unfitted BattleState creation and genuine simulator writeback/code round trips.
+- Real Chromium independently builds the main-base shipyard, fits an Auxiliary Tank to an exact stable ship ID, verifies resource and max-fuel changes, removes it and confirms restoration. The canonical three-sector/six-battle release flow and the standard web-game client remain visually and console clean.
+- D.4 closes the planned D-series sequence without changing frozen core-v4 combat rules, balance, state semantics or golden replays. Multiple player fleets, combat-affecting equipment, module technology, base upgrade trees, diplomacy, markets, population and real-time movement remain future scope.

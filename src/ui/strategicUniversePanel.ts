@@ -12,6 +12,7 @@ import {
   canEstablishBase,
   canEstablishOutpost,
   canExtractSector,
+  canFitStrategicModule,
   canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueShipProduction,
@@ -32,6 +33,12 @@ import {
   universeTurnIncome
 } from '../strategy/universeRules';
 import { STRATEGIC_BLUEPRINT_EFFECTS } from '../strategy/strategicBlueprints';
+import {
+  STRATEGIC_MODULE_DEFINITIONS,
+  STRATEGIC_MODULE_IDS,
+  fittingForShip,
+  strategicRepairCost
+} from '../strategy/strategicFitting';
 import { SHIP_CN, VARIANT_CN, VARIANTS_BY_CLASS, getShipDef } from '../sim/shipVariants';
 import type { ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentShip } from '../campaign/fleet/persistentFleet';
@@ -49,6 +56,7 @@ import type {
   ExtractionAssignmentRole,
   FacilityType,
   ResearchProjectId,
+  StrategicModuleId,
   SpaceEntity,
   SpaceEntityKind,
   StarType,
@@ -154,10 +162,20 @@ function fleetShipRow(ship: PersistentShip, actionState: UniverseState, actionLo
       (ship.componentHp?.[i] ?? component.maxHp) <= 0
   );
   const warn = keyDestroyed ? ' <span class="ship-warn">⚠关键组件损毁</span>' : '';
+  const repairCost = strategicRepairCost(actionState, ship.campaignShipId);
   const repairBtn = ship.disabled && canRepairShip(actionState, ship.campaignShipId)
-    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked)}>维修</button>`
+    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked)}>维修（${resourceCost(repairCost)}）</button>`
     : '';
-  return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}</div>`;
+  const fitting = fittingForShip(actionState, ship.campaignShipId);
+  const base = actionState.entities.find((entity) => entity.id === actionState.faction.baseEntityId);
+  const hasShipyard = !!base?.facilities?.some((facility) => facility.type === 'shipyard');
+  const fittingControls = hasShipyard || fitting
+    ? `<div class="strategic-fitting"><small>战略模块：${fitting ? STRATEGIC_MODULE_DEFINITIONS[fitting.moduleId].label : '空槽'}</small><div>${STRATEGIC_MODULE_IDS.map((moduleId) => {
+        const definition = STRATEGIC_MODULE_DEFINITIONS[moduleId];
+        return `<button class="btn small ${fitting?.moduleId === moduleId ? 'complete' : ''}" data-strategy-fit-ship="${escapeHtml(ship.campaignShipId)}" data-strategy-fit-module="${moduleId}" title="${escapeHtml(definition.description)}"${disabledAttr(actionLocked || !canFitStrategicModule(actionState, ship.campaignShipId, moduleId))}>${definition.label}<small>${resourceCost(definition.cost)}</small></button>`;
+      }).join('')}${fitting ? `<button class="btn small" data-strategy-remove-module="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked || !canFitStrategicModule(actionState, ship.campaignShipId))}>卸下</button>` : ''}</div></div>`
+    : '';
+  return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}${fittingControls}</div>`;
 }
 
 export class StrategicUniversePanel {
@@ -485,6 +503,16 @@ export class StrategicUniversePanel {
     });
     this.root.querySelectorAll<HTMLElement>('[data-strategy-repair]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'repairShip', campaignShipId: button.dataset.strategyRepair! });
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-fit-ship]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({
+        type: 'fitStrategicModule',
+        campaignShipId: button.dataset.strategyFitShip!,
+        moduleId: button.dataset.strategyFitModule as StrategicModuleId
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-remove-module]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'removeStrategicModule', campaignShipId: button.dataset.strategyRemoveModule! });
     });
     const calibrateButton = this.root.querySelector('#strategy-calibrate') as HTMLButtonElement | null;
     if (calibrateButton) calibrateButton.onclick = () => this.cb.onAction({ type: 'calibrateGate' });

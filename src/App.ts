@@ -220,6 +220,7 @@ export class App {
         fleet: {
           fuel: this.universe.fleet.fuel,
           maxFuel: this.universe.fleet.maxFuel,
+          fittings: this.universe.fleet.fittings.map((fitting) => ({ ...fitting })),
           ships: this.universe.fleet.ships.map((ship) => ({
             id: ship.campaignShipId,
             shipClass: ship.shipClass,

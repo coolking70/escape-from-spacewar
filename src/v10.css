@@ -457,6 +457,25 @@
   line-height: 1.4;
 }
 
+.strategic-fitting {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(119, 177, 218, 0.2);
+}
+
+.strategic-fitting > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.strategic-fitting .btn small {
+  display: block;
+  margin-top: 2px;
+}
+
 @media (max-width: 920px) {
   .strategic-layout,
   .strategic-management {
