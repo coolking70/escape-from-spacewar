@@ -47,6 +47,7 @@ import type {
   StrategicEnemyTaskForce,
   StrategicSiege,
   StrategicResources,
+  StrategicModuleId,
   StrategicTransportLink,
   UniverseAction,
   UniverseState
@@ -56,6 +57,24 @@ import {
   reconcileStrategicCommanderContinuity
 } from './universeCommander';
 import { strategicMobileEnemyBudget, strategicPressurePerTurn } from './universePacing';
+import {
+  buildStrategicExtractionPlan,
+  createDefaultExtractionManifest,
+  extractionManifestWithRole
+} from './extractionManifest';
+import type { ExtractionAssignmentRole, StrategicExtractionManifest } from './universeTypes';
+import {
+  STRATEGIC_BLUEPRINT_EFFECTS,
+  applyStrategicMineralDiscount,
+  strategicTravelFuelDiscount
+} from './strategicBlueprints';
+import {
+  STRATEGIC_MODULE_DEFINITIONS,
+  fittingForShip,
+  pruneStrategicFittings,
+  strategicRepairCost,
+  strategicSurveyScienceBonus
+} from './strategicFitting';
 
 export interface FacilityDefinition {
   label: string;
@@ -79,9 +98,9 @@ export const CRISIS_PHASE_LABEL: Record<CrisisPhase, string> = {
 };
 
 export const BLUEPRINT_LABEL: Record<PermanentBlueprintId, string> = {
-  fieldLogistics: '远征后勤核心',
-  hardenedBulkheads: '强化舰体蓝图',
-  compactFoundry: '紧凑工业核心'
+  fieldLogistics: STRATEGIC_BLUEPRINT_EFFECTS.fieldLogistics.label,
+  hardenedBulkheads: STRATEGIC_BLUEPRINT_EFFECTS.hardenedBulkheads.label,
+  compactFoundry: STRATEGIC_BLUEPRINT_EFFECTS.compactFoundry.label
 };
 
 export const FACILITY_DEFINITIONS: Record<FacilityType, FacilityDefinition> = {
@@ -295,13 +314,17 @@ export function shipProductionTurns(shipClass: ShipClass, variant: ShipVariant):
   return Math.max(2, Math.ceil(campaignShipCost(shipClass, variant) / 100) + 1);
 }
 
-function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType): Partial<StrategicResources> {
+export function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType): Partial<StrategicResources> {
   const definition = FACILITY_DEFINITIONS[facilityType];
-  const discount = state.faction.legacy.blueprints.includes('compactFoundry') ? 4 : 0;
-  return {
-    ...definition.cost,
-    minerals: Math.max(0, (definition.cost.minerals ?? 0) - discount)
-  };
+  return applyStrategicMineralDiscount(definition.cost, state.faction.legacy.blueprints);
+}
+
+export function effectiveShipProductionCost(
+  state: UniverseState,
+  shipClass: ShipClass,
+  variant: ShipVariant
+): StrategicResources {
+  return applyStrategicMineralDiscount(shipProductionCost(shipClass, variant), state.faction.legacy.blueprints);
 }
 
 // ---------------- 真实逐舰舰队派生量（不再依赖抽象计数字段） ----------------
@@ -446,6 +469,7 @@ function processShipProduction(state: UniverseState): void {
     towed: false,
     deployed: true
   });
+  state.extraction.manifest = undefined;
   appendLog(state, `${SHIP_CN[completed.shipClass]}·${VARIANT_CN[completed.variant]}完工并编入${state.fleet.name}（${completed.campaignShipId}）。`);
 }
 
@@ -560,6 +584,7 @@ function applyStrategicOutpostRaidInPlace(state: UniverseState, attackedStation:
       .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId))
       .pop();
     if (damaged) disablePersistentShip(damaged);
+    if (damaged) state.extraction.manifest = undefined;
   }
   appendLog(
     state,
@@ -661,7 +686,7 @@ export function advanceUniverseTurn(state: UniverseState, reason = '战略时间
 
 export function travelFuelCost(state: UniverseState): number {
   const local = state.faction.localResearch.includes('routeAnalysis') ? 1 : 0;
-  const legacy = state.faction.legacy.blueprints.includes('fieldLogistics') ? 1 : 0;
+  const legacy = strategicTravelFuelDiscount(state.faction.legacy.blueprints);
   return Math.max(1, 2 - local - legacy);
 }
 
@@ -709,7 +734,22 @@ export function canQueueShipProduction(state: UniverseState, shipClass: ShipClas
   if (facilityCount(base, 'shipyard') !== 1) return false;
   if ((base.shipProductionQueue ?? []).length >= SHIP_PRODUCTION_QUEUE_LIMIT) return false;
   if (!validateFleet([{ shipClass, variant, count: 1 }]).valid) return false;
-  return hasResources(state.faction.resources, shipProductionCost(shipClass, variant));
+  return hasResources(state.faction.resources, effectiveShipProductionCost(state, shipClass, variant));
+}
+
+export function canFitStrategicModule(
+  state: UniverseState,
+  campaignShipId: string,
+  moduleId?: StrategicModuleId
+): boolean {
+  if (state.status !== 'active' || hasBlockingStrategicDecision(state)) return false;
+  const base = baseEntity(state);
+  const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
+  if (!base || !ship || ship.escaped || state.fleet.systemId !== base.systemId) return false;
+  if (state.sieges.some((siege) => siege.stationEntityId === base.id) || facilityCount(base, 'shipyard') !== 1) return false;
+  const current = fittingForShip(state, campaignShipId)?.moduleId;
+  if (moduleId === undefined) return current !== undefined;
+  return current !== moduleId && hasResources(state.faction.resources, STRATEGIC_MODULE_DEFINITIONS[moduleId].cost);
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
@@ -733,9 +773,9 @@ export function canRepairFleet(state: UniverseState): boolean {
 export function canRepairShip(state: UniverseState, campaignShipId: string): boolean {
   const station = stationInFleetSystem(state);
   const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
+  const cost = strategicRepairCost(state, campaignShipId);
   return state.status === 'active' && !hasBlockingStrategicDecision(state) && !!station &&
-    facilityCount(station, 'repairDock') > 0 && !!ship && ship.disabled &&
-    state.faction.resources.supplies >= 5 && state.faction.resources.minerals >= 4;
+    facilityCount(station, 'repairDock') > 0 && !!ship && ship.disabled && hasResources(state.faction.resources, cost);
 }
 
 export function canOpenCommanderRecruitment(state: UniverseState): boolean {
@@ -776,20 +816,32 @@ export function canExtractSector(
   if (hasBlockingStrategicDecision(state)) return false;
   const gate = state.entities.find((entity) => entity.id === state.extraction.gateEntityId);
   const system = gate ? state.systems.find((candidate) => candidate.id === gate.systemId) : undefined;
-  const fleetCounts = strategicFleetCounts(state.fleet);
+  const manifest = extractionManifestForMode(state, mode, rearguardShips);
+  const plan = buildStrategicExtractionPlan(state, manifest);
   if (
     state.status !== 'active' || !gate || !gate.surveyed || gate.systemId !== state.fleet.systemId ||
-    !system || strategicHostilePowerAt(state, system.id) > 0 || state.extraction.gateDefense !== 'resolved' || fleetCounts.operational <= 0 ||
-    rearguardShips < 0 || rearguardShips >= fleetCounts.operational
+    !system || strategicHostilePowerAt(state, system.id) > 0 || state.extraction.gateDefense !== 'resolved' ||
+    rearguardShips < 0 || !plan.valid
   ) return false;
-  // 任何成功撤离必须至少保留一艘舰船（含失能舰），不得产生空舰队或零舰船 victory。
-  const wouldLose = previewExtractLosses(state, mode, rearguardShips).length;
-  if (state.fleet.ships.length - wouldLose < 1) return false;
+  if (plan.survivingShipIds.length < 1 || state.faction.resources.supplies < plan.suppliesCost || state.fleet.fuel < plan.fuelCost) return false;
   if (mode === 'stable') {
-    return state.extraction.calibration >= state.extraction.requiredCalibration &&
-      state.faction.resources.supplies >= 8 && state.fleet.fuel >= 2;
+    return state.extraction.calibration >= state.extraction.requiredCalibration;
   }
-  return state.extraction.calibration >= state.extraction.emergencyThreshold && state.faction.resources.supplies >= 4;
+  return state.extraction.calibration >= state.extraction.emergencyThreshold;
+}
+
+export function canConfigureExtraction(state: UniverseState): boolean {
+  return state.status === 'active' && state.extraction.discovered && !hasBlockingStrategicDecision(state);
+}
+
+export function canAssignExtractionShip(
+  state: UniverseState,
+  campaignShipId: string,
+  role: ExtractionAssignmentRole
+): boolean {
+  if (!canConfigureExtraction(state)) return false;
+  const manifest = state.extraction.manifest ?? createDefaultExtractionManifest(state, 'emergency');
+  return !!extractionManifestWithRole(state, manifest, campaignShipId, role);
 }
 
 function queueConstruction(state: UniverseState, facilityType: FacilityType, entityId?: string): UniverseState {
@@ -818,7 +870,7 @@ function queueShipProduction(state: UniverseState, shipClass: ShipClass, variant
   const base = baseEntity(next)!;
   base.shipProductionQueue = base.shipProductionQueue ?? [];
   const queueIndex = base.shipProductionQueue.length;
-  const cost = shipProductionCost(shipClass, variant);
+  const cost = effectiveShipProductionCost(next, shipClass, variant);
   spendResources(next.faction.resources, cost);
   const reduction = next.faction.localResearch.includes('rapidFabrication') ? 1 : 0;
   const turns = Math.max(1, shipProductionTurns(shipClass, variant) - reduction);
@@ -833,6 +885,27 @@ function queueShipProduction(state: UniverseState, shipClass: ShipClass, variant
   };
   base.shipProductionQueue.push(order);
   appendLog(next, `${SHIP_CN[shipClass]}·${VARIANT_CN[variant]}加入船坞生产队列（${turns} 回合，预分配 ${order.campaignShipId}）。`);
+  return next;
+}
+
+function fitStrategicModule(state: UniverseState, campaignShipId: string, moduleId: StrategicModuleId): UniverseState {
+  if (!canFitStrategicModule(state, campaignShipId, moduleId)) return state;
+  const next = cloneState(state);
+  spendResources(next.faction.resources, STRATEGIC_MODULE_DEFINITIONS[moduleId].cost);
+  next.fleet.fittings = next.fleet.fittings.filter((fitting) => fitting.campaignShipId !== campaignShipId);
+  next.fleet.fittings.push({ campaignShipId, moduleId });
+  pruneStrategicFittings(next);
+  appendLog(next, `${campaignShipId} 装配${STRATEGIC_MODULE_DEFINITIONS[moduleId].label}。`);
+  return next;
+}
+
+function removeStrategicModule(state: UniverseState, campaignShipId: string): UniverseState {
+  if (!canFitStrategicModule(state, campaignShipId)) return state;
+  const next = cloneState(state);
+  const fitting = fittingForShip(next, campaignShipId)!;
+  next.fleet.fittings = next.fleet.fittings.filter((candidate) => candidate.campaignShipId !== campaignShipId);
+  pruneStrategicFittings(next);
+  appendLog(next, `${campaignShipId} 卸下${STRATEGIC_MODULE_DEFINITIONS[fitting.moduleId].label}。`);
   return next;
 }
 
@@ -1045,16 +1118,17 @@ function repairShipComponents(ship: PersistentShip): void {
     ship.componentHp[target] = Math.min(maxHp, (ship.componentHp[target] ?? 0) + healed);
   }
   ship.disabled = isPersistentShipDisabled(ship);
+  if (!ship.disabled) ship.towed = false;
 }
 
 function repairShip(state: UniverseState, campaignShipId: string): UniverseState {
   if (!canRepairShip(state, campaignShipId)) return state;
   let next = cloneState(state);
-  next.faction.resources.supplies -= 5;
-  next.faction.resources.minerals -= 4;
+  spendResources(next.faction.resources, strategicRepairCost(next, campaignShipId));
   const ship = next.fleet.ships.find((candidate) => candidate.campaignShipId === campaignShipId);
   if (ship) {
     repairShipComponents(ship);
+    next.extraction.manifest = undefined;
     appendLog(next, `战地维修坞修复 ${ship.campaignShipId}（${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}）。`);
   }
   next = advanceUniverseTurn(next, '舰队维修完成');
@@ -1109,57 +1183,72 @@ function calibrateGate(state: UniverseState): UniverseState {
   return next;
 }
 
-/**
- * 确定性选择撤离损失舰船：稳定撤离只损失断后舰（保留失能舰）；紧急撤离先舍弃失能舰，再按稳定 ID 顺序损失断后舰与高压额外舰。
- * 统一裁剪：任何成功撤离至少保留一艘舰船（maximumLosses = max(0, 总数 - 1)）。
- * 损失 ID 唯一、顺序稳定、不依赖当前数组偶然顺序；仅剩一艘舰时高压撤离不会删除最后一艘。
- */
-function selectExtractLosses(fleet: StrategicFleet, mode: ExtractionMode, rearguard: number, extraLoss: number): string[] {
-  const operational = fleet.ships
-    .filter(isShipDeployable)
-    .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
-  const disabledSorted = fleet.ships
-    .filter((ship) => ship.disabled)
-    .sort((a, b) => a.campaignShipId.localeCompare(b.campaignShipId));
-  const lost: string[] = [];
-  if (mode === 'emergency') lost.push(...disabledSorted.map((ship) => ship.campaignShipId));
-  lost.push(...operational.slice(0, rearguard).map((ship) => ship.campaignShipId));
-  if (mode === 'emergency') {
-    lost.push(...operational.slice(rearguard, rearguard + extraLoss).map((ship) => ship.campaignShipId));
+function extractionManifestForMode(
+  state: UniverseState,
+  mode: ExtractionMode,
+  legacyRearguardShips = 0
+): StrategicExtractionManifest {
+  if (legacyRearguardShips <= 0 && state.extraction.manifest?.mode === mode) {
+    return state.extraction.manifest;
   }
-  const unique = [...new Set(lost)];
-  const maximumLosses = Math.max(0, fleet.ships.length - 1);
-  return unique.slice(0, maximumLosses);
+  const manifest = createDefaultExtractionManifest(state, mode);
+  if (mode === 'emergency' && legacyRearguardShips > 0) {
+    const rearguardIds = state.fleet.ships
+      .filter(isShipDeployable)
+      .sort((left, right) => left.campaignShipId.localeCompare(right.campaignShipId))
+      .slice(0, legacyRearguardShips)
+      .map((ship) => ship.campaignShipId);
+    manifest.assignments = manifest.assignments.map((assignment) =>
+      rearguardIds.includes(assignment.campaignShipId) ? { ...assignment, role: 'rearguard' } : assignment
+    );
+  }
+  return manifest;
 }
 
-/** UI 预览：给定撤离模式与断后舰数，确定性返回将损失的舰船 ID 列表（与实际撤离逻辑完全一致）。 */
+/** UI/自动流程共用预览：返回权威清单计划中的确切损失 ID。 */
 export function previewExtractLosses(state: UniverseState, mode: ExtractionMode, rearguardShips = 0): string[] {
-  const counts = strategicFleetCounts(state.fleet);
-  const hardened = state.faction.legacy.blueprints.includes('hardenedBulkheads');
-  const rearguard = Math.min(counts.operational, rearguardShips);
-  const pressureLoss = mode === 'emergency' && state.crisis.pressure >= 70 && rearguardShips === 0 && !hardened ? 1 : 0;
-  const extraLoss = mode === 'emergency' ? pressureLoss : 0;
-  return selectExtractLosses(state.fleet, mode, rearguard, extraLoss);
+  return buildStrategicExtractionPlan(state, extractionManifestForMode(state, mode, rearguardShips)).lostShipIds;
+}
+
+export function currentStrategicExtractionPlan(state: UniverseState, mode: ExtractionMode = 'emergency') {
+  return buildStrategicExtractionPlan(state, extractionManifestForMode(state, mode));
+}
+
+function configureExtraction(state: UniverseState, mode: ExtractionMode): UniverseState {
+  if (!canConfigureExtraction(state)) return state;
+  const next = cloneState(state);
+  next.extraction.manifest = createDefaultExtractionManifest(next, mode);
+  return next;
+}
+
+function assignExtractionShip(
+  state: UniverseState,
+  campaignShipId: string,
+  role: ExtractionAssignmentRole
+): UniverseState {
+  if (!canConfigureExtraction(state)) return state;
+  const manifest = state.extraction.manifest ?? createDefaultExtractionManifest(state, 'emergency');
+  const assigned = extractionManifestWithRole(state, manifest, campaignShipId, role);
+  if (!assigned) return state;
+  const next = cloneState(state);
+  next.extraction.manifest = assigned;
+  return next;
 }
 
 function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShips = 0): UniverseState {
   if (!canExtractSector(state, mode, rearguardShips)) return state;
   const next = cloneState(state);
-  const counts = strategicFleetCounts(next.fleet);
-  const hardened = next.faction.legacy.blueprints.includes('hardenedBulkheads');
-  const rearguard = Math.min(counts.operational, rearguardShips);
-  const pressureLoss = mode === 'emergency' && next.crisis.pressure >= 70 && rearguardShips === 0 && !hardened ? 1 : 0;
-  const extraLoss = mode === 'emergency' ? pressureLoss : 0;
-  const lostIds = selectExtractLosses(next.fleet, mode, rearguard, extraLoss);
-  const survivingShips = next.fleet.ships.filter((ship) => !lostIds.includes(ship.campaignShipId));
+  const manifest = extractionManifestForMode(next, mode, rearguardShips);
+  const plan = buildStrategicExtractionPlan(next, manifest);
+  if (!plan.valid) throw new Error(plan.error ?? '撤离清单无效。');
+  const lostIds = plan.lostShipIds;
+  const survivingShips = next.fleet.ships.filter((ship) => plan.survivingShipIds.includes(ship.campaignShipId));
   const totalLost = lostIds.length;
-
-  const carriedMaterials = mode === 'stable'
-    ? Math.min(30, Math.floor(next.faction.resources.minerals * 0.5))
-    : Math.min(12, Math.floor(next.faction.resources.minerals * 0.25));
-  const carriedSupplies = mode === 'stable'
-    ? Math.min(12, Math.max(0, next.faction.resources.supplies - 8))
-    : Math.min(5, Math.max(0, next.faction.resources.supplies - 4));
+  const carriedMaterials = plan.carriedMaterials;
+  const carriedSupplies = plan.carriedSupplies;
+  next.faction.resources.supplies -= plan.suppliesCost;
+  next.fleet.fuel -= plan.fuelCost;
+  next.extraction.manifest = undefined;
   const blueprints = Array.from(new Set<PermanentBlueprintId>([
     ...next.faction.legacy.blueprints,
     ...next.faction.recoveredBlueprints
@@ -1172,19 +1261,30 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     shipsLost: next.faction.legacy.shipsLost + totalLost
   };
 
+  const towedIds = new Set(plan.towedShipIds);
   const inherited: PersistentFleet = {
-    ships: survivingShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined })),
+    ships: survivingShips.map((ship) => ({
+      ...ship,
+      towed: towedIds.has(ship.campaignShipId),
+      componentHp: ship.componentHp ? [...ship.componentHp] : undefined
+    })),
     formation: next.fleet.formation,
     doctrine: next.fleet.doctrine
   };
 
   if (next.sectorIndex >= next.targetSectorCount) {
     next.status = 'victory';
-    next.fleet.ships = survivingShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
+    next.fleet.ships = survivingShips.map((ship) => ({
+      ...ship,
+      towed: towedIds.has(ship.campaignShipId),
+      componentHp: ship.componentHp ? [...ship.componentHp] : undefined
+    }));
     next.faction.legacy = legacy;
+    next.fleet.fittings = next.fleet.fittings.filter((fitting) => plan.survivingShipIds.includes(fitting.campaignShipId));
+    pruneStrategicFittings(next);
     appendLog(
       next,
-      `${mode === 'stable' ? '稳定' : '紧急'}撤离完成；穿越全部 ${next.targetSectorCount} 个星域，舰船损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}。`
+      `${mode === 'stable' ? '稳定' : '紧急'}撤离完成；穿越全部 ${next.targetSectorCount} 个星域，舰船损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}，燃料消耗 ${plan.fuelCost}、补给消耗 ${plan.suppliesCost}。`
     );
     return next;
   }
@@ -1195,13 +1295,14 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
     targetSectorCount: next.targetSectorCount,
     legacy,
     fleet: inherited,
+    fittings: next.fleet.fittings.filter((fitting) => plan.survivingShipIds.includes(fitting.campaignShipId)),
     commander: next.commander,
     reserveCommanders: next.reserveCommanders,
     pendingSuccession: next.pendingSuccession
   });
   generated.log.unshift({
     turn: 0,
-    text: `${mode === 'stable' ? '稳定撤离' : '紧急突围'}上一星域：留下 ${rearguardShips} 艘断后舰，总损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}，携带矿物 ${carriedMaterials}、补给 ${carriedSupplies}。`
+    text: `${mode === 'stable' ? '稳定撤离' : '紧急突围'}上一星域：断后 ${plan.rearguardShipIds.length} 艘、主动放弃 ${plan.abandonedShipIds.length} 艘，总损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}，携带矿物 ${carriedMaterials}、补给 ${carriedSupplies}。`
   });
   return generated;
 }
@@ -1229,6 +1330,10 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
   if (action.type === 'queueConstruction') return queueConstruction(state, action.facilityType, action.entityId);
   if (action.type === 'queueShipProduction') return queueShipProduction(state, action.shipClass, action.variant);
   if (action.type === 'queueResearch') return queueResearch(state, action.projectId);
+  if (action.type === 'configureExtraction') return configureExtraction(state, action.mode);
+  if (action.type === 'assignExtractionShip') return assignExtractionShip(state, action.campaignShipId, action.role);
+  if (action.type === 'fitStrategicModule') return fitStrategicModule(state, action.campaignShipId, action.moduleId);
+  if (action.type === 'removeStrategicModule') return removeStrategicModule(state, action.campaignShipId);
   if (action.type === 'establishBase') return establishBase(state, action.entityId);
   if (action.type === 'establishOutpost') return establishOutpost(state, action.entityId);
   if (action.type === 'engageEnemy') return engageEnemy(state);
@@ -1277,7 +1382,7 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
     let next = cloneState(state);
     const target = next.entities.find((candidate) => candidate.id === entity.id)!;
     target.surveyed = true;
-    const science = target.kind === 'relicSite' ? 5 : 3;
+    const science = (target.kind === 'relicSite' ? 5 : 3) + strategicSurveyScienceBonus(next);
     next.faction.resources.science += science;
     if (target.kind === 'jumpGate') {
       next.extraction.discovered = true;
@@ -1388,6 +1493,8 @@ export function applyStrategicBattleResult(
     return { ...ship, escaped: false, deployed: true };
   });
   next.fleet.ships = standardizedShips.map((ship) => ({ ...ship, componentHp: ship.componentHp ? [...ship.componentHp] : undefined }));
+  pruneStrategicFittings(next);
+  next.extraction.manifest = undefined;
   const shipsLost = Math.max(0, ownBefore - next.fleet.ships.length);
 
   // 指挥官后果使用 V0.8 同源健康规则：真实舰损与胜负决定疲劳、动摇和创伤；

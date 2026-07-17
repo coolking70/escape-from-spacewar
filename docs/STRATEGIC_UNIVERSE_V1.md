@@ -14,7 +14,10 @@
 > V1.0-C.4 完成持久移动敌军、据点围攻与真实星门防御战：特遣舰队按回合确定性移动，围攻与据点失守保持网络不变量，驻军/特遣舰队/星门拦截统一复用 core-v4 与 Three.js 战斗闭环；Sector Expedition Code 升级为 `1.0-alpha.9`，策略测试套件扩展至 78 例。
 > V1.0-C.5 完成三星域发布闭环与压力校准：星门只保留校准触发的唯一强制防御战，移动敌军随星域增长且受继承舰队战力上限约束，普通扩张不再隔空伤害据点；三个星域共享 17 回合行动预算。81 项策略用例、65-seed 正式矩阵、额外 1000-seed 探针与真实 Chromium 三星域流程均通过。
 > V1.0-D.1 完成唯一主基地轻型船坞与确定性舰船生产：生产仅使用既有 core-v4 舰体/改型和价值，排产分配稳定舰船 ID，交付舰以完整合法组件加入唯一战略舰队；Sector Expedition Code 升级为 `1.0-alpha.10`，策略测试套件扩展至 85 例。
-> 当前实现与进度请以 `progress.md` 的 V1.0-D.1 小节为准。
+> V1.0-D.2 完成逐舰撤离清单：稳定/紧急撤离以 `campaignShipId` 精确覆盖舰队，拖曳、断后、放弃、携带资源和风险由同一纯计划预览并结算；Sector Expedition Code 升级为 `1.0-alpha.11`，策略测试套件扩展至 88 例。
+> V1.0-D.3 统一三个永久蓝图的战略效果和跨域激活边界，并以 `maxFuel` 派生不变量、正式 reducer 扣费及真实 Chromium 取得/激活流程闭合；Sector Expedition Code 升级为 `1.0-alpha.12`，策略测试套件扩展至 91 例。
+> V1.0-D.4 在冻结 core-v4 的边界内完成以 `campaignShipId` 绑定的逐舰战略模块槽、正式资源扣费、跨域继承和损失清理；Sector Expedition Code 升级为 `1.0-alpha.13`，策略测试套件扩展至 95 例。
+> 当前实现与进度请以 `progress.md` 的 V1.0-D.4 小节为准。
 
 ## Purpose
 
@@ -34,7 +37,8 @@ This milestone begins the transition from an FTL-style route campaign to a persi
 10. Defend a main base and secondary outposts against persistent moving task forces and sieges.
 11. Trigger the single mandatory gate-defense battle through the existing core-v4 / Three.js flow.
 12. Build a light shipyard at the main base and produce existing legal core-v4 hull/variant combinations.
-13. Export, import, save, resume and complete three consecutive sectors with persistent ship identity and component damage.
+13. Assign every persistent ship an explicit extraction role and preview exact costs, survivors and losses.
+14. Export, import, save, resume and complete three consecutive sectors with persistent ship identity and component damage.
 
 ## Persistent entities
 
@@ -86,13 +90,13 @@ The current relationship is:
 - core-v4 battle: the shared real-time encounter used by garrisons, task forces and gate defense
 - battle results: deterministic bindings write persistent ship identity, component damage, destruction and commander consequences back into the strategic save
 
-## Explicit limitations after V1.0-D.1
+## Explicit limitations after V1.0-D.4
 
 The release-candidate slice does not include:
 
 - multiple player fleets
 - permanent colonies or a long-lived empire map
-- ship fitting or modular equipment
+- combat-affecting equipment or a module technology tree (D.4 fittings are strategic-only)
 - diplomacy and markets
 - population and workforce
 - real-time strategic movement

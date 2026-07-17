@@ -6,10 +6,13 @@ import {
   RESEARCH_DEFINITIONS,
   canCalibrateGate,
   canAppointStrategicCommander,
+  canAssignExtractionShip,
+  canConfigureExtraction,
   canEngageEnemy,
   canEstablishBase,
   canEstablishOutpost,
   canExtractSector,
+  canFitStrategicModule,
   canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueShipProduction,
@@ -17,17 +20,25 @@ import {
   canRepairShip,
   canTreatStrategicCommander,
   ownedStrategicStations,
-  previewExtractLosses,
+  currentStrategicExtractionPlan,
+  effectiveFacilityCost,
+  effectiveShipProductionCost,
   strategicFleetCounts,
   strategicFleetPower,
   strategicIncomeReport,
   strategicHostilePowerAt,
   strategicTransportStatus,
-  shipProductionCost,
   shipProductionTurns,
   travelFuelCost,
   universeTurnIncome
 } from '../strategy/universeRules';
+import { STRATEGIC_BLUEPRINT_EFFECTS } from '../strategy/strategicBlueprints';
+import {
+  STRATEGIC_MODULE_DEFINITIONS,
+  STRATEGIC_MODULE_IDS,
+  fittingForShip,
+  strategicRepairCost
+} from '../strategy/strategicFitting';
 import { SHIP_CN, VARIANT_CN, VARIANTS_BY_CLASS, getShipDef } from '../sim/shipVariants';
 import type { ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentShip } from '../campaign/fleet/persistentFleet';
@@ -42,8 +53,10 @@ import {
   isCommanderAvailable
 } from '../campaign/commander/commanderHealth';
 import type {
+  ExtractionAssignmentRole,
   FacilityType,
   ResearchProjectId,
+  StrategicModuleId,
   SpaceEntity,
   SpaceEntityKind,
   StarType,
@@ -69,6 +82,13 @@ const CONTROL_LABEL: Record<SystemControl, string> = {
   neutral: '无主区域',
   player: '我方控制',
   enemy: '敌方控制'
+};
+
+const EXTRACTION_ROLE_LABEL: Record<ExtractionAssignmentRole, string> = {
+  evacuate: '随队撤离',
+  tow: '拖曳撤离',
+  rearguard: '留守断后',
+  abandon: '主动放弃'
 };
 
 const ENTITY_LABEL: Record<SpaceEntityKind, string> = {
@@ -142,10 +162,20 @@ function fleetShipRow(ship: PersistentShip, actionState: UniverseState, actionLo
       (ship.componentHp?.[i] ?? component.maxHp) <= 0
   );
   const warn = keyDestroyed ? ' <span class="ship-warn">⚠关键组件损毁</span>' : '';
+  const repairCost = strategicRepairCost(actionState, ship.campaignShipId);
   const repairBtn = ship.disabled && canRepairShip(actionState, ship.campaignShipId)
-    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked)}>维修</button>`
+    ? `<button class="btn small primary" data-strategy-repair="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked)}>维修（${resourceCost(repairCost)}）</button>`
     : '';
-  return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}</div>`;
+  const fitting = fittingForShip(actionState, ship.campaignShipId);
+  const base = actionState.entities.find((entity) => entity.id === actionState.faction.baseEntityId);
+  const hasShipyard = !!base?.facilities?.some((facility) => facility.type === 'shipyard');
+  const fittingControls = hasShipyard || fitting
+    ? `<div class="strategic-fitting"><small>战略模块：${fitting ? STRATEGIC_MODULE_DEFINITIONS[fitting.moduleId].label : '空槽'}</small><div>${STRATEGIC_MODULE_IDS.map((moduleId) => {
+        const definition = STRATEGIC_MODULE_DEFINITIONS[moduleId];
+        return `<button class="btn small ${fitting?.moduleId === moduleId ? 'complete' : ''}" data-strategy-fit-ship="${escapeHtml(ship.campaignShipId)}" data-strategy-fit-module="${moduleId}" title="${escapeHtml(definition.description)}"${disabledAttr(actionLocked || !canFitStrategicModule(actionState, ship.campaignShipId, moduleId))}>${definition.label}<small>${resourceCost(definition.cost)}</small></button>`;
+      }).join('')}${fitting ? `<button class="btn small" data-strategy-remove-module="${escapeHtml(ship.campaignShipId)}"${disabledAttr(actionLocked || !canFitStrategicModule(actionState, ship.campaignShipId))}>卸下</button>` : ''}</div></div>`
+    : '';
+  return `<div class="fleet-ship ${statusClass}"><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]} ${VARIANT_CN[ship.variant]}</small><span class="ship-status">${status}</span><span class="ship-integrity">完整度 ${integrity}%</span>${warn}${repairBtn}${fittingControls}</div>`;
 }
 
 export class StrategicUniversePanel {
@@ -187,10 +217,10 @@ export class StrategicUniversePanel {
           : '';
     const actionLocked = hasPending || hasRecruitment || commandLocked;
     const blueprintText = state.faction.legacy.blueprints.length
-      ? state.faction.legacy.blueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
+      ? state.faction.legacy.blueprints.map((id) => `<span data-strategy-blueprint="${id}"><b>${BLUEPRINT_LABEL[id]}</b>：${STRATEGIC_BLUEPRINT_EFFECTS[id].description}</span>`).join('<br>')
       : '无';
     const recoveredText = state.faction.recoveredBlueprints.length
-      ? state.faction.recoveredBlueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
+      ? state.faction.recoveredBlueprints.map((id) => `${BLUEPRINT_LABEL[id]}（待撤离后激活）`).join(' / ')
       : '无';
     const fleetCard = `
 <section class="strategic-card">
@@ -304,14 +334,14 @@ export class StrategicUniversePanel {
       const buttons = (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
         if (type === 'shipyard' && station.id !== state.faction.baseEntityId) return '';
         const definition = FACILITY_DEFINITIONS[type];
-        return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
+        return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(effectiveFacilityCost(state, type))} · ${definition.turns}回合 · ${definition.description}</small></button>`;
       }).join('');
       const productionQueue = (station.shipProductionQueue ?? []).map((order) =>
         `<div data-strategy-production-order="${escapeHtml(order.id)}">${SHIP_CN[order.shipClass]}·${VARIANT_CN[order.variant]} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合 · ${escapeHtml(order.campaignShipId)}</div>`
       ).join('') || '<div>舰船生产队列为空</div>';
       const productionButtons = (['Fighter', 'Frigate', 'Cruiser'] as ShipClass[]).flatMap((shipClass) =>
         VARIANTS_BY_CLASS[shipClass].map((variant) => {
-          const cost = shipProductionCost(shipClass, variant);
+          const cost = effectiveShipProductionCost(state, shipClass, variant);
           return `<button class="btn small" data-strategy-produce-class="${shipClass}" data-strategy-produce-variant="${variant}"${disabledAttr(!canQueueShipProduction(actionState, shipClass, variant) || actionLocked)}>${SHIP_CN[shipClass]}·${VARIANT_CN[variant]}<small>${resourceCost(cost)} · ${shipProductionTurns(shipClass, variant)}回合</small></button>`;
         })
       ).join('');
@@ -340,17 +370,34 @@ export class StrategicUniversePanel {
     const calibrate = canCalibrateGate(actionState)
       ? `<button class="btn primary" id="strategy-calibrate"${disabledAttr(actionLocked)}>校准星门（能源 6 / 科学 2 / 补给 1）</button>`
       : '';
-    const stable = canExtractSector(actionState, 'stable')
-      ? `<button class="btn primary" id="strategy-extract-stable"${disabledAttr(actionLocked)}>稳定撤离并携带较多资产</button>`
+    const extractionMode = state.extraction.manifest?.mode ?? 'emergency';
+    const extractionPlan = currentStrategicExtractionPlan(state, extractionMode);
+    const canConfigure = canConfigureExtraction(actionState) && !actionLocked;
+    const extractionModeButtons = state.extraction.discovered && state.status === 'active'
+      ? `<div class="extraction-mode-tabs"><button class="btn small ${extractionMode === 'stable' ? 'complete' : ''}" data-strategy-extraction-mode="stable"${disabledAttr(!canConfigure)}>规划稳定撤离</button><button class="btn small ${extractionMode === 'emergency' ? 'complete' : ''}" data-strategy-extraction-mode="emergency"${disabledAttr(!canConfigure)}>规划紧急撤离</button></div>`
       : '';
-    const emergency = canExtractSector(actionState, 'emergency')
-      ? `<button class="btn danger" id="strategy-extract-emergency"${disabledAttr(actionLocked)}>紧急撤离（可能损失舰船与物资）</button>`
+    const extractionRows = state.extraction.discovered && state.status === 'active'
+      ? extractionPlan.manifest.assignments.map((assignment) => {
+          const ship = state.fleet.ships.find((candidate) => candidate.campaignShipId === assignment.campaignShipId)!;
+          const roles: ExtractionAssignmentRole[] = ship.disabled
+            ? ['tow', 'abandon']
+            : extractionMode === 'emergency'
+              ? ['evacuate', 'rearguard', 'abandon']
+              : ['evacuate', 'abandon'];
+          const buttons = roles.map((role) =>
+            `<button class="btn small ${assignment.role === role ? 'complete' : ''}" data-strategy-extraction-ship="${escapeHtml(ship.campaignShipId)}" data-strategy-extraction-role="${role}"${disabledAttr(actionLocked || assignment.role === role || !canAssignExtractionShip(actionState, ship.campaignShipId, role))}>${EXTRACTION_ROLE_LABEL[role]}</button>`
+          ).join('');
+          return `<div class="extraction-ship-row" data-strategy-extraction-assignment="${escapeHtml(ship.campaignShipId)}"><span><b>${escapeHtml(ship.campaignShipId)}</b><small>${SHIP_CN[ship.shipClass]}·${VARIANT_CN[ship.variant]} · ${ship.disabled ? '失能' : '可作战'}</small></span><div>${buttons}</div></div>`;
+        }).join('')
       : '';
-    const rearguard = fleetCounts.total > 1 && canExtractSector(actionState, 'emergency', 1)
-      ? `<button class="btn danger" id="strategy-extract-rearguard"${disabledAttr(actionLocked)}>留下 1 艘舰断后并紧急撤离</button>`
+    const executeExtraction = state.extraction.discovered && state.status === 'active'
+      ? extractionMode === 'stable'
+        ? `<button class="btn primary" id="strategy-extract-stable"${disabledAttr(actionLocked || !canExtractSector(actionState, 'stable'))}>执行当前稳定撤离清单</button>`
+        : `<button class="btn danger" id="strategy-extract-emergency"${disabledAttr(actionLocked || !canExtractSector(actionState, 'emergency'))}>执行当前紧急撤离清单</button>`
       : '';
-    const extractPreview = state.status === 'active'
-      ? `撤离损失预览：稳定 ${fmtLosses(previewExtractLosses(state, 'stable'))} · 紧急 ${fmtLosses(previewExtractLosses(state, 'emergency'))} · 断后紧急 ${fmtLosses(previewExtractLosses(state, 'emergency', 1))}`
+    const riskLabel = { stable: '稳定', controlled: '受控紧急', emergency: '紧急', critical: '高危' }[extractionPlan.risk];
+    const extractPreview = state.status === 'active' && state.extraction.discovered
+      ? `<div class="extraction-plan-summary"><b>${riskLabel}计划</b><span>燃料 ${extractionPlan.fuelCost} · 补给 ${extractionPlan.suppliesCost}</span><span>撤离 ${fmtLosses(extractionPlan.survivingShipIds)} · 损失 ${fmtLosses(extractionPlan.lostShipIds)}</span><span>携带矿物 ${extractionPlan.carriedMaterials} · 补给 ${extractionPlan.carriedSupplies}</span>${extractionPlan.pressureLossShipIds.length ? `<span class="ship-warn">高压额外损失：${fmtLosses(extractionPlan.pressureLossShipIds)}</span>` : ''}${extractionPlan.error ? `<span class="ship-warn">${escapeHtml(extractionPlan.error)}</span>` : ''}</div>`
       : '';
 
     const log = state.log.slice(-12).reverse().map((entry) => `<div>R${entry.turn} · ${escapeHtml(entry.text)}</div>`).join('');
@@ -403,7 +450,7 @@ export class StrategicUniversePanel {
       : '';
     const commanderCard = `<section class="strategic-card strategic-commander"><h2>远征指挥官</h2><h3>${escapeHtml(commander.name)} · Lv.${commander.level}</h3><div class="commander-stats">${commanderAttributes}</div><p>特质：${commander.traits.map((trait) => COMMANDER_TRAIT_LABEL[trait]).join(' / ')}</p><p class="muted">${commanderStatus}</p><div class="commander-actions">${treatmentButton}${recruitmentButton}${recruitmentStatus}</div><h3>候补名单</h3><div class="commander-roster">${reserveRows}</div>${recruitmentOffer}</section>`;
 
-    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>移动敌军 ${state.enemyTaskForces.length}</span><span>围攻 ${state.sieges.length}</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点送达：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${strategicHostilePowerAt(state, selected.id) ? ` · 敌军总战力 ${strategicHostilePowerAt(state, selected.id)}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management">${commanderCard}<section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${networkCard}${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}<div class="extraction-actions">${stable}${emergency}${rearguard}</div><p class="muted extract-preview">${extractPreview}</p><small>稳定撤离需要 100% 校准、补给 8、燃料 2；紧急撤离需要 40% 校准。两种方式都必须先完成真实星门防御战。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
+    this.root.innerHTML = `<div class="strategic-screen">${endState(state)}${pendingBanner}<header class="strategic-header"><div><h1>星域战略远征 · 第 ${state.sectorIndex}/${state.targetSectorCount} 星域</h1><p>${escapeHtml(state.faction.name)} · 回合 ${state.turn}/${state.crisis.finalTurn} · ${CRISIS_PHASE_LABEL[state.crisis.phase]}</p></div><div class="strategic-resources"><span>矿物 ${state.faction.resources.minerals}</span><span>能源 ${state.faction.resources.energy}</span><span>科学 ${state.faction.resources.science}</span><span>补给 ${state.faction.resources.supplies}</span><span>燃料 ${state.fleet.fuel}/${state.fleet.maxFuel}</span></div></header><div class="crisis-strip phase-${state.crisis.phase}"><b>${CRISIS_PHASE_LABEL[state.crisis.phase]}</b><span>危机压力 ${state.crisis.pressure}/100</span><span>最终撤离窗口剩余 ${turnsLeft} 回合</span><span>移动敌军 ${state.enemyTaskForces.length}</span><span>围攻 ${state.sieges.length}</span><span>星门校准 ${state.extraction.calibration}%</span></div><div class="strategic-toolbar"><button class="btn primary" id="strategy-next-turn"${disabledAttr(state.status !== 'active' || actionLocked)}>推进一回合</button><span>据点送达：矿物 +${income.minerals} / 能源 +${income.energy} / 科学 +${income.science} / 补给 +${income.supplies}</span><button class="btn" id="strategy-export">导出远征码</button><button class="btn" id="strategy-exit">返回主菜单</button></div><div class="strategic-layout"><section class="strategic-map-card"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><g class="strategic-routes">${routes}</g></svg>${systems}</section><aside class="strategic-system-panel"><h2>${escapeHtml(selected.name)}</h2><p>${STAR_LABEL[selected.starType]} · ${CONTROL_LABEL[selected.control]} · ${selected.neighbors.length} 条航线${strategicHostilePowerAt(state, selected.id) ? ` · 敌军总战力 ${strategicHostilePowerAt(state, selected.id)}` : ''}</p>${travel}${battle}<div class="strategic-entities">${entityCards}</div></aside></div><div class="strategic-management">${commanderCard}<section class="strategic-card"><h2>本星域科研</h2><p>撤离后全部失效。已完成：${state.faction.localResearch.length ? state.faction.localResearch.map((id) => RESEARCH_DEFINITIONS[id].label).join(' / ') : '无'}</p><div class="queue-list">${researchQueue}</div><div class="strategy-button-grid">${researchButtons}</div></section>${networkCard}${fleetCard}<section class="strategic-card gate-card"><h2>星门撤离</h2>${gateKnown}${calibrate}${extractionModeButtons}<div class="extraction-manifest">${extractionRows}</div>${extractPreview}<div class="extraction-actions">${executeExtraction}</div><small>稳定撤离需要 100% 校准；紧急撤离需要 40% 校准。紧急拖曳每艘失能舰额外消耗燃料 1、补给 2；断后舰可避免高压额外损失。两种方式都必须先完成真实星门防御战。</small></section><section class="strategic-card strategic-log"><h2>星域日志</h2>${log}</section></div></div>`;
 
     this.root.querySelectorAll<HTMLElement>('[data-strategy-system]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'selectSystem', systemId: button.dataset.strategySystem! });
@@ -457,14 +504,32 @@ export class StrategicUniversePanel {
     this.root.querySelectorAll<HTMLElement>('[data-strategy-repair]').forEach((button) => {
       button.onclick = () => this.cb.onAction({ type: 'repairShip', campaignShipId: button.dataset.strategyRepair! });
     });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-fit-ship]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({
+        type: 'fitStrategicModule',
+        campaignShipId: button.dataset.strategyFitShip!,
+        moduleId: button.dataset.strategyFitModule as StrategicModuleId
+      });
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-remove-module]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'removeStrategicModule', campaignShipId: button.dataset.strategyRemoveModule! });
+    });
     const calibrateButton = this.root.querySelector('#strategy-calibrate') as HTMLButtonElement | null;
     if (calibrateButton) calibrateButton.onclick = () => this.cb.onAction({ type: 'calibrateGate' });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-extraction-mode]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({ type: 'configureExtraction', mode: button.dataset.strategyExtractionMode as 'stable' | 'emergency' });
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-strategy-extraction-ship]').forEach((button) => {
+      button.onclick = () => this.cb.onAction({
+        type: 'assignExtractionShip',
+        campaignShipId: button.dataset.strategyExtractionShip!,
+        role: button.dataset.strategyExtractionRole as ExtractionAssignmentRole
+      });
+    });
     const stableButton = this.root.querySelector('#strategy-extract-stable') as HTMLButtonElement | null;
     if (stableButton) stableButton.onclick = () => this.cb.onAction({ type: 'extractSector', mode: 'stable' });
     const emergencyButton = this.root.querySelector('#strategy-extract-emergency') as HTMLButtonElement | null;
     if (emergencyButton) emergencyButton.onclick = () => this.cb.onAction({ type: 'extractSector', mode: 'emergency' });
-    const rearguardButton = this.root.querySelector('#strategy-extract-rearguard') as HTMLButtonElement | null;
-    if (rearguardButton) rearguardButton.onclick = () => this.cb.onAction({ type: 'extractSector', mode: 'emergency', rearguardShips: 1 });
     (this.root.querySelector('#strategy-next-turn') as HTMLButtonElement).onclick = () => this.cb.onAction({ type: 'advanceTurn' });
     (this.root.querySelector('#strategy-export') as HTMLButtonElement).onclick = this.cb.onExport;
     (this.root.querySelector('#strategy-exit') as HTMLButtonElement).onclick = this.cb.onExit;

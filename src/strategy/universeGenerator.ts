@@ -12,9 +12,11 @@ import type {
   SpaceEntityKind,
   StarSystem,
   StarType,
+  StrategicShipFitting,
   UniverseState
 } from './universeTypes';
 import { strategicMobileEnemyBudget, strategicPressureAtStart } from './universePacing';
+import { strategicMaxFuel } from './strategicBlueprints';
 
 const STAR_TYPES: StarType[] = ['yellowDwarf', 'redDwarf', 'blueGiant', 'whiteDwarf', 'binary'];
 const SYSTEM_PREFIX = ['阿尔法', '塞勒涅', '奥尔特', '赫利俄斯', '织女', '卡戎', '天苑', '伊卡洛斯', '苍穹', '远岬'];
@@ -34,6 +36,7 @@ export interface SectorGenerationOptions {
   legacy?: SectorLegacy;
   /** 跨星域继承的真实逐舰舰队；首星域缺省使用三艘初始舰船。 */
   fleet?: PersistentFleet;
+  fittings?: StrategicShipFitting[];
   commander?: CampaignCommander;
   reserveCommanders?: CampaignCommander[];
   pendingSuccession?: boolean;
@@ -274,13 +277,14 @@ export function generateUniverse(
       name: '远征舰队',
       systemId: start.id,
       fuel: 8,
-      maxFuel: legacy.blueprints.includes('fieldLogistics') ? 10 : 8,
+      maxFuel: strategicMaxFuel(legacy.blueprints) + (options.fittings ?? []).filter((fitting) => fitting.moduleId === 'auxiliaryTank').length,
       ships: inherited.ships.map((ship) => ({
         ...ship,
         componentHp: ship.componentHp ? [...ship.componentHp] : undefined
       })),
       formation: inherited.formation,
-      doctrine: inherited.doctrine
+      doctrine: inherited.doctrine,
+      fittings: (options.fittings ?? []).map((fitting) => ({ ...fitting }))
     },
     crisis: {
       phase: 'foothold',

@@ -33,6 +33,7 @@ import { generateUniverse } from './strategy/universeGenerator';
 import {
   applyUniverseAction,
   applyStrategicBattleResult,
+  currentStrategicExtractionPlan,
   ownedStrategicStations,
   strategicIncomeReport,
   strategicTransportStatus,
@@ -194,6 +195,10 @@ export class App {
 
   campaignDebugState(): unknown {
     if (this.universe) {
+      const extractionPlan = currentStrategicExtractionPlan(
+        this.universe,
+        this.universe.extraction.manifest?.mode ?? 'emergency'
+      );
       return {
         screen: 'strategic-universe',
         sector: this.universe.sectorIndex,
@@ -204,9 +209,18 @@ export class App {
         pressure: this.universe.crisis.pressure,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
+        localEntities: this.universe.entities
+          .filter((entity) => entity.systemId === this.universe!.fleet.systemId && entity.discovered)
+          .map((entity) => ({
+            id: entity.id,
+            kind: entity.kind,
+            surveyed: entity.surveyed,
+            blueprint: entity.surveyed ? entity.blueprint ?? null : null
+          })),
         fleet: {
           fuel: this.universe.fleet.fuel,
           maxFuel: this.universe.fleet.maxFuel,
+          fittings: this.universe.fleet.fittings.map((fitting) => ({ ...fitting })),
           ships: this.universe.fleet.ships.map((ship) => ({
             id: ship.campaignShipId,
             shipClass: ship.shipClass,
@@ -216,6 +230,10 @@ export class App {
           }))
         },
         resources: this.universe.faction.resources,
+        blueprints: {
+          active: [...this.universe.faction.legacy.blueprints],
+          recovered: [...this.universe.faction.recoveredBlueprints]
+        },
         network: {
           mainBaseId: this.universe.faction.baseEntityId ?? null,
           income: strategicIncomeReport(this.universe).total,
@@ -252,7 +270,17 @@ export class App {
           discovered: this.universe.extraction.discovered,
           calibration: this.universe.extraction.calibration,
           requiredCalibration: this.universe.extraction.requiredCalibration,
-          gateDefense: this.universe.extraction.gateDefense
+          gateDefense: this.universe.extraction.gateDefense,
+          manifest: extractionPlan.manifest,
+          plan: {
+            valid: extractionPlan.valid,
+            risk: extractionPlan.risk,
+            fuelCost: extractionPlan.fuelCost,
+            suppliesCost: extractionPlan.suppliesCost,
+            survivingShipIds: extractionPlan.survivingShipIds,
+            lostShipIds: extractionPlan.lostShipIds,
+            pressureLossShipIds: extractionPlan.pressureLossShipIds
+          }
         },
         commander: {
           id: this.universe.commander.id,

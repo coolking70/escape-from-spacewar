@@ -15,12 +15,16 @@ import {
   canEstablishBase,
   canEstablishOutpost,
   canExtractSector,
+  canFitStrategicModule,
   canOpenCommanderRecruitment,
   canQueueFacility,
   canQueueShipProduction,
   canQueueResearch,
   canRepairFleet,
   canRepairShip,
+  currentStrategicExtractionPlan,
+  effectiveFacilityCost,
+  effectiveShipProductionCost,
   canTreatStrategicCommander,
   crisisPhaseForTurn,
   ownedStrategicStations,
@@ -57,6 +61,7 @@ import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import {
   activeShips,
   computePersistentDisableFlags,
+  disablePersistentShip,
   isPersistentShipDisabled,
   isShipDeployable
 } from '../campaign/fleet/persistentFleet';
@@ -78,6 +83,13 @@ import {
   strategicPressurePerTurn
 } from './universePacing';
 import { runStrategicThreeSectorPlaythrough } from './strategicPlaythrough';
+import { STRATEGIC_BLUEPRINT_EFFECTS, strategicMaxFuel } from './strategicBlueprints';
+import {
+  STRATEGIC_MODULE_DEFINITIONS,
+  expectedStrategicMaxFuel,
+  fittingForShip,
+  strategicRepairCost
+} from './strategicFitting';
 
 type Ship = BattleState['ships'][number];
 
@@ -1351,9 +1363,9 @@ export function runStrategicTests(): SuiteResult {
       const calibrateState = prepareGate(generateUniverse(1079), 50);
       assertEnabled(calibrateState, '#strategy-calibrate', 'calibrate', 'calibrateGate');
       const extractionState = prepareGate(generateUniverse(1080), 100);
-      assertEnabled(extractionState, '#strategy-extract-stable', 'stable extraction', 'extractSector');
+      const stableExtractionState = applyUniverseAction(extractionState, { type: 'configureExtraction', mode: 'stable' });
+      assertEnabled(stableExtractionState, '#strategy-extract-stable', 'stable extraction', 'extractSector');
       assertEnabled(extractionState, '#strategy-extract-emergency', 'emergency extraction', 'extractSector');
-      assertEnabled(extractionState, '#strategy-extract-rearguard', 'rearguard extraction', 'extractSector');
       add(test);
     }
 
@@ -2670,6 +2682,322 @@ export function runStrategicTests(): SuiteResult {
       const terminal = JSON.parse(JSON.stringify(state)) as typeof state;
       terminal.status = 'victory';
       test.true_(applyUniverseAction(terminal, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' }) === terminal, '终局状态拒绝继续生产');
+      add(test);
+    }
+
+    // V1.0-D.2：撤离结果只由稳定 campaignShipId 清单决定，舰队数组顺序不参与写回。
+    {
+      const test = new Case('D.2 逐舰撤离清单、拖曳成本与顺序无关写回');
+      let state = prepareGate(generateUniverse(2001, '逐舰撤离团'), 100);
+      state.crisis.pressure = 85;
+      const disabled = state.fleet.ships[0];
+      disablePersistentShip(disabled);
+      const disabledHp = [...disabled.componentHp!];
+      const operationalIds = state.fleet.ships.filter(isShipDeployable)
+        .map((ship) => ship.campaignShipId).sort();
+      state = applyUniverseAction(state, { type: 'configureExtraction', mode: 'emergency' });
+      state = applyUniverseAction(state, { type: 'assignExtractionShip', campaignShipId: disabled.campaignShipId, role: 'tow' });
+      state = applyUniverseAction(state, { type: 'assignExtractionShip', campaignShipId: operationalIds[0], role: 'rearguard' });
+      const plan = currentStrategicExtractionPlan(state);
+      test.true_(plan.valid, '包含拖曳、断后和撤离的逐舰清单有效');
+      test.eq(plan.fuelCost, 1, '紧急拖曳一艘失能舰额外消耗 1 燃料');
+      test.eq(plan.suppliesCost, 6, '紧急拖曳一艘失能舰总计消耗 6 补给');
+      test.eq(JSON.stringify(plan.rearguardShipIds), JSON.stringify([operationalIds[0]]), '断后损失精确绑定指定舰 ID');
+      test.eq(plan.pressureLossShipIds.length, 0, '明确断后任务消除高压随机损失');
+
+      const reordered = JSON.parse(JSON.stringify(state)) as typeof state;
+      reordered.fleet.ships.reverse();
+      const reorderedPlan = currentStrategicExtractionPlan(reordered);
+      test.eq(JSON.stringify(reorderedPlan), JSON.stringify(plan), '打乱舰队数组顺序不改变撤离计划');
+
+      const next = applyUniverseAction(reordered, { type: 'extractSector', mode: 'emergency' });
+      const expectedSurvivors = [...plan.survivingShipIds].sort();
+      test.eq(JSON.stringify(next.fleet.ships.map((ship) => ship.campaignShipId).sort()), JSON.stringify(expectedSurvivors), '实际写回精确采用预览中的存活 ID');
+      const inheritedDisabled = next.fleet.ships.find((ship) => ship.campaignShipId === disabled.campaignShipId)!;
+      test.eq(JSON.stringify(inheritedDisabled.componentHp), JSON.stringify(disabledHp), '拖曳舰组件损伤原样继承');
+      test.true_(inheritedDisabled.disabled && inheritedDisabled.towed, '拖曳舰以真实 disabled/towed 状态继承');
+      test.true_(next.fleet.ships.every((ship) => !plan.lostShipIds.includes(ship.campaignShipId)), '断后与放弃舰不会混入下一星域');
+      test.true_(validateUniverseState(next), '逐舰撤离写回结果可直接保存');
+      add(test);
+    }
+
+    // V1.0-D.2：深层校验、alpha.10 迁移和编码往返共享同一清单权威。
+    {
+      const test = new Case('D.2 清单深层校验、alpha.10 迁移与编码闭环');
+      let state = prepareGate(generateUniverse(2002, '撤离存档团'), 100);
+      state = applyUniverseAction(state, { type: 'configureExtraction', mode: 'stable' });
+      test.true_(validateUniverseState(state), '合法逐舰清单通过深层校验');
+      const roundTrip = decodeUniverse(encodeUniverse(state));
+      test.eq(JSON.stringify(roundTrip.extraction.manifest), JSON.stringify(state.extraction.manifest), 'Campaign Code 保留逐舰清单及稳定 ID');
+
+      const duplicate = JSON.parse(JSON.stringify(state)) as typeof state;
+      duplicate.extraction.manifest!.assignments[1].campaignShipId = duplicate.extraction.manifest!.assignments[0].campaignShipId;
+      test.true_(!validateUniverseState(duplicate), '重复舰船 ID 的清单被拒绝');
+      const missing = JSON.parse(JSON.stringify(state)) as typeof state;
+      missing.extraction.manifest!.assignments.pop();
+      test.true_(!validateUniverseState(missing), '未精确覆盖舰队的清单被拒绝');
+      const illegalRole = JSON.parse(JSON.stringify(state)) as typeof state;
+      illegalRole.extraction.manifest!.assignments[0].role = 'rearguard';
+      test.true_(!validateUniverseState(illegalRole), '稳定撤离中的断后角色被拒绝');
+
+      const alpha10: any = JSON.parse(JSON.stringify(state));
+      alpha10.version = '1.0-alpha.10';
+      delete alpha10.extraction.manifest;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.10', state: alpha10 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.10 确定迁移到 alpha.11');
+      test.true_(migrated.extraction.manifest === undefined, '迁移不凭空替玩家决定逐舰任务');
+      test.true_(validateUniverseState(migrated), 'alpha.10 迁移结果可直接保存');
+      add(test);
+    }
+
+    // V1.0-D.2：真实 jsdom 验证模式切换、逐舰任务和最后一艘撤离舰保护。
+    {
+      const test = new Case('D.2 真实 DOM 逐舰撤离规划操作');
+      const state = prepareGate(generateUniverse(2003, '撤离界面团'), 100);
+      const rendered = renderPanelToRoot(state);
+      const modeButtons = rendered.root.querySelectorAll<HTMLButtonElement>('[data-strategy-extraction-mode]');
+      test.eq(modeButtons.length, 2, '真实 DOM 显示稳定/紧急两种规划入口');
+      const operationalIds = state.fleet.ships.filter(isShipDeployable).map((ship) => ship.campaignShipId).sort();
+      const rearguardButton = rendered.root.querySelector<HTMLButtonElement>(`[data-strategy-extraction-ship="${operationalIds[0]}"][data-strategy-extraction-role="rearguard"]`)!;
+      test.true_(!rearguardButton.disabled, '非最后一艘可作战舰的断后按钮可用');
+      rearguardButton.click();
+      test.eq(rendered.calls.actionLog[0]?.type, 'assignExtractionShip', '逐舰按钮派发 assignExtractionShip');
+      if (rendered.calls.actionLog[0]?.type === 'assignExtractionShip') {
+        test.eq(rendered.calls.actionLog[0].campaignShipId, operationalIds[0], '逐舰 action 携带稳定 campaignShipId');
+        test.eq(rendered.calls.actionLog[0].role, 'rearguard', '逐舰 action 携带明确任务');
+      }
+
+      let oneShip = prepareGate(generateUniverse(2004, '最后撤离舰保护团'), 100);
+      oneShip.fleet.ships = [oneShip.fleet.ships[0]];
+      const oneRendered = renderPanelToRoot(oneShip);
+      const lastRearguard = oneRendered.root.querySelector<HTMLButtonElement>('[data-strategy-extraction-role="rearguard"]')!;
+      const lastAbandon = oneRendered.root.querySelector<HTMLButtonElement>('[data-strategy-extraction-role="abandon"]')!;
+      test.true_(lastRearguard.disabled && lastAbandon.disabled, '最后一艘可作战撤离舰不能改为断后或放弃');
+      for (const button of [lastRearguard, lastAbandon]) button.click();
+      test.eq(oneRendered.calls.actions, 0, '点击最后撤离舰的禁用任务不会触发回调');
+
+      const stable = applyUniverseAction(state, { type: 'configureExtraction', mode: 'stable' });
+      const stableRendered = renderPanelToRoot(stable);
+      test.eq(stableRendered.root.querySelectorAll('[data-strategy-extraction-role="rearguard"]').length, 0, '稳定规划不渲染断后任务');
+      test.true_(stableRendered.root.querySelector<HTMLButtonElement>('#strategy-extract-stable')?.disabled === false, '合法稳定清单可执行');
+      add(test);
+    }
+
+    // V1.0-D.3：三个永久蓝图通过统一战略派生函数生效，当前星域新获蓝图不会提前激活。
+    {
+      const test = new Case('D.3 永久蓝图效果权威与跨域激活边界');
+      const baseline = generateUniverse(2101, '蓝图权威团');
+      const baseFacility = FACILITY_DEFINITIONS.miningArray.cost.minerals ?? 0;
+      const baseShip = shipProductionCost('Fighter', 'standard');
+      test.eq(travelFuelCost(baseline), 2, '无后勤蓝图时基础航行消耗为 2');
+      test.eq(effectiveFacilityCost(baseline, 'miningArray').minerals, baseFacility, '无工业蓝图时设施矿物成本不变');
+      test.eq(effectiveShipProductionCost(baseline, 'Fighter', 'standard').minerals, baseShip.minerals, '无工业蓝图时舰船生产矿物成本不变');
+
+      const active = JSON.parse(JSON.stringify(baseline)) as typeof baseline;
+      active.faction.legacy.blueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      active.fleet.maxFuel = strategicMaxFuel(active.faction.legacy.blueprints);
+      test.eq(active.fleet.maxFuel, 10, '远征后勤核心将最大燃料提高到 10');
+      test.eq(travelFuelCost(active), 1, '远征后勤核心将航行消耗降低 1 且保留最低值');
+      test.eq(effectiveFacilityCost(active, 'miningArray').minerals, baseFacility - 4, '紧凑工业核心降低设施矿物成本 4');
+      test.eq(effectiveShipProductionCost(active, 'Fighter', 'standard').minerals, baseShip.minerals - 4, '紧凑工业核心降低舰船生产矿物成本 4');
+      let facilityState = establishStartingBase(generateUniverse(2105, '工业设施结算团'));
+      facilityState.faction.legacy.blueprints = ['compactFoundry'];
+      facilityState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const facilityMinerals = facilityState.faction.resources.minerals;
+      facilityState = applyUniverseAction(facilityState, { type: 'queueConstruction', facilityType: 'miningArray' });
+      test.eq(facilityState.faction.resources.minerals, facilityMinerals - (baseFacility - 4), '正式设施 reducer 按工业蓝图折扣扣费');
+      let productionState = prepareOperationalShipyard(2106);
+      productionState.faction.legacy.blueprints = ['compactFoundry'];
+      productionState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const productionMinerals = productionState.faction.resources.minerals;
+      productionState = applyUniverseAction(productionState, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' });
+      test.eq(productionState.faction.resources.minerals, productionMinerals - (baseShip.minerals - 4), '正式舰船生产 reducer 按工业蓝图折扣扣费');
+      const hardenedReady = prepareGate(active, 100);
+      hardenedReady.crisis.pressure = 85;
+      test.eq(currentStrategicExtractionPlan(hardenedReady).pressureLossShipIds.length, 0, '强化舰体蓝图免除高压紧急撤离额外舰损');
+
+      const recoveredOnly = prepareGate(generateUniverse(2102, '待激活蓝图团'), 100);
+      recoveredOnly.faction.recoveredBlueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      recoveredOnly.crisis.pressure = 85;
+      test.eq(recoveredOnly.fleet.maxFuel, 8, '本星域新获后勤蓝图在撤离前不提高燃料上限');
+      test.eq(effectiveFacilityCost(recoveredOnly, 'miningArray').minerals, baseFacility, '本星域新获工业蓝图在撤离前不打折');
+      test.true_(currentStrategicExtractionPlan(recoveredOnly).pressureLossShipIds.length > 0, '本星域新获强化蓝图在撤离前不消除高压风险');
+      add(test);
+    }
+
+    // V1.0-D.3：蓝图经真实撤离进入 legacy 后立即在下一星域生效并可保存往返。
+    {
+      const test = new Case('D.3 永久蓝图撤离继承与保存闭环');
+      let state = prepareGate(generateUniverse(2103, '蓝图继承团'), 100);
+      state.faction.recoveredBlueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      const coreDefinitionBefore = JSON.stringify(getShipDef('Fighter', 'standard').def);
+      const next = applyUniverseAction(state, { type: 'extractSector', mode: 'stable' });
+      test.eq(next.sectorIndex, 2, '携带蓝图后进入下一星域');
+      test.eq(JSON.stringify([...next.faction.legacy.blueprints].sort()), JSON.stringify(['compactFoundry', 'fieldLogistics', 'hardenedBulkheads']), '三个蓝图进入长期继承集合');
+      test.eq(next.faction.recoveredBlueprints.length, 0, '下一星域清空本地待激活蓝图');
+      test.eq(next.fleet.maxFuel, 10, '后勤蓝图在下一星域立即派生最大燃料');
+      test.eq(travelFuelCost(next), 1, '继承后勤蓝图立即影响航行成本');
+      test.eq(effectiveFacilityCost(next, 'miningArray').minerals, (FACILITY_DEFINITIONS.miningArray.cost.minerals ?? 0) - 4, '继承工业蓝图立即影响设施成本');
+      test.eq(JSON.stringify(getShipDef('Fighter', 'standard').def), coreDefinitionBefore, '强化蓝图不会修改冻结的 core-v4 舰船定义');
+      test.true_(validateUniverseState(next), '蓝图生效后的下一星域通过深层校验');
+      test.eq(encodeUniverse(decodeUniverse(encodeUniverse(next))), encodeUniverse(next), '蓝图效果状态 Campaign Code 稳定往返');
+      const finalReady = prepareGate(generateUniverse(2107, '终局蓝图继承团'), 100);
+      finalReady.sectorIndex = finalReady.targetSectorCount;
+      finalReady.faction.recoveredBlueprints = ['fieldLogistics'];
+      const victory = applyUniverseAction(finalReady, { type: 'extractSector', mode: 'stable' });
+      test.eq(victory.status, 'victory', '最终星域撤离进入胜利');
+      test.eq(victory.fleet.maxFuel, 10, '终局新激活后勤蓝图同步规范燃料上限');
+      test.true_(validateUniverseState(victory), '带终局新蓝图的胜利状态仍可保存');
+      add(test);
+    }
+
+    // V1.0-D.3：alpha.11 迁移规范燃料派生量，当前格式拒绝蓝图与 maxFuel 矛盾并展示明确说明。
+    {
+      const test = new Case('D.3 alpha.11 迁移、派生不变量与真实 DOM 说明');
+      const current = generateUniverse(2104, '蓝图迁移团');
+      const alpha11: any = JSON.parse(JSON.stringify(current));
+      alpha11.version = '1.0-alpha.11';
+      alpha11.faction.legacy.blueprints = ['fieldLogistics'];
+      alpha11.fleet.maxFuel = 8;
+      alpha11.fleet.fuel = 8;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.11', state: alpha11 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.11 迁移到 alpha.12');
+      test.eq(migrated.fleet.maxFuel, 10, '迁移按已继承后勤蓝图规范最大燃料');
+      test.true_(validateUniverseState(migrated), '规范后的迁移结果有效');
+
+      const contradictory = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      contradictory.fleet.maxFuel = 8;
+      test.true_(!validateUniverseState(contradictory), '当前格式拒绝永久蓝图与最大燃料矛盾');
+      const rendered = renderPanelToRoot(migrated);
+      const blueprint = rendered.root.querySelector<HTMLElement>('[data-strategy-blueprint="fieldLogistics"]');
+      test.true_(!!blueprint && blueprint.textContent?.includes(STRATEGIC_BLUEPRINT_EFFECTS.fieldLogistics.description) === true, '真实 DOM 显示永久蓝图的准确战略效果');
+      add(test);
+    }
+
+    // V1.0-D.4：模块按稳定舰 ID 在安全主基地船坞付费装配，替换/卸下同步维护燃料派生量。
+    {
+      const test = new Case('D.4 逐舰战略模块装配、替换与卸下');
+      let state = prepareOperationalShipyard(2201);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const shipId = state.fleet.ships[0].campaignShipId;
+      const before = { ...state.faction.resources };
+      test.true_(canFitStrategicModule(state, shipId, 'auxiliaryTank'), '安全主基地船坞允许逐舰装配');
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: shipId, moduleId: 'auxiliaryTank' });
+      test.eq(fittingForShip(state, shipId)?.moduleId, 'auxiliaryTank', '辅助燃料舱精确绑定 campaignShipId');
+      test.eq(state.faction.resources.minerals, before.minerals - (STRATEGIC_MODULE_DEFINITIONS.auxiliaryTank.cost.minerals ?? 0), '装配扣除权威矿物成本');
+      test.eq(state.faction.resources.energy, before.energy - (STRATEGIC_MODULE_DEFINITIONS.auxiliaryTank.cost.energy ?? 0), '装配扣除权威能源成本');
+      test.eq(state.fleet.maxFuel, strategicMaxFuel(state.faction.legacy.blueprints) + 1, '辅助燃料舱使最大燃料 +1');
+      test.eq(state.fleet.maxFuel, expectedStrategicMaxFuel(state), '保存的最大燃料等于模块派生量');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(state))), '带逐舰模块的状态可保存往返');
+
+      state.fleet.fuel = state.fleet.maxFuel;
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: shipId, moduleId: 'surveyArray' });
+      test.eq(fittingForShip(state, shipId)?.moduleId, 'surveyArray', '同一舰槽可明确替换模块');
+      test.eq(state.fleet.maxFuel, strategicMaxFuel(state.faction.legacy.blueprints), '替换燃料舱后派生上限恢复');
+      test.eq(state.fleet.fuel, state.fleet.maxFuel, '降低燃料上限时当前燃料同步钳制');
+      state = applyUniverseAction(state, { type: 'removeStrategicModule', campaignShipId: shipId });
+      test.true_(fittingForShip(state, shipId) === undefined, '卸下模块清空该舰槽位');
+      add(test);
+    }
+
+    // V1.0-D.4：测绘与维修只消费战略模块效果，不触碰 core-v4 战斗配置。
+    {
+      const test = new Case('D.4 模块战略效果与冻结 core-v4 边界');
+      let surveyState = prepareOperationalShipyard(2202);
+      surveyState.faction.resources = { minerals: 100, energy: 100, science: 10, supplies: 100 };
+      const surveyShipId = surveyState.fleet.ships[0].campaignShipId;
+      surveyState = applyUniverseAction(surveyState, { type: 'fitStrategicModule', campaignShipId: surveyShipId, moduleId: 'surveyArray' });
+      const surveyTarget = surveyState.entities.find((entity) => entity.systemId === surveyState.fleet.systemId && entity.discovered && !entity.surveyed)!;
+      const scienceBefore = surveyState.faction.resources.science;
+      const baseSurveyScience = surveyTarget.kind === 'relicSite' ? 5 : 3;
+      surveyState = applyUniverseAction(surveyState, { type: 'surveyEntity', entityId: surveyTarget.id });
+      test.eq(surveyState.faction.resources.science, scienceBefore + baseSurveyScience + 2, '可作战舰测绘阵列提供 +2 科学');
+
+      let repairState = prepareOperationalShipyard(2203);
+      const repairBase = baseEntityForTest(repairState);
+      repairBase.facilities!.push({ id: 'd4-repair-dock', type: 'repairDock', level: 1 });
+      repairState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const repairShip = repairState.fleet.ships[0];
+      repairState = applyUniverseAction(repairState, { type: 'fitStrategicModule', campaignShipId: repairShip.campaignShipId, moduleId: 'fieldWorkshop' });
+      disablePersistentShip(repairState.fleet.ships.find((ship) => ship.campaignShipId === repairShip.campaignShipId)!);
+      const repairCost = strategicRepairCost(repairState, repairShip.campaignShipId);
+      const repairResources = { ...repairState.faction.resources };
+      repairState = applyUniverseAction(repairState, { type: 'repairShip', campaignShipId: repairShip.campaignShipId });
+      test.eq(repairResources.minerals - repairState.faction.resources.minerals, repairCost.minerals, '舰载工坊维修扣除 2 矿物');
+      test.eq(repairResources.supplies - repairState.faction.resources.supplies, repairCost.supplies, '舰载工坊维修扣除 4 补给');
+
+      const plain = prepareOperationalShipyard(2204);
+      const fitted = JSON.parse(JSON.stringify(plain)) as typeof plain;
+      fitted.fleet.fittings = [{ campaignShipId: fitted.fleet.ships[0].campaignShipId, moduleId: 'surveyArray' }];
+      const plainBattle = prepareStrategicBattle(toPersistentFleet(plain.fleet), [{ shipClass: 'Fighter', variant: 'scout', count: 1 }], 2204);
+      const fittedBattle = prepareStrategicBattle(toPersistentFleet(fitted.fleet), [{ shipClass: 'Fighter', variant: 'scout', count: 1 }], 2204);
+      test.eq(JSON.stringify(fittedBattle.state), JSON.stringify(plainBattle.state), '逐舰战略模块不会进入或改变 core-v4 BattleState');
+
+      const real = simulateStrategicBattle(2208, ENEMY_BUDGET);
+      const realFittedId = real.state.fleet.ships[0].campaignShipId;
+      real.state.fleet.fittings = [{ campaignShipId: realFittedId, moduleId: 'auxiliaryTank' }];
+      real.state.fleet.maxFuel += 1;
+      const written = applyStrategicBattleResult(real.state, real.battle, real.bindings);
+      test.true_(written.fleet.fittings.every((fitting) => written.fleet.ships.some((ship) => ship.campaignShipId === fitting.campaignShipId)), '真实 simulator 写回后模块只引用存活舰');
+      test.true_(validateUniverseState(written), '带模块的真实 simulator 输出可直接写回保存');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(written))), '带模块的真实战斗结果编码往返有效');
+      add(test);
+    }
+
+    // V1.0-D.4：装配随存活舰跨域继承，战损/放弃按舰 ID 清理，不留下悬空引用。
+    {
+      const test = new Case('D.4 模块跨域继承与损失清理');
+      let state = prepareOperationalShipyard(2205);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const fittedId = state.fleet.ships[0].campaignShipId;
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: fittedId, moduleId: 'auxiliaryTank' });
+      const next = applyUniverseAction(prepareGate(state, 100), { type: 'extractSector', mode: 'stable' });
+      test.eq(fittingForShip(next, fittedId)?.moduleId, 'auxiliaryTank', '存活舰模块按稳定 ID 跨域继承');
+      test.eq(next.fleet.maxFuel, strategicMaxFuel(next.faction.legacy.blueprints) + 1, '跨域后模块仍参与燃料派生');
+      test.true_(validateUniverseState(next), '模块跨域继承状态有效');
+
+      let abandon = prepareGate(state, 100);
+      abandon = applyUniverseAction(abandon, { type: 'configureExtraction', mode: 'emergency' });
+      abandon = applyUniverseAction(abandon, { type: 'assignExtractionShip', campaignShipId: fittedId, role: 'abandon' });
+      abandon = applyUniverseAction(abandon, { type: 'extractSector', mode: 'emergency' });
+      test.true_(!abandon.fleet.ships.some((ship) => ship.campaignShipId === fittedId), '主动放弃精确移除装配舰');
+      test.true_(!abandon.fleet.fittings.some((fitting) => fitting.campaignShipId === fittedId), '主动放弃同步清理模块引用');
+      test.true_(validateUniverseState(abandon), '清理损失模块后的状态可保存');
+      add(test);
+    }
+
+    // V1.0-D.4：alpha.12 迁移为空槽；深层校验和真实 DOM 拒绝悬空/重复装配并派发稳定 ID action。
+    {
+      const test = new Case('D.4 alpha.12 迁移、深层校验与真实 DOM');
+      const current = generateUniverse(2206, '模块迁移团');
+      const alpha12: any = JSON.parse(JSON.stringify(current));
+      alpha12.version = '1.0-alpha.12';
+      delete alpha12.fleet.fittings;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.12', state: alpha12 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.12 迁移到 alpha.13');
+      test.eq(migrated.fleet.fittings.length, 0, '旧存档确定迁移为空模块槽');
+      const malformed = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      malformed.fleet.fittings = [{ campaignShipId: 'missing-ship', moduleId: 'auxiliaryTank' }];
+      test.true_(!validateUniverseState(malformed), '深层校验拒绝不存在舰船的模块引用');
+      const duplicate = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      duplicate.fleet.fittings = [
+        { campaignShipId: duplicate.fleet.ships[0].campaignShipId, moduleId: 'auxiliaryTank' },
+        { campaignShipId: duplicate.fleet.ships[0].campaignShipId, moduleId: 'surveyArray' }
+      ];
+      test.true_(!validateUniverseState(duplicate), '深层校验拒绝同舰重复槽位');
+
+      const shipyard = prepareOperationalShipyard(2207);
+      shipyard.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const rendered = renderPanelToRoot(shipyard);
+      const shipId = shipyard.fleet.ships[0].campaignShipId;
+      const buttons = rendered.root.querySelectorAll<HTMLButtonElement>(`[data-strategy-fit-ship="${shipId}"]`);
+      test.eq(buttons.length, 3, '真实 DOM 为单舰渲染三个战略模块选择');
+      test.true_(Array.from(buttons).every((button) => !button.disabled), '安全船坞与充足资源下模块按钮可用');
+      buttons[0].click();
+      test.eq(rendered.calls.actionLog[0]?.type, 'fitStrategicModule', '真实 DOM 派发模块装配 action');
+      if (rendered.calls.actionLog[0]?.type === 'fitStrategicModule') {
+        test.eq(rendered.calls.actionLog[0].campaignShipId, shipId, '模块 action 携带稳定舰船 ID');
+      }
       add(test);
     }
   });

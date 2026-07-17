@@ -228,6 +228,47 @@ try {
   console.log(`[PASS] D.1 ship production browser loop: shipyard=3 turns, fighter=2 turns, ship=${queuedOrder.campaignShipId}`);
   await productionPage.close();
 
+  // D.4 独立浏览器闭环：在安全主基地船厂给一艘稳定 ID 舰船装配并卸下战略模块。
+  const fittingPage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const fittingErrors = [];
+  fittingPage.on('console', (message) => {
+    if (message.type() === 'error') fittingErrors.push(`console: ${message.text()}`);
+  });
+  fittingPage.on('pageerror', (error) => fittingErrors.push(`page: ${String(error)}`));
+  await fittingPage.addInitScript(() => { Date.now = () => 2036; });
+  await fittingPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await fittingPage.locator('#cm-strategy-new').click();
+  await fittingPage.locator('[data-strategy-base]').click();
+  const fittingInitialState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  const fittingMainBaseId = fittingInitialState.network.mainBaseId;
+  const fittingShipId = fittingInitialState.fleet.ships[0].id;
+  await fittingPage.locator(`[data-strategy-build="shipyard"][data-strategy-build-entity="${fittingMainBaseId}"]`).click();
+  for (let turn = 0; turn < 3; turn++) await fittingPage.locator('#strategy-next-turn').click();
+  const fittingReadyState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  const maxFuelBeforeFitting = fittingReadyState.fleet.maxFuel;
+  const moduleResourcesBefore = { ...fittingReadyState.resources };
+  const auxiliaryTank = fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"][data-strategy-fit-module="auxiliaryTank"]`);
+  assert.equal(await auxiliaryTank.isDisabled(), false, 'D.4 safe main-base shipyard must allow fitting a stable-ID fleet ship');
+  await auxiliaryTank.click();
+  const fittedState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  assert.deepEqual(
+    fittedState.fleet.fittings.find((fitting) => fitting.campaignShipId === fittingShipId),
+    { campaignShipId: fittingShipId, moduleId: 'auxiliaryTank' },
+    'D.4 browser fitting must bind the exact campaignShipId',
+  );
+  assert.equal(fittedState.fleet.maxFuel, maxFuelBeforeFitting + 1, 'D.4 auxiliary tank must raise strategic max fuel by one');
+  assert.equal(fittedState.resources.minerals, moduleResourcesBefore.minerals - 8, 'D.4 module UI must deduct authoritative minerals');
+  assert.equal(fittedState.resources.energy, moduleResourcesBefore.energy - 4, 'D.4 module UI must deduct authoritative energy');
+  await fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"]`).first().scrollIntoViewIfNeeded();
+  if (screenshotDir) await fittingPage.screenshot({ path: path.join(screenshotDir, 'd4-strategic-fitting.png'), fullPage: true });
+  await fittingPage.locator(`[data-strategy-remove-module="${fittingShipId}"]`).click();
+  const removedState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
+  assert.equal(removedState.fleet.fittings.some((fitting) => fitting.campaignShipId === fittingShipId), false, 'D.4 remove action must clear the exact fitting');
+  assert.equal(removedState.fleet.maxFuel, maxFuelBeforeFitting, 'D.4 removing the tank must restore derived max fuel');
+  assert.deepEqual(fittingErrors, [], `D.4 fitting browser loop must keep the console clean:\n${fittingErrors.join('\n')}`);
+  console.log(`[PASS] D.4 strategic fitting browser loop: ship=${fittingShipId}, module=auxiliaryTank, maxFuel=+1`);
+  await fittingPage.close();
+
   const battlePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const battleErrors = [];
   const loadedResources = [];
@@ -377,6 +418,66 @@ try {
     const defended = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
     assert.equal(defended.extraction.gateDefense, 'resolved', `sector ${plan.sector} gate defense must write back to strategy`);
     assert.ok(defended.turn <= defended.finalTurn, `sector ${plan.sector} must finish within its action window`);
+    if (plan.sector === 2) {
+      // 从已完成防御的合法存档派生独立 D.3 验收页；原发布页不增加回合，因此第三星域既有拓扑保持不变。
+      const saved = await releasePage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.current.v1'));
+      assert.ok(saved, 'D.3 browser branch requires a real saved strategic state');
+      const blueprintContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+      const blueprintPage = await blueprintContext.newPage();
+      const blueprintErrors = [];
+      blueprintPage.on('console', (message) => {
+        if (message.type() === 'error') blueprintErrors.push(`console: ${message.text()}`);
+      });
+      blueprintPage.on('pageerror', (error) => blueprintErrors.push(`page: ${String(error)}`));
+      await blueprintPage.goto(url, { waitUntil: 'domcontentloaded' });
+      await blueprintPage.evaluate((value) => localStorage.setItem('spacewar.strategic-universe.current.v1', value), saved);
+      await blueprintPage.reload({ waitUntil: 'domcontentloaded' });
+      await blueprintPage.locator('#cm-strategy-continue').click();
+      const beforeSurvey = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      const relic = beforeSurvey.localEntities.find((entity) => entity.kind === 'relicSite' && !entity.surveyed);
+      assert.ok(relic, 'D.3 gate system must expose its real unsurveyed relic');
+      await blueprintPage.locator(`[data-strategy-survey="${relic.id}"]`).click();
+      const recovered = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      assert.equal(recovered.blueprints.recovered.length, 1, 'D.3 relic survey must place one blueprint in the pending cross-sector set');
+      const recoveredBlueprintId = recovered.blueprints.recovered[0];
+      assert.ok(['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'].includes(recoveredBlueprintId), 'D.3 recovered blueprint ID must be legal');
+      assert.equal(recovered.blueprints.active.includes(recoveredBlueprintId), false, 'D.3 newly recovered blueprint must not activate in the current sector');
+      assert.ok((await blueprintPage.locator('.strategic-card').filter({ hasText: '舰队与跨域资产' }).innerText()).includes('待撤离后激活'), 'D.3 UI must mark recovered blueprints as pending activation');
+      await blueprintPage.locator('#strategy-extract-emergency').click();
+      const activated = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      assert.equal(activated.sector, 3, 'D.3 blueprint branch must cross into the next sector');
+      assert.ok(activated.blueprints.active.includes(recoveredBlueprintId), 'D.3 recovered blueprint must activate unchanged after crossing the gate');
+      const expectedMaxFuel = recoveredBlueprintId === 'fieldLogistics' ? 10 : 8;
+      assert.equal(activated.fleet.maxFuel, expectedMaxFuel, 'D.3 active blueprint must derive only its matching fuel effect');
+      const blueprint = blueprintPage.locator(`[data-strategy-blueprint="${recoveredBlueprintId}"]`);
+      const expectedEffectText = {
+        fieldLogistics: '最大燃料 +2',
+        hardenedBulkheads: '不修改 core-v4',
+        compactFoundry: '矿物成本 -4',
+      }[recoveredBlueprintId];
+      assert.ok((await blueprint.innerText()).includes(expectedEffectText), 'D.3 active blueprint UI must explain its authoritative strategic effect');
+      await blueprint.scrollIntoViewIfNeeded();
+      if (screenshotDir) await blueprintPage.screenshot({ path: path.join(screenshotDir, 'd3-active-blueprint.png'), fullPage: true });
+      assert.deepEqual(blueprintErrors, [], `D.3 browser branch must keep the console clean:\n${blueprintErrors.join('\n')}`);
+      await blueprintContext.close();
+    }
+    if (plan.sector === 1) {
+      const rearguardButton = releasePage.locator('[data-strategy-extraction-role="rearguard"]:not([disabled])').first();
+      assert.equal(await rearguardButton.count(), 1, 'D.2 first extraction must expose at least one legal per-ship rearguard assignment');
+      const rearguardId = await rearguardButton.getAttribute('data-strategy-extraction-ship');
+      assert.ok(rearguardId, 'D.2 rearguard button must bind a stable campaignShipId');
+      await rearguardButton.click();
+      const planned = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
+      const assignment = planned.extraction.manifest.assignments.find((entry) => entry.campaignShipId === rearguardId);
+      assert.equal(assignment?.role, 'rearguard', 'D.2 browser action must persist the selected ship role');
+      assert.ok(planned.extraction.plan.lostShipIds.includes(rearguardId), 'D.2 authoritative preview must name the exact rearguard loss');
+      assert.equal(planned.extraction.plan.pressureLossShipIds.length, 0, 'explicit rearguard must prevent an additional pressure casualty');
+      await releasePage.locator('.gate-card').scrollIntoViewIfNeeded();
+      if (screenshotDir) await releasePage.screenshot({ path: path.join(screenshotDir, 'd2-extraction-manifest.png'), fullPage: true });
+      await releasePage.locator('[data-strategy-extraction-mode="emergency"]').click();
+      const reset = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
+      assert.equal(reset.extraction.manifest.assignments.every((entry) => entry.role !== 'rearguard'), true, 'reselecting emergency mode must restore its deterministic default manifest');
+    }
     await releasePage.locator('#strategy-extract-emergency').click();
   }
 
