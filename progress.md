@@ -128,7 +128,7 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.9` (real per-ship fleet, playable commander loop, multiple temporary outposts, moving enemy task forces, sieges and gate defense). `1.0-alpha.2` through `1.0-alpha.8` are migrated deterministically in place.
+- Current version: `1.0-alpha.10` (C.5 three-sector release loop plus main-base light shipyard and deterministic ship production). `1.0-alpha.2` through `1.0-alpha.9` are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship) and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
@@ -348,3 +348,14 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - The static builder intentionally recombines dynamic modules into one file, uses an inline balance Worker and fails if CSS/JS inlining is incomplete or any literal external `assets/` reference remains.
 - Chromium regression now covers strategic scrolling, eager-free setup, on-demand ship preview, on-demand battle rendering and console errors. The same regression passed against the generated single-file static site with zero external asset requests.
 - Full verification passed after a clean install: build, acceptance, deterministic, campaign, 66-case strategy, Chromium browser, stress, static build, npm audit and `git diff --check`.
+
+### V1.0-D.1 main-base ship production vertical slice
+
+- Sector Expedition Code advances to `1.0-alpha.10`. Alpha.9 saves retain their complete C.5 state and receive an empty production queue on every station; all older supported migrations flow through the same addition.
+- The unique main base can build one light orbital shipyard. It exposes all existing 3 hulls × 4 legal variants, with mineral/energy/supply costs and build time derived from unchanged core-v4 strategic ship values.
+- Production pays resources at queue time, allocates the stable ID `${seed}-s${sector}-t${turn}-q${queueIndex}`, and supports at most two orders. The first order advances once per safe strategic turn; leaving the main base or entering a siege pauses it without losing progress.
+- Delivery creates a persistent ship with full component HP from the authoritative ship definition, legal operational flags and the queued ID, then appends it to the sole strategic fleet. The same ship participates in the existing binding-based core-v4 battle path and keeps its ID across extraction.
+- Deep persistence validation rejects malformed orders, illegal hull/variant pairs, duplicate order or campaign IDs, fleet-ID collisions, secondary-outpost production, production without exactly one built shipyard, non-station queues and over-capacity queues.
+- Strategy coverage is now **85 cases**, including all 12 cost/time mappings, alpha.9 migration, deterministic queue IDs, exact deductions, pause/resume, completion, component legality, battle binding, extraction inheritance, reducer locks and jsdom production controls.
+- Real Chromium completes `establish base → build shipyard → enemy interruption/real Three.js defense → queue fighter → resume and deliver` through visible controls, validates resource deductions/debug state and reports no console errors. The standard develop-web-game client independently confirmed a clean initial strategic screen and matching text state.
+- D.1 intentionally does not add multiple fleets, fitting/modules, repairs beyond the existing dock, new hulls/variants, markets, diplomacy or a base-upgrade tree. Core-v4 combat rules, costs, values, AI and golden replays remain unchanged.

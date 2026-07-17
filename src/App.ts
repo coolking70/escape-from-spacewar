@@ -228,6 +228,14 @@ export class App {
               main: station.id === this.universe!.faction.baseEntityId,
               facilities: station.facilities?.map((facility) => facility.type) ?? [],
               queue: station.constructionQueue?.map((order) => order.facilityType) ?? [],
+              shipProductionQueue: station.shipProductionQueue?.map((order) => ({
+                id: order.id,
+                campaignShipId: order.campaignShipId,
+                shipClass: order.shipClass,
+                variant: order.variant,
+                turnsRemaining: order.turnsRemaining,
+                totalTurns: order.totalTurns
+              })) ?? [],
               transport: link
                 ? strategicTransportStatus(this.universe!, link)
                 : station.id === this.universe!.faction.baseEntityId ? 'local' : 'missing',

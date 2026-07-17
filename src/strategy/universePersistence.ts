@@ -75,6 +75,14 @@ function addC4StrategicState(state: any): void {
     state.extraction.gateDefense = state.extraction.calibration >= state.extraction.emergencyThreshold ? 'resolved' : 'dormant';
   }
   if (state.pendingBattle && !state.pendingBattle.source) state.pendingBattle.source = 'garrison';
+  addShipProductionState(state);
+}
+
+function addShipProductionState(state: any): void {
+  if (!Array.isArray(state.entities)) return;
+  for (const entity of state.entities) {
+    if (entity?.kind === 'station' && !Array.isArray(entity.shipProductionQueue)) entity.shipProductionQueue = [];
+  }
 }
 
 function b64(source: string): string {
@@ -542,6 +550,17 @@ function migrateAlpha8(raw: any): UniverseState | null {
   migrated.log.unshift({ turn: 0, text: 'alpha.8 星域远征已接入移动敌军、据点围攻与真实星门防御战。' });
   return migrated as UniverseState;
 }
+
+/** alpha.9 → alpha.10：保留完整 C.5 状态，仅为每个空间站补入空的舰船生产队列。 */
+function migrateAlpha9(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.9' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  addShipProductionState(migrated);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.9 星域远征已接入主基地轻型船坞与确定性舰船生产队列。' });
+  return migrated as UniverseState;
+}
 export function validateUniverseState(value: unknown): value is UniverseState {
   const state = value as UniverseState;
   // 安全顺序：任何缺失/畸形结构都必须安全返回 false，绝不抛出（覆盖 undefined / null / {} / {version} / {fleet:null} / {fleet:{}}）。
@@ -634,7 +653,24 @@ export function validateUniverseState(value: unknown): value is UniverseState {
         )
       )
     ) return false;
-    if ((entity.facilities || entity.constructionQueue) && entity.kind !== 'station') return false;
+    if (
+      entity.shipProductionQueue && (
+        entity.shipProductionQueue.length > 2 ||
+        entity.shipProductionQueue.some((order) =>
+          !order.id || !order.campaignShipId ||
+          !validateFleet([{ shipClass: order.shipClass, variant: order.variant, count: 1 }]).valid ||
+          !positiveInteger(order.turnsRemaining) || !positiveInteger(order.totalTurns) ||
+          order.turnsRemaining > order.totalTurns
+        )
+      )
+    ) return false;
+    if ((entity.facilities || entity.constructionQueue || entity.shipProductionQueue) && entity.kind !== 'station') return false;
+    if (entity.kind === 'station' && !Array.isArray(entity.shipProductionQueue)) return false;
+    if (entity.kind === 'station' && !entity.ownerId && (entity.shipProductionQueue?.length ?? 0) > 0) return false;
+    if (
+      (entity.facilities ?? []).filter((facility) => facility.type === 'shipyard').length +
+      (entity.constructionQueue ?? []).filter((order) => order.facilityType === 'shipyard').length > 1
+    ) return false;
     if (
       entity.kind === 'station' && entity.facilitySlots !== undefined &&
       (entity.facilities?.length ?? 0) + (entity.constructionQueue?.length ?? 0) > entity.facilitySlots
@@ -675,7 +711,7 @@ export function validateUniverseState(value: unknown): value is UniverseState {
     const base = state.entities.find((entity) => entity.id === state.faction.baseEntityId);
     if (
       !base || base.kind !== 'station' || base.ownerId !== state.faction.id ||
-      !Array.isArray(base.facilities) || !Array.isArray(base.constructionQueue)
+      !Array.isArray(base.facilities) || !Array.isArray(base.constructionQueue) || !Array.isArray(base.shipProductionQueue)
     ) return false;
   }
 
@@ -685,8 +721,24 @@ export function validateUniverseState(value: unknown): value is UniverseState {
     const system = state.systems.find((candidate) => candidate.id === station.systemId);
     if (
       !station.surveyed || !Array.isArray(station.facilities) || !Array.isArray(station.constructionQueue) ||
+      !Array.isArray(station.shipProductionQueue) ||
       !system || system.control !== 'player' || system.enemyPower !== 0
     ) return false;
+  }
+  const productionOrders = ownedStations.flatMap((station) => station.shipProductionQueue ?? []);
+  const productionOrderIds = productionOrders.map((order) => order.id);
+  const productionShipIds = productionOrders.map((order) => order.campaignShipId);
+  if (
+    new Set(productionOrderIds).size !== productionOrderIds.length ||
+    new Set(productionShipIds).size !== productionShipIds.length ||
+    productionShipIds.some((id) => state.fleet.ships.some((ship) => ship.campaignShipId === id))
+  ) return false;
+  for (const station of ownedStations) {
+    const queue = station.shipProductionQueue ?? [];
+    const shipyards = (station.facilities ?? []).filter((facility) => facility.type === 'shipyard').length;
+    const queuedShipyards = (station.constructionQueue ?? []).filter((order) => order.facilityType === 'shipyard').length;
+    if (station.id !== state.faction.baseEntityId && (queue.length > 0 || shipyards > 0 || queuedShipyards > 0)) return false;
+    if (queue.length > 0 && shipyards !== 1) return false;
   }
   const linkIds = state.transportLinks.map((link) => link.id);
   const linkedOutposts = state.transportLinks.map((link) => link.outpostEntityId);
@@ -823,6 +875,10 @@ export function decodeUniverse(code: string): UniverseState {
     const migrated = migrateAlpha8(envelope.state);
     if (migrated) return migrated;
   }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.9') {
+    const migrated = migrateAlpha9(envelope.state);
+    if (migrated) return migrated;
+  }
   if (
     envelope?.type !== 'spacewar-sector-expedition' || envelope?.v !== SECTOR_EXPEDITION_VERSION ||
     !validateUniverseState(envelope.state)
@@ -878,6 +934,13 @@ export function loadUniverse(): UniverseState | null {
     }
     if (parsed && parsed.version === '1.0-alpha.8') {
       const migrated = migrateAlpha8(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.9') {
+      const migrated = migrateAlpha9(parsed);
       if (migrated) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
         return migrated;

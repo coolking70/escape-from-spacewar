@@ -3,6 +3,7 @@ import {
   battleTeamRemainingPower,
   campaignFleetEntryCost,
   campaignFleetPower,
+  campaignShipCost,
   normalizeStrategicEnemyPower,
   systemEnemyBudget
 } from '../campaign/fleet/campaignPower';
@@ -15,9 +16,10 @@ import {
 } from '../campaign/fleet/battleAdapter';
 import { RULESET_V4, SIM_VERSION_V5 } from '../sim/battleConfig';
 import { getShipDef, SHIP_CN, VARIANT_CN } from '../sim/shipVariants';
+import { validateFleet } from '../sim/fleetValidator';
 import { isPresentOnBattlefield, isStructurallyDestroyed, expectedDisableFlags } from '../sim/shipFlags';
 import { computeCombatState } from '../sim/combatState';
-import type { BattleState, FleetEntry } from '../sim/battleTypes';
+import type { BattleState, FleetEntry, ShipClass, ShipVariant } from '../sim/battleTypes';
 import {
   applyBattleCommanderConsequences,
   isCommanderAvailable,
@@ -39,6 +41,7 @@ import type {
   PendingStrategicBattle,
   PermanentBlueprintId,
   ResearchProjectId,
+  ShipProductionOrder,
   SpaceEntity,
   StrategicFleet,
   StrategicEnemyTaskForce,
@@ -117,6 +120,12 @@ export const FACILITY_DEFINITIONS: Record<FacilityType, FacilityDefinition> = {
     description: '降低敌方扩张对前进基地造成的损失。',
     cost: { minerals: 22, energy: 15 },
     turns: 3
+  },
+  shipyard: {
+    label: '轻型轨道船坞',
+    description: '允许主基地使用现有 core-v4 舰体与改型生产舰船。',
+    cost: { minerals: 12, energy: 8 },
+    turns: 3
   }
 };
 
@@ -148,6 +157,7 @@ export const RESEARCH_DEFINITIONS: Record<ResearchProjectId, ResearchDefinition>
 };
 
 export const COMMANDER_TREATMENT_SUPPLY_COST = 2;
+export const SHIP_PRODUCTION_QUEUE_LIMIT = 2;
 export const OUTPOST_ESTABLISH_COST: StrategicResources = {
   minerals: 8,
   energy: 4,
@@ -264,6 +274,25 @@ function spendResources(resources: StrategicResources, cost: Partial<StrategicRe
   for (const key of Object.keys(resources) as Array<keyof StrategicResources>) {
     resources[key] -= cost[key] ?? 0;
   }
+}
+
+/** 生产成本只从现有 core-v4 舰船成本换算，不修改舰船定义或战斗价值。 */
+export function shipProductionCost(shipClass: ShipClass, variant: ShipVariant): StrategicResources {
+  const entry = { shipClass, variant, count: 1 };
+  if (!validateFleet([entry]).valid) throw new Error(`非法生产舰型：${shipClass}/${variant}。`);
+  const value = campaignShipCost(shipClass, variant);
+  return {
+    minerals: Math.ceil(value / 5),
+    energy: Math.ceil(value / 10),
+    science: 0,
+    supplies: Math.ceil(value / 25)
+  };
+}
+
+export function shipProductionTurns(shipClass: ShipClass, variant: ShipVariant): number {
+  const entry = { shipClass, variant, count: 1 };
+  if (!validateFleet([entry]).valid) throw new Error(`非法生产舰型：${shipClass}/${variant}。`);
+  return Math.max(2, Math.ceil(campaignShipCost(shipClass, variant) / 100) + 1);
 }
 
 function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType): Partial<StrategicResources> {
@@ -394,6 +423,32 @@ function processConstruction(state: UniverseState): void {
   }
 }
 
+function processShipProduction(state: UniverseState): void {
+  const base = baseEntity(state);
+  if (!base || state.fleet.systemId !== base.systemId) return;
+  if (state.sieges.some((siege) => siege.stationEntityId === base.id)) return;
+  const queue = base.shipProductionQueue ?? [];
+  if (!queue.length) return;
+  queue[0].turnsRemaining--;
+  if (queue[0].turnsRemaining > 0) return;
+  const completed = queue.shift()!;
+  if (state.fleet.ships.some((ship) => ship.campaignShipId === completed.campaignShipId)) {
+    throw new Error(`生产订单 ${completed.id} 的舰船 ID 与现有舰队重复。`);
+  }
+  const def = getShipDef(completed.shipClass, completed.variant).def;
+  state.fleet.ships.push({
+    campaignShipId: completed.campaignShipId,
+    shipClass: completed.shipClass,
+    variant: completed.variant,
+    componentHp: def.components.map((component) => component.maxHp),
+    disabled: false,
+    escaped: false,
+    towed: false,
+    deployed: true
+  });
+  appendLog(state, `${SHIP_CN[completed.shipClass]}·${VARIANT_CN[completed.variant]}完工并编入${state.fleet.name}（${completed.campaignShipId}）。`);
+}
+
 function processResearch(state: UniverseState): void {
   if (!state.faction.researchQueue.length) return;
   state.faction.researchQueue[0].turnsRemaining--;
@@ -426,6 +481,7 @@ function loseSecondaryOutpost(state: UniverseState, station: SpaceEntity): void 
   station.ownerId = undefined;
   station.facilities = [];
   station.constructionQueue = [];
+  station.shipProductionQueue = [];
   state.transportLinks = state.transportLinks.filter((link) => link.outpostEntityId !== station.id);
   const system = state.systems.find((candidate) => candidate.id === station.systemId);
   if (system && system.enemyPower === 0) system.control = 'neutral';
@@ -579,6 +635,7 @@ function resolveUniverseTurn(state: UniverseState, reason: string): UniverseStat
   next.faction.resources.supplies += income.supplies;
   processConstruction(next);
   processResearch(next);
+  processShipProduction(next);
   const localStation = stationInFleetSystem(next);
   if (localStation) {
     next.fleet.fuel = Math.min(next.fleet.maxFuel, next.fleet.fuel + 1);
@@ -635,7 +692,24 @@ export function canQueueFacility(state: UniverseState, facilityType: FacilityTyp
   const queue = station.constructionQueue ?? [];
   const occupied = (station.facilities?.length ?? 0) + queue.length;
   if (queue.length >= 2 || occupied >= (station.facilitySlots ?? 3)) return false;
+  if (
+    facilityType === 'shipyard' &&
+    (station.id !== state.faction.baseEntityId ||
+      (station.facilities ?? []).some((facility) => facility.type === 'shipyard') ||
+      queue.some((order) => order.facilityType === 'shipyard'))
+  ) return false;
   return hasResources(state.faction.resources, effectiveFacilityCost(state, facilityType));
+}
+
+export function canQueueShipProduction(state: UniverseState, shipClass: ShipClass, variant: ShipVariant): boolean {
+  if (state.status !== 'active' || hasBlockingStrategicDecision(state)) return false;
+  const base = baseEntity(state);
+  if (!base || state.fleet.systemId !== base.systemId) return false;
+  if (state.sieges.some((siege) => siege.stationEntityId === base.id)) return false;
+  if (facilityCount(base, 'shipyard') !== 1) return false;
+  if ((base.shipProductionQueue ?? []).length >= SHIP_PRODUCTION_QUEUE_LIMIT) return false;
+  if (!validateFleet([{ shipClass, variant, count: 1 }]).valid) return false;
+  return hasResources(state.faction.resources, shipProductionCost(shipClass, variant));
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
@@ -738,6 +812,30 @@ function queueConstruction(state: UniverseState, facilityType: FacilityType, ent
   return next;
 }
 
+function queueShipProduction(state: UniverseState, shipClass: ShipClass, variant: ShipVariant): UniverseState {
+  if (!canQueueShipProduction(state, shipClass, variant)) return state;
+  const next = cloneState(state);
+  const base = baseEntity(next)!;
+  base.shipProductionQueue = base.shipProductionQueue ?? [];
+  const queueIndex = base.shipProductionQueue.length;
+  const cost = shipProductionCost(shipClass, variant);
+  spendResources(next.faction.resources, cost);
+  const reduction = next.faction.localResearch.includes('rapidFabrication') ? 1 : 0;
+  const turns = Math.max(1, shipProductionTurns(shipClass, variant) - reduction);
+  const identity = `${next.seed}-s${next.sectorIndex}-t${next.turn}-q${queueIndex}`;
+  const order: ShipProductionOrder = {
+    id: `produce-${identity}`,
+    campaignShipId: `cs-prod-${identity}`,
+    shipClass,
+    variant,
+    turnsRemaining: turns,
+    totalTurns: turns
+  };
+  base.shipProductionQueue.push(order);
+  appendLog(next, `${SHIP_CN[shipClass]}·${VARIANT_CN[variant]}加入船坞生产队列（${turns} 回合，预分配 ${order.campaignShipId}）。`);
+  return next;
+}
+
 function openCommanderRecruitment(state: UniverseState): UniverseState {
   if (!canOpenCommanderRecruitment(state)) return state;
   const next = cloneState(state);
@@ -830,6 +928,7 @@ function establishBase(state: UniverseState, entityId: string): UniverseState {
   station.ownerId = next.faction.id;
   station.facilities = station.facilities ?? [];
   station.constructionQueue = station.constructionQueue ?? [];
+  station.shipProductionQueue = station.shipProductionQueue ?? [];
   next.faction.baseEntityId = station.id;
   const system = next.systems.find((candidate) => candidate.id === station.systemId)!;
   system.control = 'player';
@@ -848,6 +947,7 @@ function establishOutpost(state: UniverseState, entityId: string): UniverseState
   station.ownerId = next.faction.id;
   station.facilities = station.facilities ?? [];
   station.constructionQueue = station.constructionQueue ?? [];
+  station.shipProductionQueue = station.shipProductionQueue ?? [];
   const system = next.systems.find((candidate) => candidate.id === station.systemId)!;
   system.control = 'player';
   next.transportLinks.push({
@@ -980,8 +1080,8 @@ function calibrateGate(state: UniverseState): UniverseState {
   ) {
     const gate = next.entities.find((entity) => entity.id === next.extraction.gateEntityId)!;
     const seed = hash32(next.seed, next.sectorIndex, gate.systemId, 'gate-defense');
-    // 固定星门驻军已经使用更高 gateGuard 预算；启动时的机动拦截队使用同星域普通舰队预算，
-    // 保证在尚无造舰系统的 C.4 切片中，修整后的继承舰队仍有可完成的终战窗口。
+    // 启动时的机动拦截队继续使用受当前舰队战力限制的 gateDefense 预算；
+    // D.1 的有限主基地生产不改变这条已验收的强制遭遇可玩性约束。
     const fleet = strategicEnemyFleetFor(
       seed,
       strategicMobileEnemyBudget(next.sectorIndex, strategicFleetPower(next), 'gateDefense'),
@@ -1127,6 +1227,7 @@ export function applyUniverseAction(state: UniverseState, action: UniverseAction
     return next;
   }
   if (action.type === 'queueConstruction') return queueConstruction(state, action.facilityType, action.entityId);
+  if (action.type === 'queueShipProduction') return queueShipProduction(state, action.shipClass, action.variant);
   if (action.type === 'queueResearch') return queueResearch(state, action.projectId);
   if (action.type === 'establishBase') return establishBase(state, action.entityId);
   if (action.type === 'establishOutpost') return establishOutpost(state, action.entityId);

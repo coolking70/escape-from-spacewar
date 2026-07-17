@@ -17,6 +17,7 @@ import {
   canExtractSector,
   canOpenCommanderRecruitment,
   canQueueFacility,
+  canQueueShipProduction,
   canQueueResearch,
   canRepairFleet,
   canRepairShip,
@@ -34,6 +35,8 @@ import {
   strategicOutpostRaidSupplyLoss,
   strategicTransportPath,
   strategicTransportStatus,
+  shipProductionCost,
+  shipProductionTurns,
   travelFuelCost,
   universeTurnIncome,
   toPersistentFleet,
@@ -50,7 +53,7 @@ import {
   minimumStrategicFleetCost,
   normalizeStrategicEnemyPower
 } from '../campaign/fleet/campaignPower';
-import { getShipDef, VARIANTS } from '../sim/shipVariants';
+import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import {
   activeShips,
   computePersistentDisableFlags,
@@ -126,6 +129,22 @@ function prepareSecondaryOutpost(state: ReturnType<typeof generateUniverse>) {
   next.fleet.systemId = system.id;
   next.selectedSystemId = system.id;
   return { state: next, station, base };
+}
+
+function prepareOperationalShipyard(seed: number) {
+  let state = establishStartingBase(generateUniverse(seed, 'D.1 船坞验证团'));
+  state.enemyTaskForces = [];
+  state.sieges = [];
+  state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+  state = applyUniverseAction(state, { type: 'queueConstruction', facilityType: 'shipyard' });
+  const baseId = state.faction.baseEntityId!;
+  const turns = state.entities.find((entity) => entity.id === baseId)!.constructionQueue![0].totalTurns;
+  for (let index = 0; index < turns; index++) state = advanceUniverseTurn(state, 'D.1 船坞施工');
+  return state;
+}
+
+function baseEntityForTest(state: ReturnType<typeof generateUniverse>) {
+  return state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
 }
 
 function prepareGate(state: ReturnType<typeof generateUniverse>, calibration: number) {
@@ -1379,6 +1398,7 @@ export function runStrategicTests(): SuiteResult {
         { type: 'establishBase', entityId: pendingState.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'establishOutpost', entityId: pendingState.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'queueConstruction', facilityType: 'solarArray' },
+        { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' },
         { type: 'queueResearch', projectId: 'routeAnalysis' },
         { type: 'repairShip', campaignShipId: pendingState.fleet.ships[0].campaignShipId },
         { type: 'calibrateGate' },
@@ -1796,7 +1816,7 @@ export function runStrategicTests(): SuiteResult {
       const first = generateUniverse(1401, '指挥官测试团');
       const same = generateUniverse(1401, '指挥官测试团');
       test.eq(JSON.stringify(first.commander), JSON.stringify(same.commander), '相同 seed 生成完全一致的指挥官档案');
-      test.eq(first.version, SECTOR_EXPEDITION_VERSION, '新远征使用当前 alpha.9 版本');
+      test.eq(first.version, SECTOR_EXPEDITION_VERSION, '新远征使用当前 alpha.10 版本');
       test.true_(validateUniverseState(first), '含指挥官的新战略状态通过深层校验');
 
       const roundTrip = decodeUniverse(encodeUniverse(first));
@@ -1816,7 +1836,7 @@ export function runStrategicTests(): SuiteResult {
       delete legacy.reserveCommanders;
       delete legacy.pendingSuccession;
       const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.5', state: legacy }));
-      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.5 存档迁移到当前 alpha.9');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.5 存档迁移到当前 alpha.10');
       test.true_(validateUniverseState(migrated), 'alpha.5 迁移补齐合法指挥官档案');
       test.eq(migrated.commander.id, first.commander.id, 'alpha.5 迁移按原 seed 确定生成同一指挥官 ID');
 
@@ -1909,6 +1929,7 @@ export function runStrategicTests(): SuiteResult {
         { type: 'establishBase', entityId: succession.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'establishOutpost', entityId: succession.entities.find((entity) => entity.kind === 'station')!.id },
         { type: 'queueConstruction', facilityType: 'solarArray' },
+        { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' },
         { type: 'queueResearch', projectId: 'routeAnalysis' },
         { type: 'engageEnemy' },
         { type: 'repairShip', campaignShipId: succession.fleet.ships[0].campaignShipId },
@@ -1996,7 +2017,7 @@ export function runStrategicTests(): SuiteResult {
       delete alpha6.recruitmentUsedThisSector;
       delete alpha6.pendingRecruitment;
       const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.6', state: alpha6 }));
-      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.6 存档迁移到当前 alpha.9');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.6 存档迁移到当前 alpha.10');
       test.eq(migrated.recruitmentUsedThisSector, false, 'alpha.6 迁移补齐未使用的本星域招募机会');
       test.true_(validateUniverseState(migrated), 'alpha.6 迁移结果通过深层校验');
 
@@ -2139,7 +2160,7 @@ export function runStrategicTests(): SuiteResult {
       alpha7.version = '1.0-alpha.7';
       delete alpha7.transportLinks;
       const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.7', state: alpha7 }));
-      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.7 存档迁移到当前 alpha.9');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.7 存档迁移到当前 alpha.10');
       test.eq(migrated.transportLinks.length, 0, 'alpha.7 单基地状态迁移为空运输链');
       test.true_(validateUniverseState(migrated), 'alpha.7 迁移结果合法');
       add(test);
@@ -2377,7 +2398,7 @@ export function runStrategicTests(): SuiteResult {
       delete alpha8.sieges;
       delete alpha8.extraction.gateDefense;
       const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.8', state: alpha8 }));
-      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.8 存档迁移到 alpha.9');
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.8 存档迁移到 alpha.10');
       test.eq(migrated.enemyTaskForces.length, 0, 'alpha.8 迁移不凭空生成移动敌军');
       test.eq(migrated.extraction.gateDefense, 'dormant', '未达到阈值的旧存档保持防御战未触发');
       test.true_(validateUniverseState(migrated), 'alpha.8 迁移结果合法');
@@ -2489,6 +2510,166 @@ export function runStrategicTests(): SuiteResult {
         JSON.stringify({ sectors: second.sectors, battles: second.battles, actions: second.actions, finalCode: second.finalCode }),
         '相同 seed 的行动、战斗、撤离指标与最终远征码完全一致'
       );
+      add(test);
+    }
+
+    // V1.0-D.1：生产资源与工期由现有 core-v4 舰船成本确定；alpha.9 只补空队列，不改旧状态。
+    {
+      const test = new Case('D.1 舰船生产成本权威与 alpha.9 迁移');
+      for (const shipClass of ['Fighter', 'Frigate', 'Cruiser'] as const) {
+        for (const variant of VARIANTS_BY_CLASS[shipClass]) {
+          const value = campaignShipCost(shipClass, variant);
+          const cost = shipProductionCost(shipClass, variant);
+          test.eq(cost.minerals, Math.ceil(value / 5), `${shipClass}/${variant} 矿物成本来自 core-v4 价值`);
+          test.eq(cost.energy, Math.ceil(value / 10), `${shipClass}/${variant} 能源成本来自 core-v4 价值`);
+          test.eq(cost.supplies, Math.ceil(value / 25), `${shipClass}/${variant} 补给成本来自 core-v4 价值`);
+          test.eq(shipProductionTurns(shipClass, variant), Math.max(2, Math.ceil(value / 100) + 1), `${shipClass}/${variant} 工期确定`);
+        }
+      }
+      const current = generateUniverse(1901, 'alpha.9 迁移团');
+      const alpha9: any = JSON.parse(JSON.stringify(current));
+      alpha9.version = '1.0-alpha.9';
+      for (const entity of alpha9.entities) delete entity.shipProductionQueue;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.9', state: alpha9 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.9 迁移到 alpha.10');
+      test.true_(migrated.entities.filter((entity) => entity.kind === 'station').every((station) => Array.isArray(station.shipProductionQueue)), 'alpha.9 所有空间站补入空生产队列');
+      test.true_(migrated.entities.filter((entity) => entity.kind === 'station').every((station) => station.shipProductionQueue!.length === 0), '迁移不凭空生成生产订单');
+      test.true_(validateUniverseState(migrated), 'alpha.9 迁移结果通过深层校验');
+      test.eq(encodeUniverse(decodeUniverse(encodeUniverse(migrated))), encodeUniverse(migrated), 'alpha.10 远征码往返稳定');
+      add(test);
+    }
+
+    // V1.0-D.1：船坞建设、扣费与双订单队列全部经过正式 reducer。
+    {
+      const test = new Case('D.1 主基地船坞建设与确定性生产入队');
+      let state = establishStartingBase(generateUniverse(1902, '生产入队团'));
+      state.enemyTaskForces = [];
+      state.sieges = [];
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      test.true_(!canQueueShipProduction(state, 'Fighter', 'standard'), '没有船坞时不能生产舰船');
+      state = applyUniverseAction(state, { type: 'queueConstruction', facilityType: 'shipyard' });
+      let base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      const facilityTurns = base.constructionQueue![0].totalTurns;
+      const afterOneTurn = advanceUniverseTurn(state, '船坞施工首回合');
+      base = afterOneTurn.entities.find((entity) => entity.id === afterOneTurn.faction.baseEntityId)!;
+      test.eq(base.constructionQueue![0].turnsRemaining, facilityTurns - 1, '设施建造每个战略回合只推进一次');
+      state = afterOneTurn;
+      for (let index = 1; index < facilityTurns; index++) state = advanceUniverseTurn(state, '继续船坞施工');
+      base = state.entities.find((entity) => entity.id === state.faction.baseEntityId)!;
+      test.eq(base.facilities!.filter((facility) => facility.type === 'shipyard').length, 1, '轻型轨道船坞按工期完工且唯一');
+      test.true_(!canQueueFacility(state, 'shipyard'), '已建船坞不能重复建设');
+
+      state.faction.resources = { minerals: 1000, energy: 1000, science: 1000, supplies: 1000 };
+      const resourcesBefore = { ...state.faction.resources };
+      const first = applyUniverseAction(state, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' });
+      const cost = shipProductionCost('Fighter', 'standard');
+      test.eq(first.faction.resources.minerals, resourcesBefore.minerals - cost.minerals, '生产入队立即扣除矿物');
+      test.eq(first.faction.resources.energy, resourcesBefore.energy - cost.energy, '生产入队立即扣除能源');
+      test.eq(first.faction.resources.supplies, resourcesBefore.supplies - cost.supplies, '生产入队立即扣除补给');
+      const firstOrder = baseEntityForTest(first).shipProductionQueue![0];
+      test.true_(firstOrder.campaignShipId.startsWith('cs-prod-'), '订单入队时预分配稳定 campaignShipId');
+      const second = applyUniverseAction(first, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'scout' });
+      test.eq(baseEntityForTest(second).shipProductionQueue!.length, 2, '船坞队列接受两个订单');
+      test.true_(applyUniverseAction(second, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'interceptor' }) === second, '队列满时第三个订单被 reducer 拒绝');
+
+      const repeatBase = prepareOperationalShipyard(1902);
+      repeatBase.faction.resources = { minerals: 1000, energy: 1000, science: 1000, supplies: 1000 };
+      const repeat = applyUniverseAction(repeatBase, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' });
+      test.eq(JSON.stringify(baseEntityForTest(repeat).shipProductionQueue), JSON.stringify(baseEntityForTest(first).shipProductionQueue), '相同 seed/回合/选择生成完全相同订单');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(second))), '双生产订单可保存并编码往返');
+
+      const preparedOutpost = prepareSecondaryOutpost(establishStartingBase(generateUniverse(1906, '船坞位置边界团')));
+      const outpostState = applyUniverseAction(preparedOutpost.state, { type: 'establishOutpost', entityId: preparedOutpost.station.id });
+      test.true_(!canQueueFacility(outpostState, 'shipyard', preparedOutpost.station.id), '次级前哨不能建设主基地专属船坞');
+      test.true_(applyUniverseAction(outpostState, { type: 'queueConstruction', facilityType: 'shipyard', entityId: preparedOutpost.station.id }) === outpostState, 'reducer 拒绝在次级前哨排入船坞');
+      const outpostRendered = renderPanelToRoot(outpostState);
+      test.eq(outpostRendered.root.querySelectorAll(`[data-strategy-build="shipyard"][data-strategy-build-entity="${preparedOutpost.station.id}"]`).length, 0, '次级前哨 UI 不显示永久不可用的船坞入口');
+      const malformedOutpost = JSON.parse(JSON.stringify(outpostState)) as typeof outpostState;
+      malformedOutpost.entities.find((entity) => entity.id === preparedOutpost.station.id)!.facilities!.push({ id: 'illegal-outpost-shipyard', type: 'shipyard', level: 1 });
+      test.true_(!validateUniverseState(malformedOutpost), '深层校验拒绝次级前哨船坞');
+      add(test);
+    }
+
+    // V1.0-D.1：生产只在舰队驻留且基地安全时推进；完工舰以满组件状态加入真实战斗绑定并跨域继承。
+    {
+      const test = new Case('D.1 生产暂停、完工组件与跨域继承闭环');
+      let state = prepareOperationalShipyard(1903);
+      state.faction.resources = { minerals: 1000, energy: 1000, science: 1000, supplies: 1000 };
+      state = applyUniverseAction(state, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'bomber' });
+      let base = baseEntityForTest(state);
+      const producedId = base.shipProductionQueue![0].campaignShipId;
+      const initialRemaining = base.shipProductionQueue![0].turnsRemaining;
+      const away = state.systems.find((system) => system.id !== base.systemId && base.systemId && state.systems.find((candidate) => candidate.id === base.systemId)!.neighbors.includes(system.id))!;
+      away.control = 'neutral';
+      away.enemyPower = 0;
+      away.discovered = true;
+      if (!state.faction.knownSystemIds.includes(away.id)) state.faction.knownSystemIds.push(away.id);
+      state.fleet.systemId = away.id;
+      state = advanceUniverseTurn(state, '舰队离开船坞');
+      test.eq(baseEntityForTest(state).shipProductionQueue![0].turnsRemaining, initialRemaining, '舰队离开主基地时生产暂停');
+
+      base = baseEntityForTest(state);
+      state.fleet.systemId = base.systemId;
+      state.enemyTaskForces = [{ id: 'd1-siege-force', systemId: base.systemId, power: minimumStrategicFleetCost(), role: 'raider', spawnedTurn: state.turn }];
+      state.sieges = [{ id: 'd1-siege', taskForceId: 'd1-siege-force', stationEntityId: base.id, turnsRemaining: 2, totalTurns: 2 }];
+      state = advanceUniverseTurn(state, '围攻下等待');
+      test.eq(baseEntityForTest(state).shipProductionQueue![0].turnsRemaining, initialRemaining, '主基地被围攻时生产暂停');
+      state.enemyTaskForces = [];
+      state.sieges = [];
+      for (let index = 0; index < initialRemaining; index++) state = advanceUniverseTurn(state, '恢复舰船生产');
+      const produced = state.fleet.ships.find((ship) => ship.campaignShipId === producedId)!;
+      const producedDef = getShipDef('Fighter', 'bomber').def;
+      test.true_(!!produced, '完工舰加入当前唯一战略舰队');
+      test.eq(JSON.stringify(produced.componentHp), JSON.stringify(producedDef.components.map((component) => component.maxHp)), '完工舰组件 HP 为真实满状态');
+      test.true_(!produced.disabled && !produced.escaped && produced.deployed !== false && !produced.towed, '完工舰以可部署合法状态入队');
+      const battle = prepareStrategicBattle(toPersistentFleet(state.fleet), [{ shipClass: 'Fighter', variant: 'scout', count: 1 }], 1903);
+      test.true_(battle.bindings.some((binding) => binding.campaignShipId === producedId), '完工舰可直接进入真实 core-v4 binding');
+      test.true_(validateUniverseState(decodeUniverse(encodeUniverse(state))), '完工舰状态可保存往返');
+
+      const extractionReady = prepareGate(state, 100);
+      const nextSector = applyUniverseAction(extractionReady, { type: 'extractSector', mode: 'stable' });
+      test.eq(nextSector.sectorIndex, 2, '稳定撤离进入下一星域');
+      test.true_(nextSector.fleet.ships.some((ship) => ship.campaignShipId === producedId), '生产舰 campaignShipId 跨星域保持稳定');
+      test.true_(validateUniverseState(nextSector), '携带生产舰的下一星域状态合法');
+      add(test);
+    }
+
+    // V1.0-D.1：真实 DOM 与深层校验共同拒绝非法/重复/异地订单。
+    {
+      const test = new Case('D.1 真实 DOM 生产操作与深层存档拒绝');
+      let state = prepareOperationalShipyard(1904);
+      state.faction.resources = { minerals: 1000, energy: 1000, science: 1000, supplies: 1000 };
+      const rendered = renderPanelToRoot(state);
+      const productionButtons = Array.from(rendered.root.querySelectorAll<HTMLButtonElement>('[data-strategy-produce-class]'));
+      test.eq(productionButtons.length, 12, '真实 DOM 按稳定舰体/改型集合渲染 12 个生产按钮');
+      test.true_(productionButtons.every((button) => !button.disabled), '资源充足且船坞可用时所有合法生产按钮可操作');
+      productionButtons[0].click();
+      test.eq(rendered.calls.actionLog[0]?.type, 'queueShipProduction', '真实 DOM 点击派发 queueShipProduction');
+
+      state = applyUniverseAction(state, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' });
+      state = applyUniverseAction(state, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'scout' });
+      const fullRendered = renderPanelToRoot(state);
+      const fullButtons = Array.from(fullRendered.root.querySelectorAll<HTMLButtonElement>('[data-strategy-produce-class]'));
+      test.true_(fullButtons.every((button) => button.disabled), '队列满时所有生产按钮真实 disabled');
+      for (const button of fullButtons) button.click();
+      test.eq(fullRendered.calls.actions, 0, '点击禁用生产按钮不触发回调');
+
+      const duplicate = JSON.parse(JSON.stringify(state)) as typeof state;
+      const duplicateBase = baseEntityForTest(duplicate);
+      duplicateBase.shipProductionQueue![1] = JSON.parse(JSON.stringify(duplicateBase.shipProductionQueue![0]));
+      test.true_(!validateUniverseState(duplicate), '重复订单 ID 与 campaignShipId 被拒绝');
+      const invalidHull = JSON.parse(JSON.stringify(state)) as typeof state;
+      baseEntityForTest(invalidHull).shipProductionQueue![0].variant = 'escort';
+      test.true_(!validateUniverseState(invalidHull), '非法舰体/改型生产订单被拒绝');
+      const noShipyard = JSON.parse(JSON.stringify(state)) as typeof state;
+      baseEntityForTest(noShipyard).facilities = baseEntityForTest(noShipyard).facilities!.filter((facility) => facility.type !== 'shipyard');
+      test.true_(!validateUniverseState(noShipyard), '没有船坞却存在生产订单的存档被拒绝');
+      const missingQueue = JSON.parse(JSON.stringify(generateUniverse(1905))) as typeof state;
+      delete missingQueue.entities.find((entity) => entity.kind === 'station')!.shipProductionQueue;
+      test.true_(!validateUniverseState(missingQueue), '当前版本空间站缺失生产队列被拒绝');
+      const terminal = JSON.parse(JSON.stringify(state)) as typeof state;
+      terminal.status = 'victory';
+      test.true_(applyUniverseAction(terminal, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' }) === terminal, '终局状态拒绝继续生产');
       add(test);
     }
   });
