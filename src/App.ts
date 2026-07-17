@@ -33,6 +33,7 @@ import { generateUniverse } from './strategy/universeGenerator';
 import {
   applyUniverseAction,
   applyStrategicBattleResult,
+  currentStrategicExtractionPlan,
   ownedStrategicStations,
   strategicIncomeReport,
   strategicTransportStatus,
@@ -194,6 +195,10 @@ export class App {
 
   campaignDebugState(): unknown {
     if (this.universe) {
+      const extractionPlan = currentStrategicExtractionPlan(
+        this.universe,
+        this.universe.extraction.manifest?.mode ?? 'emergency'
+      );
       return {
         screen: 'strategic-universe',
         sector: this.universe.sectorIndex,
@@ -252,7 +257,17 @@ export class App {
           discovered: this.universe.extraction.discovered,
           calibration: this.universe.extraction.calibration,
           requiredCalibration: this.universe.extraction.requiredCalibration,
-          gateDefense: this.universe.extraction.gateDefense
+          gateDefense: this.universe.extraction.gateDefense,
+          manifest: extractionPlan.manifest,
+          plan: {
+            valid: extractionPlan.valid,
+            risk: extractionPlan.risk,
+            fuelCost: extractionPlan.fuelCost,
+            suppliesCost: extractionPlan.suppliesCost,
+            survivingShipIds: extractionPlan.survivingShipIds,
+            lostShipIds: extractionPlan.lostShipIds,
+            pressureLossShipIds: extractionPlan.pressureLossShipIds
+          }
         },
         commander: {
           id: this.universe.commander.id,

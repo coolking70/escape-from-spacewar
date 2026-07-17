@@ -21,6 +21,7 @@ import {
   canQueueResearch,
   canRepairFleet,
   canRepairShip,
+  currentStrategicExtractionPlan,
   canTreatStrategicCommander,
   crisisPhaseForTurn,
   ownedStrategicStations,
@@ -57,6 +58,7 @@ import { getShipDef, VARIANTS, VARIANTS_BY_CLASS } from '../sim/shipVariants';
 import {
   activeShips,
   computePersistentDisableFlags,
+  disablePersistentShip,
   isPersistentShipDisabled,
   isShipDeployable
 } from '../campaign/fleet/persistentFleet';
@@ -1351,9 +1353,9 @@ export function runStrategicTests(): SuiteResult {
       const calibrateState = prepareGate(generateUniverse(1079), 50);
       assertEnabled(calibrateState, '#strategy-calibrate', 'calibrate', 'calibrateGate');
       const extractionState = prepareGate(generateUniverse(1080), 100);
-      assertEnabled(extractionState, '#strategy-extract-stable', 'stable extraction', 'extractSector');
+      const stableExtractionState = applyUniverseAction(extractionState, { type: 'configureExtraction', mode: 'stable' });
+      assertEnabled(stableExtractionState, '#strategy-extract-stable', 'stable extraction', 'extractSector');
       assertEnabled(extractionState, '#strategy-extract-emergency', 'emergency extraction', 'extractSector');
-      assertEnabled(extractionState, '#strategy-extract-rearguard', 'rearguard extraction', 'extractSector');
       add(test);
     }
 
@@ -2670,6 +2672,104 @@ export function runStrategicTests(): SuiteResult {
       const terminal = JSON.parse(JSON.stringify(state)) as typeof state;
       terminal.status = 'victory';
       test.true_(applyUniverseAction(terminal, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' }) === terminal, '终局状态拒绝继续生产');
+      add(test);
+    }
+
+    // V1.0-D.2：撤离结果只由稳定 campaignShipId 清单决定，舰队数组顺序不参与写回。
+    {
+      const test = new Case('D.2 逐舰撤离清单、拖曳成本与顺序无关写回');
+      let state = prepareGate(generateUniverse(2001, '逐舰撤离团'), 100);
+      state.crisis.pressure = 85;
+      const disabled = state.fleet.ships[0];
+      disablePersistentShip(disabled);
+      const disabledHp = [...disabled.componentHp!];
+      const operationalIds = state.fleet.ships.filter(isShipDeployable)
+        .map((ship) => ship.campaignShipId).sort();
+      state = applyUniverseAction(state, { type: 'configureExtraction', mode: 'emergency' });
+      state = applyUniverseAction(state, { type: 'assignExtractionShip', campaignShipId: disabled.campaignShipId, role: 'tow' });
+      state = applyUniverseAction(state, { type: 'assignExtractionShip', campaignShipId: operationalIds[0], role: 'rearguard' });
+      const plan = currentStrategicExtractionPlan(state);
+      test.true_(plan.valid, '包含拖曳、断后和撤离的逐舰清单有效');
+      test.eq(plan.fuelCost, 1, '紧急拖曳一艘失能舰额外消耗 1 燃料');
+      test.eq(plan.suppliesCost, 6, '紧急拖曳一艘失能舰总计消耗 6 补给');
+      test.eq(JSON.stringify(plan.rearguardShipIds), JSON.stringify([operationalIds[0]]), '断后损失精确绑定指定舰 ID');
+      test.eq(plan.pressureLossShipIds.length, 0, '明确断后任务消除高压随机损失');
+
+      const reordered = JSON.parse(JSON.stringify(state)) as typeof state;
+      reordered.fleet.ships.reverse();
+      const reorderedPlan = currentStrategicExtractionPlan(reordered);
+      test.eq(JSON.stringify(reorderedPlan), JSON.stringify(plan), '打乱舰队数组顺序不改变撤离计划');
+
+      const next = applyUniverseAction(reordered, { type: 'extractSector', mode: 'emergency' });
+      const expectedSurvivors = [...plan.survivingShipIds].sort();
+      test.eq(JSON.stringify(next.fleet.ships.map((ship) => ship.campaignShipId).sort()), JSON.stringify(expectedSurvivors), '实际写回精确采用预览中的存活 ID');
+      const inheritedDisabled = next.fleet.ships.find((ship) => ship.campaignShipId === disabled.campaignShipId)!;
+      test.eq(JSON.stringify(inheritedDisabled.componentHp), JSON.stringify(disabledHp), '拖曳舰组件损伤原样继承');
+      test.true_(inheritedDisabled.disabled && inheritedDisabled.towed, '拖曳舰以真实 disabled/towed 状态继承');
+      test.true_(next.fleet.ships.every((ship) => !plan.lostShipIds.includes(ship.campaignShipId)), '断后与放弃舰不会混入下一星域');
+      test.true_(validateUniverseState(next), '逐舰撤离写回结果可直接保存');
+      add(test);
+    }
+
+    // V1.0-D.2：深层校验、alpha.10 迁移和编码往返共享同一清单权威。
+    {
+      const test = new Case('D.2 清单深层校验、alpha.10 迁移与编码闭环');
+      let state = prepareGate(generateUniverse(2002, '撤离存档团'), 100);
+      state = applyUniverseAction(state, { type: 'configureExtraction', mode: 'stable' });
+      test.true_(validateUniverseState(state), '合法逐舰清单通过深层校验');
+      const roundTrip = decodeUniverse(encodeUniverse(state));
+      test.eq(JSON.stringify(roundTrip.extraction.manifest), JSON.stringify(state.extraction.manifest), 'Campaign Code 保留逐舰清单及稳定 ID');
+
+      const duplicate = JSON.parse(JSON.stringify(state)) as typeof state;
+      duplicate.extraction.manifest!.assignments[1].campaignShipId = duplicate.extraction.manifest!.assignments[0].campaignShipId;
+      test.true_(!validateUniverseState(duplicate), '重复舰船 ID 的清单被拒绝');
+      const missing = JSON.parse(JSON.stringify(state)) as typeof state;
+      missing.extraction.manifest!.assignments.pop();
+      test.true_(!validateUniverseState(missing), '未精确覆盖舰队的清单被拒绝');
+      const illegalRole = JSON.parse(JSON.stringify(state)) as typeof state;
+      illegalRole.extraction.manifest!.assignments[0].role = 'rearguard';
+      test.true_(!validateUniverseState(illegalRole), '稳定撤离中的断后角色被拒绝');
+
+      const alpha10: any = JSON.parse(JSON.stringify(state));
+      alpha10.version = '1.0-alpha.10';
+      delete alpha10.extraction.manifest;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.10', state: alpha10 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.10 确定迁移到 alpha.11');
+      test.true_(migrated.extraction.manifest === undefined, '迁移不凭空替玩家决定逐舰任务');
+      test.true_(validateUniverseState(migrated), 'alpha.10 迁移结果可直接保存');
+      add(test);
+    }
+
+    // V1.0-D.2：真实 jsdom 验证模式切换、逐舰任务和最后一艘撤离舰保护。
+    {
+      const test = new Case('D.2 真实 DOM 逐舰撤离规划操作');
+      const state = prepareGate(generateUniverse(2003, '撤离界面团'), 100);
+      const rendered = renderPanelToRoot(state);
+      const modeButtons = rendered.root.querySelectorAll<HTMLButtonElement>('[data-strategy-extraction-mode]');
+      test.eq(modeButtons.length, 2, '真实 DOM 显示稳定/紧急两种规划入口');
+      const operationalIds = state.fleet.ships.filter(isShipDeployable).map((ship) => ship.campaignShipId).sort();
+      const rearguardButton = rendered.root.querySelector<HTMLButtonElement>(`[data-strategy-extraction-ship="${operationalIds[0]}"][data-strategy-extraction-role="rearguard"]`)!;
+      test.true_(!rearguardButton.disabled, '非最后一艘可作战舰的断后按钮可用');
+      rearguardButton.click();
+      test.eq(rendered.calls.actionLog[0]?.type, 'assignExtractionShip', '逐舰按钮派发 assignExtractionShip');
+      if (rendered.calls.actionLog[0]?.type === 'assignExtractionShip') {
+        test.eq(rendered.calls.actionLog[0].campaignShipId, operationalIds[0], '逐舰 action 携带稳定 campaignShipId');
+        test.eq(rendered.calls.actionLog[0].role, 'rearguard', '逐舰 action 携带明确任务');
+      }
+
+      let oneShip = prepareGate(generateUniverse(2004, '最后撤离舰保护团'), 100);
+      oneShip.fleet.ships = [oneShip.fleet.ships[0]];
+      const oneRendered = renderPanelToRoot(oneShip);
+      const lastRearguard = oneRendered.root.querySelector<HTMLButtonElement>('[data-strategy-extraction-role="rearguard"]')!;
+      const lastAbandon = oneRendered.root.querySelector<HTMLButtonElement>('[data-strategy-extraction-role="abandon"]')!;
+      test.true_(lastRearguard.disabled && lastAbandon.disabled, '最后一艘可作战撤离舰不能改为断后或放弃');
+      for (const button of [lastRearguard, lastAbandon]) button.click();
+      test.eq(oneRendered.calls.actions, 0, '点击最后撤离舰的禁用任务不会触发回调');
+
+      const stable = applyUniverseAction(state, { type: 'configureExtraction', mode: 'stable' });
+      const stableRendered = renderPanelToRoot(stable);
+      test.eq(stableRendered.root.querySelectorAll('[data-strategy-extraction-role="rearguard"]').length, 0, '稳定规划不渲染断后任务');
+      test.true_(stableRendered.root.querySelector<HTMLButtonElement>('#strategy-extract-stable')?.disabled === false, '合法稳定清单可执行');
       add(test);
     }
   });

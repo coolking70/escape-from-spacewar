@@ -377,6 +377,23 @@ try {
     const defended = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
     assert.equal(defended.extraction.gateDefense, 'resolved', `sector ${plan.sector} gate defense must write back to strategy`);
     assert.ok(defended.turn <= defended.finalTurn, `sector ${plan.sector} must finish within its action window`);
+    if (plan.sector === 1) {
+      const rearguardButton = releasePage.locator('[data-strategy-extraction-role="rearguard"]:not([disabled])').first();
+      assert.equal(await rearguardButton.count(), 1, 'D.2 first extraction must expose at least one legal per-ship rearguard assignment');
+      const rearguardId = await rearguardButton.getAttribute('data-strategy-extraction-ship');
+      assert.ok(rearguardId, 'D.2 rearguard button must bind a stable campaignShipId');
+      await rearguardButton.click();
+      const planned = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
+      const assignment = planned.extraction.manifest.assignments.find((entry) => entry.campaignShipId === rearguardId);
+      assert.equal(assignment?.role, 'rearguard', 'D.2 browser action must persist the selected ship role');
+      assert.ok(planned.extraction.plan.lostShipIds.includes(rearguardId), 'D.2 authoritative preview must name the exact rearguard loss');
+      assert.equal(planned.extraction.plan.pressureLossShipIds.length, 0, 'explicit rearguard must prevent an additional pressure casualty');
+      await releasePage.locator('.gate-card').scrollIntoViewIfNeeded();
+      if (screenshotDir) await releasePage.screenshot({ path: path.join(screenshotDir, 'd2-extraction-manifest.png'), fullPage: true });
+      await releasePage.locator('[data-strategy-extraction-mode="emergency"]').click();
+      const reset = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
+      assert.equal(reset.extraction.manifest.assignments.every((entry) => entry.role !== 'rearguard'), true, 'reselecting emergency mode must restore its deterministic default manifest');
+    }
     await releasePage.locator('#strategy-extract-emergency').click();
   }
 

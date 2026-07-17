@@ -3,9 +3,9 @@ import type { DeploymentSelection } from '../campaign/deployment/deploymentSyste
 import type { FleetEntry } from '../sim/battleTypes';
 import type { CampaignCommander, PendingRecruitment } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-D.1 升级为 1.0-alpha.10，加入主基地舰船生产队列。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.10';
-export type SectorExpeditionVersion = '1.0-alpha.10';
+/** 当前 Sector Expedition Code 版本。V1.0-D.2 升级为 1.0-alpha.11，加入逐舰撤离清单。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.11';
+export type SectorExpeditionVersion = '1.0-alpha.11';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';
@@ -15,6 +15,18 @@ export type PermanentBlueprintId = 'fieldLogistics' | 'hardenedBulkheads' | 'com
 export type CrisisPhase = 'foothold' | 'contest' | 'collapse' | 'evacuation';
 export type SystemControl = 'unknown' | 'neutral' | 'player' | 'enemy';
 export type ExtractionMode = 'stable' | 'emergency';
+export type ExtractionAssignmentRole = 'evacuate' | 'tow' | 'rearguard' | 'abandon';
+
+export interface ExtractionAssignment {
+  campaignShipId: string;
+  role: ExtractionAssignmentRole;
+}
+
+/** 可保存的逐舰撤离清单；每艘当前舰船必须且只能出现一次。 */
+export interface StrategicExtractionManifest {
+  mode: ExtractionMode;
+  assignments: ExtractionAssignment[];
+}
 
 export interface StrategicResources {
   minerals: number;
@@ -184,6 +196,7 @@ export interface ExtractionState {
   requiredCalibration: number;
   emergencyThreshold: number;
   gateDefense: 'dormant' | 'pending' | 'resolved';
+  manifest?: StrategicExtractionManifest;
 }
 
 export type UniverseStatus = 'active' | 'victory' | 'collapsed';
@@ -241,5 +254,7 @@ export type UniverseAction =
   | { type: 'appointCommander'; commanderId: string }
   | { type: 'repairShip'; campaignShipId: string }
   | { type: 'calibrateGate' }
+  | { type: 'configureExtraction'; mode: ExtractionMode }
+  | { type: 'assignExtractionShip'; campaignShipId: string; role: ExtractionAssignmentRole }
   | { type: 'extractSector'; mode: ExtractionMode; rearguardShips?: number }
   | { type: 'advanceTurn' };

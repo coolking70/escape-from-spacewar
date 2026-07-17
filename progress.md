@@ -128,7 +128,7 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.10` (C.5 three-sector release loop plus main-base light shipyard and deterministic ship production). `1.0-alpha.2` through `1.0-alpha.9` are migrated deterministically in place.
+- Current version: `1.0-alpha.11` (D.1 production plus a per-ship extraction manifest keyed by stable `campaignShipId`). `1.0-alpha.2` through `1.0-alpha.10` are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship) and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
@@ -359,3 +359,12 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - Strategy coverage is now **85 cases**, including all 12 cost/time mappings, alpha.9 migration, deterministic queue IDs, exact deductions, pause/resume, completion, component legality, battle binding, extraction inheritance, reducer locks and jsdom production controls.
 - Real Chromium completes `establish base → build shipyard → enemy interruption/real Three.js defense → queue fighter → resume and deliver` through visible controls, validates resource deductions/debug state and reports no console errors. The standard develop-web-game client independently confirmed a clean initial strategic screen and matching text state.
 - D.1 intentionally does not add multiple fleets, fitting/modules, repairs beyond the existing dock, new hulls/variants, markets, diplomacy or a base-upgrade tree. Core-v4 combat rules, costs, values, AI and golden replays remain unchanged.
+
+### V1.0-D.2 per-ship extraction manifest vertical slice
+
+- Sector Expedition Code advances to `1.0-alpha.11`. Alpha.10 saves retain all D.1 state and do not fabricate a player decision; a manifest is created only when the player configures extraction. Deep validation requires a unique exact assignment for every current `campaignShipId` and rejects illegal mode/role/status combinations.
+- Stable and emergency extraction share one pure authoritative plan. Stable roles are evacuate/tow/abandon; emergency adds rearguard. At least one operational evacuee must remain. Emergency towing costs one fuel and two extra supplies per disabled ship; a named rearguard prevents the deterministic high-pressure casualty.
+- Preview and application consume the same sorted-ID plan, so array reordering cannot change survivors. Towed ships retain their stable ID, real component HP, disabled state and `towed=true`; repair clears towing only after shared component rules make the ship operational. Fleet production, repair, raids and battle writeback invalidate stale manifests.
+- The strategy suite now has **88 cases**, including reordered fleet writeback, exact survivor/loss IDs, towing costs and component inheritance, malformed-manifest rejection, alpha.10 migration and jsdom native button behavior. The existing 65-seed/three-sector matrix remains green.
+- Real Chromium uses the visible D.2 controls in the canonical three-sector release flow, binds a rearguard role to a concrete ship ID, verifies the authoritative loss preview, resets the manifest and completes all six Three.js/core-v4 battles in victory with no console errors. Screenshots and the standard web-game client were visually inspected.
+- D.2 does not modify core-v4 battle rules, costs, AI, state semantics or golden replays. Permanent blueprint effects and module fitting remain separate later slices; multiple player fleets, diplomacy, markets, population and real-time strategic movement remain out of scope.

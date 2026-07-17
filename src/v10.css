@@ -399,6 +399,52 @@
   color: #95afc5;
 }
 
+.extraction-mode-tabs,
+.extraction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.extraction-manifest {
+  display: grid;
+  gap: 8px;
+}
+
+.extraction-ship-row {
+  display: grid;
+  grid-template-columns: minmax(150px, .8fr) minmax(220px, 1.2fr);
+  align-items: center;
+  gap: 10px;
+  padding: 9px;
+  border: 1px solid rgba(105, 177, 225, .2);
+  border-radius: 9px;
+  background: rgba(10, 31, 50, .5);
+}
+
+.extraction-ship-row span > small {
+  display: block;
+  color: #95afc5;
+}
+
+.extraction-ship-row > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.extraction-plan-summary {
+  display: grid;
+  gap: 5px;
+  margin: 12px 0;
+  padding: 10px;
+  border-radius: 9px;
+  background: rgba(22, 47, 72, .58);
+  font-size: 13px;
+}
+
 .strategic-log {
   max-height: 430px;
   overflow: auto;
@@ -449,5 +495,13 @@
   .entity-actions {
     grid-column: 1 / -1;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .extraction-ship-row {
+    grid-template-columns: 1fr;
+  }
+
+  .extraction-ship-row > div {
+    justify-content: flex-start;
   }
 }
