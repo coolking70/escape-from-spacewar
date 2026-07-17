@@ -35,8 +35,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Build standalone site
         run: npm run build:static
+
+      - name: Verify standalone site in Chromium
+        run: npm run test:browser:static
 
       - name: Configure Pages
         uses: actions/configure-pages@v6

@@ -1,23 +1,75 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { createServer, preview } from 'vite';
 
 const screenshotDir = process.env.BROWSER_SCREENSHOT_DIR;
 if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 
+const targetArg = process.argv.find((argument) => argument.startsWith('--target='));
+const browserTarget = targetArg?.slice('--target='.length) ?? 'development';
+assert.ok(['development', 'production', 'static'].includes(browserTarget), `unknown browser target: ${browserTarget}`);
 const externalUrl = process.env.BROWSER_TEST_URL;
-const expectSingleFile = process.env.BROWSER_EXPECT_SINGLE_FILE === '1';
-const server = externalUrl
-  ? null
-  : await createServer({
+const expectSingleFile = browserTarget === 'static' || process.env.BROWSER_EXPECT_SINGLE_FILE === '1';
+const servedTarget = externalUrl ? (expectSingleFile ? 'static' : 'production') : browserTarget;
+
+async function startStaticServer(rootDir, port) {
+  const absoluteRoot = path.resolve(rootDir);
+  const server = http.createServer((request, response) => {
+    const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://127.0.0.1').pathname);
+    const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(absoluteRoot, relativePath);
+    if (!filePath.startsWith(`${absoluteRoot}${path.sep}`) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      response.statusCode = 404;
+      response.end('Not found');
+      return;
+    }
+    const contentType = path.extname(filePath) === '.html'
+      ? 'text/html; charset=utf-8'
+      : path.extname(filePath) === '.js'
+        ? 'text/javascript; charset=utf-8'
+        : path.extname(filePath) === '.css'
+          ? 'text/css; charset=utf-8'
+          : 'application/octet-stream';
+    response.setHeader('Content-Type', contentType);
+    fs.createReadStream(filePath).pipe(response);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  };
+}
+
+async function startBrowserTarget() {
+  if (externalUrl) return { url: externalUrl, close: async () => {} };
+  if (browserTarget === 'development') {
+    const viteServer = await createServer({
       logLevel: 'error',
-      server: {
-        host: '127.0.0.1',
-        port: 4173,
-      },
+      server: { host: '127.0.0.1', port: 4173, strictPort: true },
     });
+    await viteServer.listen();
+    return { url: viteServer.resolvedUrls?.local[0], close: () => viteServer.close() };
+  }
+  if (browserTarget === 'production') {
+    assert.ok(fs.existsSync(path.resolve('dist/index.html')), 'production browser target requires npm run build first');
+    const previewServer = await preview({
+      logLevel: 'error',
+      preview: { host: '127.0.0.1', port: 4174, strictPort: true },
+    });
+    return {
+      url: previewServer.resolvedUrls?.local[0],
+      close: () => new Promise((resolve, reject) => previewServer.httpServer.close((error) => error ? reject(error) : resolve()))
+    };
+  }
+  assert.ok(fs.existsSync(path.resolve('static/index.html')), 'static browser target requires npm run build:static first');
+  return startStaticServer('static', 4175);
+}
 
 async function clickWithConfirmation(locator, decision = 'accept') {
   const dialogPromise = locator.page().waitForEvent('dialog');
@@ -41,10 +93,11 @@ async function clickExtraction(page, selector) {
 }
 
 let browser;
+let targetServer;
 
 try {
-  await server?.listen();
-  const url = externalUrl ?? server?.resolvedUrls?.local[0];
+  targetServer = await startBrowserTarget();
+  const url = targetServer.url;
   assert.ok(url, 'Vite did not expose a local test URL');
 
   browser = await chromium.launch({
@@ -337,9 +390,14 @@ try {
 
   await battlePage.goto(url, { waitUntil: 'networkidle' });
   await battlePage.locator('#cm-single').click();
-  if (!externalUrl) {
+  if (servedTarget !== 'static') {
     assert.equal(
-      loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts') || resource.includes('/src/render/shipPreview.ts')),
+      loadedResources.some((resource) =>
+        resource.includes('/src/render/threeScene.ts') ||
+        resource.includes('/src/render/shipPreview.ts') ||
+        resource.includes('/assets/threeScene-') ||
+        resource.includes('/assets/shipPreview-')
+      ),
       false,
       'setup screen must not eagerly load Three.js render entry modules',
     );
@@ -348,12 +406,12 @@ try {
   await battlePage.locator('#previewBtn').click();
   await battlePage.locator('#previewCanvas canvas').waitFor({ state: 'visible' });
   if (screenshotDir) await battlePage.screenshot({ path: path.join(screenshotDir, 'ship-preview.png') });
-  if (!externalUrl) {
+  if (servedTarget === 'development') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/src/render/shipPreview.ts')),
       'opening the ship preview must load its Three.js renderer on demand',
     );
-  } else if (!expectSingleFile) {
+  } else if (servedTarget === 'production') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/assets/shipPreview-')),
       'production build must fetch the ship preview chunk on demand',
@@ -364,12 +422,12 @@ try {
 
   await battlePage.locator('#startBtn').click();
   await battlePage.locator('#canvas-root canvas').waitFor({ state: 'visible' });
-  if (!externalUrl) {
+  if (servedTarget === 'development') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts')),
       'starting a battle must load the battle renderer on demand',
     );
-  } else if (expectSingleFile) {
+  } else if (servedTarget === 'static') {
     assert.equal(
       loadedResources.some((resource) => resource.includes('/assets/')),
       false,
@@ -387,9 +445,9 @@ try {
   assert.deepEqual(battleErrors, [], `lazy renderer flows must keep the browser console clean:\n${battleErrors.join('\n')}`);
 
   console.log(
-    expectSingleFile
+    servedTarget === 'static'
       ? '[PASS] single-file static renderers: preview=loaded, battle=loaded, external assets=0'
-      : externalUrl
+      : servedTarget === 'production'
         ? '[PASS] production chunks: preview=lazy, battle=lazy'
         : '[PASS] lazy Three.js renderers: setup=eager-free, preview=loaded, battle=loaded',
   );
@@ -621,5 +679,5 @@ try {
   await releasePage.close();
 } finally {
   await browser?.close();
-  await server?.close();
+  await targetServer?.close();
 }

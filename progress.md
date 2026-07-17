@@ -405,3 +405,10 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - The strategic toolbar exports a standalone JSON diagnostic log containing expedition identity, status, resources, stable-ID fleet/component state, inherited legacy and the complete strategic event history.
 - Strategy coverage is now **100 cases**. New jsdom cases verify cancel/confirm dispatch, loss confirmation content, lock reasons, live-region/map semantics, independent log export and focus restoration.
 - Real Chromium independently dismisses and accepts module replacement, verifies the exact fitting state, downloads and parses the JSON log, checks pending-battle lock reasons, accepts dangerous rearguard/extraction prompts, then completes the canonical three-sector/six-battle victory flow without console errors. E.2 and interrupted-battle screenshots were visually inspected.
+
+### V1.0-E.3 release artifact browser truth
+
+- The browser regression now has three explicit formal targets: development (`npm run test:browser`), the previously built standard chunked distribution (`npm run test:browser:production`), and the previously built standalone HTML (`npm run test:browser:static`). Each target owns its server lifecycle and fails clearly when its required artifact is absent.
+- All three targets execute the same recruitment, outpost/siege, shipyard, fitting, save recovery and canonical three-sector/six-battle victory flow. The production target asserts lazy preview/battle chunks; the standalone target asserts that opening both renderers causes no external `assets/` request.
+- Main CI now runs development and production Chromium after the standard build, then builds and runs the standalone Chromium target. The Pages workflow installs Chromium and runs the standalone target before uploading the exact `static/` artifact.
+- Independent E.3 artifact verification passed for both release formats: the standard production chunks remained lazy, the 955.5 KB standalone HTML remained self-contained, and both reached victory without console errors.

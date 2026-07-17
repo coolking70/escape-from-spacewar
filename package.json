@@ -15,7 +15,9 @@
     "test:stress": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/stress-test.js",
     "test:campaign": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/campaign-test.js",
     "test:strategy": "tsc -p scripts/tsconfig.test.json && node scripts/emit-cjs-pkg.mjs && node .tmp-test/scripts/strategic-test.js",
-    "test:browser": "node scripts/strategy-browser-test.mjs"
+    "test:browser": "node scripts/strategy-browser-test.mjs --target=development",
+    "test:browser:production": "node scripts/strategy-browser-test.mjs --target=production",
+    "test:browser:static": "node scripts/strategy-browser-test.mjs --target=static"
   },
   "dependencies": {
     "three": "0.160.0"
