@@ -354,14 +354,16 @@ function simulateStrategicBattle(seed: number, enemyPower: number) {
 }
 
 /** 使用 jsdom 的真实 HTMLElement / button disabled 行为渲染战略面板。 */
-function renderPanelToRoot(state: ReturnType<typeof generateUniverse>): {
+function renderPanelToRoot(state: ReturnType<typeof generateUniverse>, confirmResult = true): {
   root: HTMLDivElement;
   html: string;
-  calls: { actions: number; exports: number; exits: number; actionLog: UniverseAction[] };
+  panel: StrategicUniversePanel;
+  calls: { actions: number; exports: number; logExports: number; exits: number; confirmations: string[]; actionLog: UniverseAction[] };
 } {
   const dom = new JSDOM('<!doctype html><html><body></body></html>');
   const root = dom.window.document.createElement('div');
-  const calls = { actions: 0, exports: 0, exits: 0, actionLog: [] as UniverseAction[] };
+  dom.window.document.body.appendChild(root);
+  const calls = { actions: 0, exports: 0, logExports: 0, exits: 0, confirmations: [] as string[], actionLog: [] as UniverseAction[] };
   const panel = new StrategicUniversePanel(root, {
     onAction: (action) => {
       calls.actions++;
@@ -370,12 +372,19 @@ function renderPanelToRoot(state: ReturnType<typeof generateUniverse>): {
     onExport: () => {
       calls.exports++;
     },
+    onExportLog: () => {
+      calls.logExports++;
+    },
+    onConfirm: (message) => {
+      calls.confirmations.push(message);
+      return confirmResult;
+    },
     onExit: () => {
       calls.exits++;
     },
   });
   panel.render(state);
-  return { root, html: root.innerHTML, calls };
+  return { root, html: root.innerHTML, panel, calls };
 }
 
 /** 在独立 jsdom origin 中运行真实 localStorage 场景，不污染其它用例或宿主环境。 */
@@ -3083,6 +3092,83 @@ export function runStrategicTests(): SuiteResult {
         test.eq(migrated.fleet.fittings.length, 0, '迁移补入合法空模块集合');
         test.eq(storage.getItem(UNIVERSE_STORAGE_KEY), storage.getItem(UNIVERSE_BACKUP_KEY), '迁移后主槽和备份均为当前合法状态');
       });
+      add(test);
+    }
+
+    // V1.0-E.2：危险模块替换必须显式确认，取消不能派发 reducer action。
+    {
+      const test = new Case('E.2 模块替换确认支持取消与确认');
+      let state = prepareOperationalShipyard(2401);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const shipId = state.fleet.ships[0].campaignShipId;
+      state = applyUniverseAction(state, { type: 'fitStrategicModule', campaignShipId: shipId, moduleId: 'auxiliaryTank' });
+
+      const cancelled = renderPanelToRoot(state, false);
+      cancelled.root.querySelector<HTMLButtonElement>(`[data-strategy-fit-ship="${shipId}"][data-strategy-fit-module="surveyArray"]`)!.click();
+      test.eq(cancelled.calls.confirmations.length, 1, '替换现有模块时显示一次确认');
+      test.true_(cancelled.calls.confirmations[0].includes('不会返还资源'), '确认说明替换的不可逆资源影响');
+      test.eq(cancelled.calls.actions, 0, '取消替换不会派发 action');
+
+      const confirmed = renderPanelToRoot(state, true);
+      confirmed.root.querySelector<HTMLButtonElement>(`[data-strategy-fit-ship="${shipId}"][data-strategy-fit-module="surveyArray"]`)!.click();
+      test.eq(confirmed.calls.confirmations.length, 1, '确认替换同样经过确认入口');
+      test.eq(confirmed.calls.actionLog[0]?.type, 'fitStrategicModule', '确认后派发模块替换 action');
+      add(test);
+    }
+
+    // V1.0-E.2：高风险逐舰任务与最终撤离均可取消，确认后才进入 reducer。
+    {
+      const test = new Case('E.2 撤离风险确认支持取消与确认');
+      let state = prepareGate(generateUniverse(2402, '风险确认团'), 100);
+      state.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      state.fleet.fuel = state.fleet.maxFuel;
+      state = applyUniverseAction(state, { type: 'configureExtraction', mode: 'emergency' });
+      const shipId = state.fleet.ships.filter(isShipDeployable)[0].campaignShipId;
+
+      const assignmentCancelled = renderPanelToRoot(state, false);
+      const rearguard = assignmentCancelled.root.querySelector<HTMLButtonElement>(`[data-strategy-extraction-ship="${shipId}"][data-strategy-extraction-role="rearguard"]`)!;
+      test.true_(!rearguard.disabled, '非最后一艘舰可选择断后');
+      rearguard.click();
+      test.true_(assignmentCancelled.calls.confirmations[0].includes('留守断后'), '断后任务显示明确确认');
+      test.eq(assignmentCancelled.calls.actions, 0, '取消断后不派发 action');
+
+      state = applyUniverseAction(state, { type: 'assignExtractionShip', campaignShipId: shipId, role: 'rearguard' });
+      const extractionCancelled = renderPanelToRoot(state, false);
+      const execute = extractionCancelled.root.querySelector<HTMLButtonElement>('#strategy-extract-emergency')!;
+      test.true_(!execute.disabled, '含已知损失的紧急撤离仍可由玩家决定执行');
+      execute.click();
+      test.true_(extractionCancelled.calls.confirmations[0].includes(shipId), '最终确认列出预计损失舰船 ID');
+      test.eq(extractionCancelled.calls.actions, 0, '取消最终撤离不派发 action');
+
+      const extractionConfirmed = renderPanelToRoot(state, true);
+      extractionConfirmed.root.querySelector<HTMLButtonElement>('#strategy-extract-emergency')!.click();
+      test.eq(extractionConfirmed.calls.actionLog[0]?.type, 'extractSector', '确认后派发正式撤离 action');
+      add(test);
+    }
+
+    // V1.0-E.2：锁定原因、日志导出、可访问属性与重渲染焦点恢复使用真实 DOM 验证。
+    {
+      const test = new Case('E.2 真实 DOM 禁用原因、日志导出与焦点恢复');
+      const { state: locked } = lockPendingBattle(2403, ENEMY_BUDGET);
+      const rendered = renderPanelToRoot(locked);
+      const next = rendered.root.querySelector<HTMLButtonElement>('#strategy-next-turn')!;
+      test.true_(next.disabled && next.getAttribute('aria-disabled') === 'true', '锁定按钮同步暴露 disabled 与 aria-disabled');
+      test.true_((next.title ?? '').includes('战斗'), '锁定按钮 title 解释需要先完成战斗');
+      const banner = rendered.root.querySelector<HTMLElement>('.strategy-banner.pending')!;
+      test.eq(banner.getAttribute('role'), 'alert', '行动锁横幅作为实时警报暴露');
+      test.eq(rendered.root.querySelector('.strategic-map-card')?.getAttribute('aria-label'), '战略星图', '星图具备可访问名称');
+
+      const logExport = rendered.root.querySelector<HTMLButtonElement>('#strategy-export-log')!;
+      test.true_(!logExport.disabled, '战斗锁定期间日志导出保持可用');
+      logExport.click();
+      test.eq(rendered.calls.logExports, 1, '日志导出按钮调用独立回调');
+
+      const selectedSystem = rendered.root.querySelector<HTMLButtonElement>('[data-strategy-system]')!;
+      const focusedSystemId = selectedSystem.dataset.strategySystem!;
+      selectedSystem.focus();
+      rendered.panel.render(locked);
+      const active = rendered.root.ownerDocument.activeElement as HTMLElement;
+      test.eq(active.getAttribute('data-strategy-system'), focusedSystemId, '面板重渲染后恢复同一星系按钮焦点');
       add(test);
     }
   });

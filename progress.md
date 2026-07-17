@@ -396,3 +396,12 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - Strategy coverage is now **97 cases**, including real jsdom localStorage behavior, first/second save semantics, side-effect-free legacy inspection, explicit alpha.12 migration, corrupt-primary recovery and diagnostic preservation.
 - Real Chromium reloads a pending recruitment unchanged, interrupts a rendered Three.js strategic battle, restores the exact persisted battle ID and completes its writeback, then corrupts the primary slot and continues through the valid backup. The canonical three-sector/six-battle flow remains green and console-clean.
 - The recovered pending-battle action now wraps within the system card at desktop and narrow widths instead of overflowing its panel. The standard web-game client screenshot was visually inspected.
+
+### V1.0-E.2 strategic release-candidate UX safeguards
+
+- Sector Expedition Code remains `1.0-alpha.13`; E.2 changes presentation and action confirmation only and adds no serialized gameplay field.
+- Disabled strategic actions now expose an explicit unlock reason through native `title`, `disabled` and `aria-disabled` attributes. Pending-decision banners use alert/live-region semantics, map controls have accessible names, and panel rerenders restore the focused stable control.
+- Replacing a paid per-ship module, assigning a ship to rearguard/abandon, or executing a plan with known losses/critical risk requires an explicit confirmation. Cancelling leaves the reducer and persisted state untouched.
+- The strategic toolbar exports a standalone JSON diagnostic log containing expedition identity, status, resources, stable-ID fleet/component state, inherited legacy and the complete strategic event history.
+- Strategy coverage is now **100 cases**. New jsdom cases verify cancel/confirm dispatch, loss confirmation content, lock reasons, live-region/map semantics, independent log export and focus restoration.
+- Real Chromium independently dismisses and accepts module replacement, verifies the exact fitting state, downloads and parses the JSON log, checks pending-battle lock reasons, accepts dangerous rearguard/extraction prompts, then completes the canonical three-sector/six-battle victory flow without console errors. E.2 and interrupted-battle screenshots were visually inspected.
