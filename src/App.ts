@@ -39,7 +39,7 @@ import {
   strategicTransportStatus,
   toPersistentFleet
 } from './strategy/universeRules';
-import { decodeUniverse, encodeUniverse, loadUniverse, saveUniverse } from './strategy/universePersistence';
+import { decodeUniverse, encodeUniverse, inspectUniverseSave, loadUniverse, saveUniverse } from './strategy/universePersistence';
 import type { UniverseAction, UniverseState } from './strategy/universeTypes';
 
 export class App {
@@ -169,7 +169,7 @@ export class App {
       onStrategicImport: (code) => this.importStrategicUniverse(code),
       hasStrategicSave: () => {
         try {
-          return !!loadUniverse();
+          return inspectUniverseSave().canContinue;
         } catch {
           return false;
         }
@@ -207,6 +207,14 @@ export class App {
         finalTurn: this.universe.crisis.finalTurn,
         status: this.universe.status,
         pressure: this.universe.crisis.pressure,
+        pendingBattle: this.universe.pendingBattle
+          ? {
+              battleId: this.universe.pendingBattle.battleId,
+              systemId: this.universe.pendingBattle.systemId,
+              battleSeed: this.universe.pendingBattle.battleSeed,
+              source: this.universe.pendingBattle.source
+            }
+          : null,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
         localEntities: this.universe.entities

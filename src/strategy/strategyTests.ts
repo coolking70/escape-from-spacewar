@@ -1,6 +1,18 @@
 import { Case, runSuite, SuiteResult } from '../sim/testHarness';
 import { generateUniverse, hash32 } from './universeGenerator';
-import { decodeUniverse, encodeUniverse, legacyAbstractPowerToCoreBudget, validateUniverseState } from './universePersistence';
+import {
+  UNIVERSE_BACKUP_KEY,
+  UNIVERSE_CORRUPT_KEY,
+  UNIVERSE_STORAGE_KEY,
+  clearUniverse,
+  decodeUniverse,
+  encodeUniverse,
+  inspectUniverseSave,
+  legacyAbstractPowerToCoreBudget,
+  loadUniverse,
+  saveUniverse,
+  validateUniverseState
+} from './universePersistence';
 import {
   FACILITY_DEFINITIONS,
   RESEARCH_DEFINITIONS,
@@ -364,6 +376,23 @@ function renderPanelToRoot(state: ReturnType<typeof generateUniverse>): {
   });
   panel.render(state);
   return { root, html: root.innerHTML, calls };
+}
+
+/** 在独立 jsdom origin 中运行真实 localStorage 场景，不污染其它用例或宿主环境。 */
+function withUniverseStorage(run: (storage: Storage) => void): void {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://spacewar.test/' });
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: dom.window.localStorage
+  });
+  try {
+    run(dom.window.localStorage);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+    else delete (globalThis as { localStorage?: Storage }).localStorage;
+    dom.window.close();
+  }
 }
 
 /** 真实同量纲敌方预算（>= 最低合法舰船成本），用于战斗写回测试，保证 enemyPowerBefore 与生成的敌舰队成本一致。 */
@@ -2998,6 +3027,62 @@ export function runStrategicTests(): SuiteResult {
       if (rendered.calls.actionLog[0]?.type === 'fitStrategicModule') {
         test.eq(rendered.calls.actionLog[0].campaignShipId, shipId, '模块 action 携带稳定舰船 ID');
       }
+      add(test);
+    }
+
+    // V1.0-E.1：主菜单检查无写入副作用，保存保留上一合法状态，主存档损坏时可恢复且保留原始损坏文本。
+    {
+      const test = new Case('E.1 本地存档探测、备份与损坏恢复');
+      withUniverseStorage((storage) => {
+        test.eq(inspectUniverseSave().status, 'missing', '空存储明确报告 missing');
+        const first = generateUniverse(2301, '备份恢复团');
+        saveUniverse(first);
+        test.eq(inspectUniverseSave().status, 'ready', '首次合法保存可继续');
+        test.eq(storage.getItem(UNIVERSE_STORAGE_KEY), storage.getItem(UNIVERSE_BACKUP_KEY), '首次保存初始化同内容有效备份');
+
+        const selected = first.systems.find((system) => system.id !== first.selectedSystemId)!.id;
+        const second = applyUniverseAction(first, { type: 'selectSystem', systemId: selected });
+        saveUniverse(second);
+        test.eq(JSON.parse(storage.getItem(UNIVERSE_BACKUP_KEY)!).selectedSystemId, first.selectedSystemId, '第二次保存保留上一合法状态');
+        const corruptRaw = '{"version":"1.0-alpha.13","broken":';
+        storage.setItem(UNIVERSE_STORAGE_KEY, corruptRaw);
+        const inspection = inspectUniverseSave();
+        test.eq(inspection.status, 'recoverable', '主存档损坏但备份有效时报告 recoverable');
+        test.eq(storage.getItem(UNIVERSE_STORAGE_KEY), corruptRaw, '无副作用检查不会改写损坏主存档');
+
+        const recovered = loadUniverse()!;
+        test.eq(recovered.selectedSystemId, first.selectedSystemId, '正式载入恢复上一合法状态');
+        test.true_(validateUniverseState(recovered), '恢复状态通过深层校验');
+        test.eq(storage.getItem(UNIVERSE_CORRUPT_KEY), corruptRaw, '恢复前保留损坏原文供诊断');
+        test.eq(JSON.parse(storage.getItem(UNIVERSE_STORAGE_KEY)!).version, SECTOR_EXPEDITION_VERSION, '恢复后主槽写回当前合法版本');
+
+        clearUniverse();
+        test.eq(storage.length, 0, '清除存档同时删除主槽、备份和损坏诊断槽');
+      });
+      add(test);
+    }
+
+    // V1.0-E.1：旧版探测只报告可迁移；玩家明确继续后才原位升级并建立当前格式备份。
+    {
+      const test = new Case('E.1 旧版存档无副作用探测与明确载入迁移');
+      withUniverseStorage((storage) => {
+        const current = generateUniverse(2302, '迁移恢复团');
+        const alpha12: any = JSON.parse(JSON.stringify(current));
+        alpha12.version = '1.0-alpha.12';
+        delete alpha12.fleet.fittings;
+        const raw = JSON.stringify(alpha12);
+        storage.setItem(UNIVERSE_STORAGE_KEY, raw);
+        const inspection = inspectUniverseSave();
+        test.eq(inspection.status, 'ready', '受支持旧版本可继续');
+        test.true_(inspection.message.includes('可迁移'), '探测明确说明旧版可迁移');
+        test.eq(storage.getItem(UNIVERSE_STORAGE_KEY), raw, '菜单探测不提前迁移旧存档');
+        test.eq(storage.getItem(UNIVERSE_BACKUP_KEY), null, '菜单探测不凭空写入备份');
+
+        const migrated = loadUniverse()!;
+        test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, '明确继续后迁移到当前版本');
+        test.eq(migrated.fleet.fittings.length, 0, '迁移补入合法空模块集合');
+        test.eq(storage.getItem(UNIVERSE_STORAGE_KEY), storage.getItem(UNIVERSE_BACKUP_KEY), '迁移后主槽和备份均为当前合法状态');
+      });
       add(test);
     }
   });

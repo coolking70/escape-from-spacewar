@@ -17,7 +17,8 @@
 > V1.0-D.2 完成逐舰撤离清单：稳定/紧急撤离以 `campaignShipId` 精确覆盖舰队，拖曳、断后、放弃、携带资源和风险由同一纯计划预览并结算；Sector Expedition Code 升级为 `1.0-alpha.11`，策略测试套件扩展至 88 例。
 > V1.0-D.3 统一三个永久蓝图的战略效果和跨域激活边界，并以 `maxFuel` 派生不变量、正式 reducer 扣费及真实 Chromium 取得/激活流程闭合；Sector Expedition Code 升级为 `1.0-alpha.12`，策略测试套件扩展至 91 例。
 > V1.0-D.4 在冻结 core-v4 的边界内完成以 `campaignShipId` 绑定的逐舰战略模块槽、正式资源扣费、跨域继承和损失清理；Sector Expedition Code 升级为 `1.0-alpha.13`，策略测试套件扩展至 95 例。
-> 当前实现与进度请以 `progress.md` 的 V1.0-D.4 小节为准。
+> V1.0-E.1 在不升级存档结构的前提下完成无副作用迁移探测、上一合法状态备份、损坏主槽恢复，以及招募/真实战斗刷新恢复闭环；策略测试套件扩展至 97 例。
+> 当前实现与进度请以 `progress.md` 的 V1.0-E.1 小节为准。
 
 ## Purpose
 

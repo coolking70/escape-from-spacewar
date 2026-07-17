@@ -387,3 +387,12 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - Strategy coverage is now **95 cases**, including fit/replace/remove deductions, derived fuel/save round trips, survey and repair effects, extraction inheritance, loss cleanup, alpha.12 migration, malformed references, jsdom action dispatch, identical fitted/unfitted BattleState creation and genuine simulator writeback/code round trips.
 - Real Chromium independently builds the main-base shipyard, fits an Auxiliary Tank to an exact stable ship ID, verifies resource and max-fuel changes, removes it and confirms restoration. The canonical three-sector/six-battle release flow and the standard web-game client remain visually and console clean.
 - D.4 closes the planned D-series sequence without changing frozen core-v4 combat rules, balance, state semantics or golden replays. Multiple player fleets, combat-affecting equipment, module technology, base upgrade trees, diplomacy, markets, population and real-time movement remain future scope.
+
+### V1.0-E.1 save migration and interruption recovery
+
+- Sector Expedition Code remains `1.0-alpha.13`: E.1 adds no serialized gameplay field. A single side-effect-free resolver now powers current-save validation and every supported alpha.1–alpha.12 migration path.
+- Menu availability inspection no longer migrates or rewrites a save merely to decide whether Continue is enabled. Explicit load performs the migration and stores the current-format result.
+- Every legal save first preserves the previous valid state in a dedicated backup slot. If the primary slot is malformed or incompatible but the backup is valid, Continue remains available, load restores the backup, and the corrupt primary text is retained in a diagnostic slot. Clear removes all three slots.
+- Strategy coverage is now **97 cases**, including real jsdom localStorage behavior, first/second save semantics, side-effect-free legacy inspection, explicit alpha.12 migration, corrupt-primary recovery and diagnostic preservation.
+- Real Chromium reloads a pending recruitment unchanged, interrupts a rendered Three.js strategic battle, restores the exact persisted battle ID and completes its writeback, then corrupts the primary slot and continues through the valid backup. The canonical three-sector/six-battle flow remains green and console-clean.
+- The recovered pending-battle action now wraps within the system card at desktop and narrow widths instead of overflowing its panel. The standard web-game client screenshot was visually inspected.

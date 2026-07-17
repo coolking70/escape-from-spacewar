@@ -338,6 +338,64 @@ try {
   );
   await battlePage.close();
 
+  // E.1 独立浏览器闭环：招募决策与真实战斗 pending 均可跨刷新恢复；战斗中刷新按同 seed 确定性重开。
+  const recoveryContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const recoveryPage = await recoveryContext.newPage();
+  const recoveryErrors = [];
+  recoveryPage.on('console', (message) => {
+    if (message.type() === 'error') recoveryErrors.push(`console: ${message.text()}`);
+  });
+  recoveryPage.on('pageerror', (error) => recoveryErrors.push(`page: ${String(error)}`));
+  await recoveryPage.addInitScript(() => { Date.now = () => 2036; });
+  await recoveryPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await recoveryPage.locator('#cm-strategy-new').click();
+  await recoveryPage.locator('[data-strategy-base]').click();
+  await recoveryPage.locator('#strategy-open-recruitment').click();
+  const recruitmentBeforeReload = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).commander.pendingRecruitment;
+  assert.equal(recruitmentBeforeReload.candidates.length, 2, 'E.1 recovery fixture must create a real pending recruitment');
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 saved pending recruitment must keep Continue enabled after reload');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recruitmentAfterReload = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).commander.pendingRecruitment;
+  assert.deepEqual(recruitmentAfterReload, recruitmentBeforeReload, 'E.1 pending recruitment must survive reload exactly');
+  await recoveryPage.locator('#strategy-recruit-decline').click();
+  for (let turn = 0; turn < 4; turn++) await recoveryPage.locator('#strategy-next-turn').click();
+  assert.equal(await recoveryPage.locator('#strategy-engage').isDisabled(), false, 'E.1 real enemy contact must be available before interruption test');
+  await recoveryPage.locator('#strategy-engage').click();
+  await recoveryPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+  const pendingBeforeReload = await recoveryPage.evaluate(() => {
+    const raw = localStorage.getItem('spacewar.strategic-universe.current.v1');
+    return raw ? JSON.parse(raw).pendingBattle : null;
+  });
+  assert.ok(pendingBeforeReload?.battleId, 'E.1 entering battle must persist the real pending battle before rendering');
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 interrupted battle must remain resumable from the menu');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recoveredPending = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).pendingBattle;
+  assert.equal(recoveredPending.battleId, pendingBeforeReload.battleId, 'E.1 interrupted battle must restore the exact battleId');
+  assert.ok((await recoveryPage.locator('#strategy-engage').innerText()).startsWith('继续'), 'E.1 restored map must expose explicit continue-battle action');
+  if (screenshotDir) await recoveryPage.screenshot({ path: path.join(screenshotDir, 'e1-interrupted-battle-recovery.png'), fullPage: true });
+  await recoveryPage.locator('#strategy-engage').click();
+  await recoveryPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+  await recoveryPage.locator('[data-speed="4"]').click();
+  await recoveryPage.locator('#strategy-root').waitFor({ state: 'visible', timeout: 20000 });
+  assert.equal(JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).pendingBattle, null, 'E.1 completed resumed battle must clear pending state');
+
+  // 损坏主槽但保留有效备份时，菜单仍允许继续并由正式 loadUniverse 恢复。
+  const backupBeforeCorruption = await recoveryPage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.backup.v1'));
+  assert.ok(backupBeforeCorruption, 'E.1 normal play must maintain a valid backup slot');
+  const corruptRaw = '{"version":"1.0-alpha.13","broken":';
+  await recoveryPage.evaluate((value) => localStorage.setItem('spacewar.strategic-universe.current.v1', value), corruptRaw);
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 valid backup must keep Continue enabled when primary is corrupt');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recoveredFromBackup = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text()));
+  assert.equal(recoveredFromBackup.screen, 'strategic-universe', 'E.1 backup recovery must return to the strategic screen');
+  assert.equal(await recoveryPage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.corrupt.v1')), corruptRaw, 'E.1 backup recovery must retain corrupt primary text for diagnosis');
+  assert.deepEqual(recoveryErrors, [], `E.1 recovery browser loop must keep the console clean:\n${recoveryErrors.join('\n')}`);
+  console.log(`[PASS] E.1 browser recovery: recruitment=preserved, battle=${pendingBeforeReload.battleId}, corrupt-primary=backup-restored`);
+  await recoveryContext.close();
+
   // C.5 独立浏览器闭环：所有操作均点击正式 UI；六场战斗均进入现有 Three.js 场景并以 4x 实时完成。
   const releasePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const releaseErrors = [];
