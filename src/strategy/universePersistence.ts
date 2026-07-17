@@ -15,6 +15,7 @@ import {
 } from '../campaign/commander/commanderRecruitment';
 import { isStrategicSuccessionStateConsistent } from './universeCommander';
 import { validateStrategicExtractionManifest } from './extractionManifest';
+import { strategicMaxFuel } from './strategicBlueprints';
 import {
   SECTOR_EXPEDITION_VERSION,
   type SectorExpeditionVersion
@@ -573,6 +574,19 @@ function migrateAlpha10(raw: any): UniverseState | null {
   migrated.log.unshift({ turn: 0, text: 'alpha.10 星域远征已接入按 campaignShipId 精确绑定的逐舰撤离清单。' });
   return migrated as UniverseState;
 }
+
+/** alpha.11 → alpha.12：不改变玩家决策，只把既有永久蓝图接到统一战略效果权威。 */
+function migrateAlpha11(raw: any): UniverseState | null {
+  if (!raw || raw.version !== '1.0-alpha.11' || !nonNegativeInteger(raw.seed)) return null;
+  const migrated: any = JSON.parse(JSON.stringify(raw));
+  migrated.version = SECTOR_EXPEDITION_VERSION;
+  const expectedMaxFuel = strategicMaxFuel(migrated.faction?.legacy?.blueprints ?? []);
+  migrated.fleet.maxFuel = expectedMaxFuel;
+  migrated.fleet.fuel = Math.min(migrated.fleet.fuel, expectedMaxFuel);
+  if (!validateUniverseState(migrated)) return null;
+  migrated.log.unshift({ turn: 0, text: 'alpha.11 星域远征已接入统一永久蓝图战略效果；core-v4 战斗规则保持冻结。' });
+  return migrated as UniverseState;
+}
 export function validateUniverseState(value: unknown): value is UniverseState {
   const state = value as UniverseState;
   // 安全顺序：任何缺失/畸形结构都必须安全返回 false，绝不抛出（覆盖 undefined / null / {} / {version} / {fleet:null} / {fleet:{}}）。
@@ -834,7 +848,7 @@ export function validateUniverseState(value: unknown): value is UniverseState {
 
   if (
     !state.fleet.id || !state.fleet.name || !nonNegativeInteger(state.fleet.fuel) ||
-    !positiveInteger(state.fleet.maxFuel) || state.fleet.fuel > state.fleet.maxFuel ||
+    !positiveInteger(state.fleet.maxFuel) || state.fleet.maxFuel !== strategicMaxFuel(state.faction.legacy.blueprints) || state.fleet.fuel > state.fleet.maxFuel ||
     !['line', 'wedge', 'wall', 'swarm', 'random'].includes(state.fleet.formation) ||
     !['balanced', 'aggressive', 'defensive', 'kite', 'focusFire', 'antiCapital', 'screen'].includes(state.fleet.doctrine) ||
     !validateStrategicShips(state.fleet.ships)
@@ -894,6 +908,10 @@ export function decodeUniverse(code: string): UniverseState {
   }
   if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.10') {
     const migrated = migrateAlpha10(envelope.state);
+    if (migrated) return migrated;
+  }
+  if (envelope?.type === 'spacewar-sector-expedition' && envelope?.v === '1.0-alpha.11') {
+    const migrated = migrateAlpha11(envelope.state);
     if (migrated) return migrated;
   }
   if (
@@ -965,6 +983,13 @@ export function loadUniverse(): UniverseState | null {
     }
     if (parsed && parsed.version === '1.0-alpha.10') {
       const migrated = migrateAlpha10(parsed);
+      if (migrated) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+      }
+    }
+    if (parsed && parsed.version === '1.0-alpha.11') {
+      const migrated = migrateAlpha11(parsed);
       if (migrated) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
         return migrated;

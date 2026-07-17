@@ -62,6 +62,12 @@ import {
   extractionManifestWithRole
 } from './extractionManifest';
 import type { ExtractionAssignmentRole, StrategicExtractionManifest } from './universeTypes';
+import {
+  STRATEGIC_BLUEPRINT_EFFECTS,
+  applyStrategicMineralDiscount,
+  strategicMaxFuel,
+  strategicTravelFuelDiscount
+} from './strategicBlueprints';
 
 export interface FacilityDefinition {
   label: string;
@@ -85,9 +91,9 @@ export const CRISIS_PHASE_LABEL: Record<CrisisPhase, string> = {
 };
 
 export const BLUEPRINT_LABEL: Record<PermanentBlueprintId, string> = {
-  fieldLogistics: '远征后勤核心',
-  hardenedBulkheads: '强化舰体蓝图',
-  compactFoundry: '紧凑工业核心'
+  fieldLogistics: STRATEGIC_BLUEPRINT_EFFECTS.fieldLogistics.label,
+  hardenedBulkheads: STRATEGIC_BLUEPRINT_EFFECTS.hardenedBulkheads.label,
+  compactFoundry: STRATEGIC_BLUEPRINT_EFFECTS.compactFoundry.label
 };
 
 export const FACILITY_DEFINITIONS: Record<FacilityType, FacilityDefinition> = {
@@ -301,13 +307,17 @@ export function shipProductionTurns(shipClass: ShipClass, variant: ShipVariant):
   return Math.max(2, Math.ceil(campaignShipCost(shipClass, variant) / 100) + 1);
 }
 
-function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType): Partial<StrategicResources> {
+export function effectiveFacilityCost(state: UniverseState, facilityType: FacilityType): Partial<StrategicResources> {
   const definition = FACILITY_DEFINITIONS[facilityType];
-  const discount = state.faction.legacy.blueprints.includes('compactFoundry') ? 4 : 0;
-  return {
-    ...definition.cost,
-    minerals: Math.max(0, (definition.cost.minerals ?? 0) - discount)
-  };
+  return applyStrategicMineralDiscount(definition.cost, state.faction.legacy.blueprints);
+}
+
+export function effectiveShipProductionCost(
+  state: UniverseState,
+  shipClass: ShipClass,
+  variant: ShipVariant
+): StrategicResources {
+  return applyStrategicMineralDiscount(shipProductionCost(shipClass, variant), state.faction.legacy.blueprints);
 }
 
 // ---------------- 真实逐舰舰队派生量（不再依赖抽象计数字段） ----------------
@@ -669,7 +679,7 @@ export function advanceUniverseTurn(state: UniverseState, reason = '战略时间
 
 export function travelFuelCost(state: UniverseState): number {
   const local = state.faction.localResearch.includes('routeAnalysis') ? 1 : 0;
-  const legacy = state.faction.legacy.blueprints.includes('fieldLogistics') ? 1 : 0;
+  const legacy = strategicTravelFuelDiscount(state.faction.legacy.blueprints);
   return Math.max(1, 2 - local - legacy);
 }
 
@@ -717,7 +727,7 @@ export function canQueueShipProduction(state: UniverseState, shipClass: ShipClas
   if (facilityCount(base, 'shipyard') !== 1) return false;
   if ((base.shipProductionQueue ?? []).length >= SHIP_PRODUCTION_QUEUE_LIMIT) return false;
   if (!validateFleet([{ shipClass, variant, count: 1 }]).valid) return false;
-  return hasResources(state.faction.resources, shipProductionCost(shipClass, variant));
+  return hasResources(state.faction.resources, effectiveShipProductionCost(state, shipClass, variant));
 }
 
 export function canQueueResearch(state: UniverseState, projectId: ResearchProjectId): boolean {
@@ -838,7 +848,7 @@ function queueShipProduction(state: UniverseState, shipClass: ShipClass, variant
   const base = baseEntity(next)!;
   base.shipProductionQueue = base.shipProductionQueue ?? [];
   const queueIndex = base.shipProductionQueue.length;
-  const cost = shipProductionCost(shipClass, variant);
+  const cost = effectiveShipProductionCost(next, shipClass, variant);
   spendResources(next.faction.resources, cost);
   const reduction = next.faction.localResearch.includes('rapidFabrication') ? 1 : 0;
   const turns = Math.max(1, shipProductionTurns(shipClass, variant) - reduction);
@@ -1228,6 +1238,8 @@ function extractSector(state: UniverseState, mode: ExtractionMode, rearguardShip
       componentHp: ship.componentHp ? [...ship.componentHp] : undefined
     }));
     next.faction.legacy = legacy;
+    next.fleet.maxFuel = strategicMaxFuel(legacy.blueprints);
+    next.fleet.fuel = Math.min(next.fleet.fuel, next.fleet.maxFuel);
     appendLog(
       next,
       `${mode === 'stable' ? '稳定' : '紧急'}撤离完成；穿越全部 ${next.targetSectorCount} 个星域，舰船损失 ${totalLost}${lostIds.length ? `（${lostIds.join(', ')}）` : ''}，燃料消耗 ${plan.fuelCost}、补给消耗 ${plan.suppliesCost}。`

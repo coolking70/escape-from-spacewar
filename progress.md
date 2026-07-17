@@ -128,7 +128,7 @@ Strategic combat is now a real `core-v4` battle: `engageEnemy` only locks a `Pen
 ### Persistence
 
 - New code type: `spacewar-sector-expedition`.
-- Current version: `1.0-alpha.11` (D.1 production plus a per-ship extraction manifest keyed by stable `campaignShipId`). `1.0-alpha.2` through `1.0-alpha.10` are migrated deterministically in place.
+- Current version: `1.0-alpha.12` (D.2 extraction manifests plus unified, cross-sector permanent blueprint effects). `1.0-alpha.2` through `1.0-alpha.11` are migrated deterministically in place.
 - Deep validation covers graph references, enemy control, mobile fleets, sieges, facilities, queues, crisis, gate-defense state, fleet state (per-ship) and inherited assets.
 - `1.0-alpha.2` abstract fleets migrate deterministically into real starter ships (abstract combat power converted to the core-v4 value, disabled flags preserved); `1.0-alpha.3` enemy power is rebuilt from the deterministic enemy fleet cost; `1.0-alpha.4` escaped semantics and missing `deployed` / `towed` fields are normalized (`escaped` → `false`, `deployed` → `true`, `towed` → `false`, `strategicFleetCounts.operational` asserted to equal `activeShips(...).length`); `1.0-alpha.1` resets into a fresh first strategic sector.
 - The old Campaign Code and the new Sector Expedition Code remain separate.
@@ -368,3 +368,13 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - The strategy suite now has **88 cases**, including reordered fleet writeback, exact survivor/loss IDs, towing costs and component inheritance, malformed-manifest rejection, alpha.10 migration and jsdom native button behavior. The existing 65-seed/three-sector matrix remains green.
 - Real Chromium uses the visible D.2 controls in the canonical three-sector release flow, binds a rearguard role to a concrete ship ID, verifies the authoritative loss preview, resets the manifest and completes all six Three.js/core-v4 battles in victory with no console errors. Screenshots and the standard web-game client were visually inspected.
 - D.2 does not modify core-v4 battle rules, costs, AI, state semantics or golden replays. Permanent blueprint effects and module fitting remain separate later slices; multiple player fleets, diplomacy, markets, population and real-time strategic movement remain out of scope.
+
+### V1.0-D.3 permanent blueprint effects
+
+- Sector Expedition Code advances to `1.0-alpha.12`. Alpha.11 saves preserve every player decision and normalize `maxFuel` from inherited blueprints. Current saves reject a contradictory blueprint/max-fuel pair instead of silently accepting stale derived state.
+- `strategicBlueprints.ts` is the single strategic authority. Field Logistics gives +2 maximum fuel and -1 travel fuel (floor 1); Compact Foundry reduces facility and ship-production mineral costs by 4 (floor 0); Hardened Bulkheads prevents only the deterministic high-pressure emergency-extraction casualty.
+- Recovered blueprints remain inert and are labelled pending until a successful gate crossing. The next sector activates them through `legacy.blueprints`; final-victory extraction also normalizes derived fuel state so the terminal save remains valid.
+- Effective costs shown by the UI are the same values consumed by `can*` predicates and formal reducers. Hardened Bulkheads explicitly does not alter core-v4 hull definitions, component maximum HP, battle values or damage semantics.
+- Strategy coverage is now **91 cases**, including each isolated effect, non-activation before extraction, official facility/production deductions, all-blueprint inheritance, final-victory activation, alpha.11 migration, malformed derived-state rejection and jsdom effect text.
+- Real Chromium forks a genuine post-gate-defense save, surveys the actual relic through visible controls, verifies pending status, crosses the gate, checks the same blueprint ID is active with the correct derived effect, and then separately completes the unchanged canonical three-sector/six-battle release flow. The screenshot and standard game client are visually inspected and console-clean.
+- D.3 remains strategic-only. Multiple player fleets, core-v4 stat modification, new hulls/variants, diplomacy, markets, population and real-time movement remain out of scope. D.4 will evaluate a module-fitting slice under the same frozen-core boundary.

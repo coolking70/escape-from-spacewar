@@ -22,6 +22,8 @@ import {
   canRepairFleet,
   canRepairShip,
   currentStrategicExtractionPlan,
+  effectiveFacilityCost,
+  effectiveShipProductionCost,
   canTreatStrategicCommander,
   crisisPhaseForTurn,
   ownedStrategicStations,
@@ -80,6 +82,7 @@ import {
   strategicPressurePerTurn
 } from './universePacing';
 import { runStrategicThreeSectorPlaythrough } from './strategicPlaythrough';
+import { STRATEGIC_BLUEPRINT_EFFECTS, strategicMaxFuel } from './strategicBlueprints';
 
 type Ship = BattleState['ships'][number];
 
@@ -2770,6 +2773,97 @@ export function runStrategicTests(): SuiteResult {
       const stableRendered = renderPanelToRoot(stable);
       test.eq(stableRendered.root.querySelectorAll('[data-strategy-extraction-role="rearguard"]').length, 0, '稳定规划不渲染断后任务');
       test.true_(stableRendered.root.querySelector<HTMLButtonElement>('#strategy-extract-stable')?.disabled === false, '合法稳定清单可执行');
+      add(test);
+    }
+
+    // V1.0-D.3：三个永久蓝图通过统一战略派生函数生效，当前星域新获蓝图不会提前激活。
+    {
+      const test = new Case('D.3 永久蓝图效果权威与跨域激活边界');
+      const baseline = generateUniverse(2101, '蓝图权威团');
+      const baseFacility = FACILITY_DEFINITIONS.miningArray.cost.minerals ?? 0;
+      const baseShip = shipProductionCost('Fighter', 'standard');
+      test.eq(travelFuelCost(baseline), 2, '无后勤蓝图时基础航行消耗为 2');
+      test.eq(effectiveFacilityCost(baseline, 'miningArray').minerals, baseFacility, '无工业蓝图时设施矿物成本不变');
+      test.eq(effectiveShipProductionCost(baseline, 'Fighter', 'standard').minerals, baseShip.minerals, '无工业蓝图时舰船生产矿物成本不变');
+
+      const active = JSON.parse(JSON.stringify(baseline)) as typeof baseline;
+      active.faction.legacy.blueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      active.fleet.maxFuel = strategicMaxFuel(active.faction.legacy.blueprints);
+      test.eq(active.fleet.maxFuel, 10, '远征后勤核心将最大燃料提高到 10');
+      test.eq(travelFuelCost(active), 1, '远征后勤核心将航行消耗降低 1 且保留最低值');
+      test.eq(effectiveFacilityCost(active, 'miningArray').minerals, baseFacility - 4, '紧凑工业核心降低设施矿物成本 4');
+      test.eq(effectiveShipProductionCost(active, 'Fighter', 'standard').minerals, baseShip.minerals - 4, '紧凑工业核心降低舰船生产矿物成本 4');
+      let facilityState = establishStartingBase(generateUniverse(2105, '工业设施结算团'));
+      facilityState.faction.legacy.blueprints = ['compactFoundry'];
+      facilityState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const facilityMinerals = facilityState.faction.resources.minerals;
+      facilityState = applyUniverseAction(facilityState, { type: 'queueConstruction', facilityType: 'miningArray' });
+      test.eq(facilityState.faction.resources.minerals, facilityMinerals - (baseFacility - 4), '正式设施 reducer 按工业蓝图折扣扣费');
+      let productionState = prepareOperationalShipyard(2106);
+      productionState.faction.legacy.blueprints = ['compactFoundry'];
+      productionState.faction.resources = { minerals: 100, energy: 100, science: 100, supplies: 100 };
+      const productionMinerals = productionState.faction.resources.minerals;
+      productionState = applyUniverseAction(productionState, { type: 'queueShipProduction', shipClass: 'Fighter', variant: 'standard' });
+      test.eq(productionState.faction.resources.minerals, productionMinerals - (baseShip.minerals - 4), '正式舰船生产 reducer 按工业蓝图折扣扣费');
+      const hardenedReady = prepareGate(active, 100);
+      hardenedReady.crisis.pressure = 85;
+      test.eq(currentStrategicExtractionPlan(hardenedReady).pressureLossShipIds.length, 0, '强化舰体蓝图免除高压紧急撤离额外舰损');
+
+      const recoveredOnly = prepareGate(generateUniverse(2102, '待激活蓝图团'), 100);
+      recoveredOnly.faction.recoveredBlueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      recoveredOnly.crisis.pressure = 85;
+      test.eq(recoveredOnly.fleet.maxFuel, 8, '本星域新获后勤蓝图在撤离前不提高燃料上限');
+      test.eq(effectiveFacilityCost(recoveredOnly, 'miningArray').minerals, baseFacility, '本星域新获工业蓝图在撤离前不打折');
+      test.true_(currentStrategicExtractionPlan(recoveredOnly).pressureLossShipIds.length > 0, '本星域新获强化蓝图在撤离前不消除高压风险');
+      add(test);
+    }
+
+    // V1.0-D.3：蓝图经真实撤离进入 legacy 后立即在下一星域生效并可保存往返。
+    {
+      const test = new Case('D.3 永久蓝图撤离继承与保存闭环');
+      let state = prepareGate(generateUniverse(2103, '蓝图继承团'), 100);
+      state.faction.recoveredBlueprints = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
+      const coreDefinitionBefore = JSON.stringify(getShipDef('Fighter', 'standard').def);
+      const next = applyUniverseAction(state, { type: 'extractSector', mode: 'stable' });
+      test.eq(next.sectorIndex, 2, '携带蓝图后进入下一星域');
+      test.eq(JSON.stringify([...next.faction.legacy.blueprints].sort()), JSON.stringify(['compactFoundry', 'fieldLogistics', 'hardenedBulkheads']), '三个蓝图进入长期继承集合');
+      test.eq(next.faction.recoveredBlueprints.length, 0, '下一星域清空本地待激活蓝图');
+      test.eq(next.fleet.maxFuel, 10, '后勤蓝图在下一星域立即派生最大燃料');
+      test.eq(travelFuelCost(next), 1, '继承后勤蓝图立即影响航行成本');
+      test.eq(effectiveFacilityCost(next, 'miningArray').minerals, (FACILITY_DEFINITIONS.miningArray.cost.minerals ?? 0) - 4, '继承工业蓝图立即影响设施成本');
+      test.eq(JSON.stringify(getShipDef('Fighter', 'standard').def), coreDefinitionBefore, '强化蓝图不会修改冻结的 core-v4 舰船定义');
+      test.true_(validateUniverseState(next), '蓝图生效后的下一星域通过深层校验');
+      test.eq(encodeUniverse(decodeUniverse(encodeUniverse(next))), encodeUniverse(next), '蓝图效果状态 Campaign Code 稳定往返');
+      const finalReady = prepareGate(generateUniverse(2107, '终局蓝图继承团'), 100);
+      finalReady.sectorIndex = finalReady.targetSectorCount;
+      finalReady.faction.recoveredBlueprints = ['fieldLogistics'];
+      const victory = applyUniverseAction(finalReady, { type: 'extractSector', mode: 'stable' });
+      test.eq(victory.status, 'victory', '最终星域撤离进入胜利');
+      test.eq(victory.fleet.maxFuel, 10, '终局新激活后勤蓝图同步规范燃料上限');
+      test.true_(validateUniverseState(victory), '带终局新蓝图的胜利状态仍可保存');
+      add(test);
+    }
+
+    // V1.0-D.3：alpha.11 迁移规范燃料派生量，当前格式拒绝蓝图与 maxFuel 矛盾并展示明确说明。
+    {
+      const test = new Case('D.3 alpha.11 迁移、派生不变量与真实 DOM 说明');
+      const current = generateUniverse(2104, '蓝图迁移团');
+      const alpha11: any = JSON.parse(JSON.stringify(current));
+      alpha11.version = '1.0-alpha.11';
+      alpha11.faction.legacy.blueprints = ['fieldLogistics'];
+      alpha11.fleet.maxFuel = 8;
+      alpha11.fleet.fuel = 8;
+      const migrated = decodeUniverse(b64urlEncode({ type: 'spacewar-sector-expedition', v: '1.0-alpha.11', state: alpha11 }));
+      test.eq(migrated.version, SECTOR_EXPEDITION_VERSION, 'alpha.11 迁移到 alpha.12');
+      test.eq(migrated.fleet.maxFuel, 10, '迁移按已继承后勤蓝图规范最大燃料');
+      test.true_(validateUniverseState(migrated), '规范后的迁移结果有效');
+
+      const contradictory = JSON.parse(JSON.stringify(migrated)) as typeof migrated;
+      contradictory.fleet.maxFuel = 8;
+      test.true_(!validateUniverseState(contradictory), '当前格式拒绝永久蓝图与最大燃料矛盾');
+      const rendered = renderPanelToRoot(migrated);
+      const blueprint = rendered.root.querySelector<HTMLElement>('[data-strategy-blueprint="fieldLogistics"]');
+      test.true_(!!blueprint && blueprint.textContent?.includes(STRATEGIC_BLUEPRINT_EFFECTS.fieldLogistics.description) === true, '真实 DOM 显示永久蓝图的准确战略效果');
       add(test);
     }
   });

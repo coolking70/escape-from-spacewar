@@ -15,6 +15,7 @@ import type {
   UniverseState
 } from './universeTypes';
 import { strategicMobileEnemyBudget, strategicPressureAtStart } from './universePacing';
+import { strategicMaxFuel } from './strategicBlueprints';
 
 const STAR_TYPES: StarType[] = ['yellowDwarf', 'redDwarf', 'blueGiant', 'whiteDwarf', 'binary'];
 const SYSTEM_PREFIX = ['阿尔法', '塞勒涅', '奥尔特', '赫利俄斯', '织女', '卡戎', '天苑', '伊卡洛斯', '苍穹', '远岬'];
@@ -274,7 +275,7 @@ export function generateUniverse(
       name: '远征舰队',
       systemId: start.id,
       fuel: 8,
-      maxFuel: legacy.blueprints.includes('fieldLogistics') ? 10 : 8,
+      maxFuel: strategicMaxFuel(legacy.blueprints),
       ships: inherited.ships.map((ship) => ({
         ...ship,
         componentHp: ship.componentHp ? [...ship.componentHp] : undefined

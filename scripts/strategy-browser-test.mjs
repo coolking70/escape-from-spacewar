@@ -377,6 +377,49 @@ try {
     const defended = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
     assert.equal(defended.extraction.gateDefense, 'resolved', `sector ${plan.sector} gate defense must write back to strategy`);
     assert.ok(defended.turn <= defended.finalTurn, `sector ${plan.sector} must finish within its action window`);
+    if (plan.sector === 2) {
+      // 从已完成防御的合法存档派生独立 D.3 验收页；原发布页不增加回合，因此第三星域既有拓扑保持不变。
+      const saved = await releasePage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.current.v1'));
+      assert.ok(saved, 'D.3 browser branch requires a real saved strategic state');
+      const blueprintContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+      const blueprintPage = await blueprintContext.newPage();
+      const blueprintErrors = [];
+      blueprintPage.on('console', (message) => {
+        if (message.type() === 'error') blueprintErrors.push(`console: ${message.text()}`);
+      });
+      blueprintPage.on('pageerror', (error) => blueprintErrors.push(`page: ${String(error)}`));
+      await blueprintPage.goto(url, { waitUntil: 'domcontentloaded' });
+      await blueprintPage.evaluate((value) => localStorage.setItem('spacewar.strategic-universe.current.v1', value), saved);
+      await blueprintPage.reload({ waitUntil: 'domcontentloaded' });
+      await blueprintPage.locator('#cm-strategy-continue').click();
+      const beforeSurvey = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      const relic = beforeSurvey.localEntities.find((entity) => entity.kind === 'relicSite' && !entity.surveyed);
+      assert.ok(relic, 'D.3 gate system must expose its real unsurveyed relic');
+      await blueprintPage.locator(`[data-strategy-survey="${relic.id}"]`).click();
+      const recovered = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      assert.equal(recovered.blueprints.recovered.length, 1, 'D.3 relic survey must place one blueprint in the pending cross-sector set');
+      const recoveredBlueprintId = recovered.blueprints.recovered[0];
+      assert.ok(['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'].includes(recoveredBlueprintId), 'D.3 recovered blueprint ID must be legal');
+      assert.equal(recovered.blueprints.active.includes(recoveredBlueprintId), false, 'D.3 newly recovered blueprint must not activate in the current sector');
+      assert.ok((await blueprintPage.locator('.strategic-card').filter({ hasText: '舰队与跨域资产' }).innerText()).includes('待撤离后激活'), 'D.3 UI must mark recovered blueprints as pending activation');
+      await blueprintPage.locator('#strategy-extract-emergency').click();
+      const activated = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
+      assert.equal(activated.sector, 3, 'D.3 blueprint branch must cross into the next sector');
+      assert.ok(activated.blueprints.active.includes(recoveredBlueprintId), 'D.3 recovered blueprint must activate unchanged after crossing the gate');
+      const expectedMaxFuel = recoveredBlueprintId === 'fieldLogistics' ? 10 : 8;
+      assert.equal(activated.fleet.maxFuel, expectedMaxFuel, 'D.3 active blueprint must derive only its matching fuel effect');
+      const blueprint = blueprintPage.locator(`[data-strategy-blueprint="${recoveredBlueprintId}"]`);
+      const expectedEffectText = {
+        fieldLogistics: '最大燃料 +2',
+        hardenedBulkheads: '不修改 core-v4',
+        compactFoundry: '矿物成本 -4',
+      }[recoveredBlueprintId];
+      assert.ok((await blueprint.innerText()).includes(expectedEffectText), 'D.3 active blueprint UI must explain its authoritative strategic effect');
+      await blueprint.scrollIntoViewIfNeeded();
+      if (screenshotDir) await blueprintPage.screenshot({ path: path.join(screenshotDir, 'd3-active-blueprint.png'), fullPage: true });
+      assert.deepEqual(blueprintErrors, [], `D.3 browser branch must keep the console clean:\n${blueprintErrors.join('\n')}`);
+      await blueprintContext.close();
+    }
     if (plan.sector === 1) {
       const rearguardButton = releasePage.locator('[data-strategy-extraction-role="rearguard"]:not([disabled])').first();
       assert.equal(await rearguardButton.count(), 1, 'D.2 first extraction must expose at least one legal per-ship rearguard assignment');

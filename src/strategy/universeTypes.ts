@@ -3,9 +3,9 @@ import type { DeploymentSelection } from '../campaign/deployment/deploymentSyste
 import type { FleetEntry } from '../sim/battleTypes';
 import type { CampaignCommander, PendingRecruitment } from '../campaign/campaignTypes';
 
-/** 当前 Sector Expedition Code 版本。V1.0-D.2 升级为 1.0-alpha.11，加入逐舰撤离清单。 */
-export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.11';
-export type SectorExpeditionVersion = '1.0-alpha.11';
+/** 当前 Sector Expedition Code 版本。V1.0-D.3 升级为 1.0-alpha.12，统一永久蓝图战略效果。 */
+export const SECTOR_EXPEDITION_VERSION = '1.0-alpha.12';
+export type SectorExpeditionVersion = '1.0-alpha.12';
 
 export type StarType = 'yellowDwarf' | 'redDwarf' | 'blueGiant' | 'whiteDwarf' | 'binary';
 export type SpaceEntityKind = 'planet' | 'moon' | 'station' | 'asteroidField' | 'relicSite' | 'jumpGate';

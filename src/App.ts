@@ -209,6 +209,14 @@ export class App {
         pressure: this.universe.crisis.pressure,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
+        localEntities: this.universe.entities
+          .filter((entity) => entity.systemId === this.universe!.fleet.systemId && entity.discovered)
+          .map((entity) => ({
+            id: entity.id,
+            kind: entity.kind,
+            surveyed: entity.surveyed,
+            blueprint: entity.surveyed ? entity.blueprint ?? null : null
+          })),
         fleet: {
           fuel: this.universe.fleet.fuel,
           maxFuel: this.universe.fleet.maxFuel,
@@ -221,6 +229,10 @@ export class App {
           }))
         },
         resources: this.universe.faction.resources,
+        blueprints: {
+          active: [...this.universe.faction.legacy.blueprints],
+          recovered: [...this.universe.faction.recoveredBlueprints]
+        },
         network: {
           mainBaseId: this.universe.faction.baseEntityId ?? null,
           income: strategicIncomeReport(this.universe).total,

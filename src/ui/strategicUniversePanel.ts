@@ -20,16 +20,18 @@ import {
   canTreatStrategicCommander,
   ownedStrategicStations,
   currentStrategicExtractionPlan,
+  effectiveFacilityCost,
+  effectiveShipProductionCost,
   strategicFleetCounts,
   strategicFleetPower,
   strategicIncomeReport,
   strategicHostilePowerAt,
   strategicTransportStatus,
-  shipProductionCost,
   shipProductionTurns,
   travelFuelCost,
   universeTurnIncome
 } from '../strategy/universeRules';
+import { STRATEGIC_BLUEPRINT_EFFECTS } from '../strategy/strategicBlueprints';
 import { SHIP_CN, VARIANT_CN, VARIANTS_BY_CLASS, getShipDef } from '../sim/shipVariants';
 import type { ShipClass, ShipVariant } from '../sim/battleTypes';
 import type { PersistentShip } from '../campaign/fleet/persistentFleet';
@@ -197,10 +199,10 @@ export class StrategicUniversePanel {
           : '';
     const actionLocked = hasPending || hasRecruitment || commandLocked;
     const blueprintText = state.faction.legacy.blueprints.length
-      ? state.faction.legacy.blueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
+      ? state.faction.legacy.blueprints.map((id) => `<span data-strategy-blueprint="${id}"><b>${BLUEPRINT_LABEL[id]}</b>：${STRATEGIC_BLUEPRINT_EFFECTS[id].description}</span>`).join('<br>')
       : '无';
     const recoveredText = state.faction.recoveredBlueprints.length
-      ? state.faction.recoveredBlueprints.map((id) => BLUEPRINT_LABEL[id]).join(' / ')
+      ? state.faction.recoveredBlueprints.map((id) => `${BLUEPRINT_LABEL[id]}（待撤离后激活）`).join(' / ')
       : '无';
     const fleetCard = `
 <section class="strategic-card">
@@ -314,14 +316,14 @@ export class StrategicUniversePanel {
       const buttons = (Object.keys(FACILITY_DEFINITIONS) as FacilityType[]).map((type) => {
         if (type === 'shipyard' && station.id !== state.faction.baseEntityId) return '';
         const definition = FACILITY_DEFINITIONS[type];
-        return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(definition.cost)} · ${definition.turns}回合 · ${definition.description}</small></button>`;
+        return `<button class="btn small" data-strategy-build="${type}" data-strategy-build-entity="${escapeHtml(station.id)}"${disabledAttr(!canQueueFacility(actionState, type, station.id) || actionLocked)}>${definition.label}<small>${resourceCost(effectiveFacilityCost(state, type))} · ${definition.turns}回合 · ${definition.description}</small></button>`;
       }).join('');
       const productionQueue = (station.shipProductionQueue ?? []).map((order) =>
         `<div data-strategy-production-order="${escapeHtml(order.id)}">${SHIP_CN[order.shipClass]}·${VARIANT_CN[order.variant]} · 剩余 ${order.turnsRemaining}/${order.totalTurns} 回合 · ${escapeHtml(order.campaignShipId)}</div>`
       ).join('') || '<div>舰船生产队列为空</div>';
       const productionButtons = (['Fighter', 'Frigate', 'Cruiser'] as ShipClass[]).flatMap((shipClass) =>
         VARIANTS_BY_CLASS[shipClass].map((variant) => {
-          const cost = shipProductionCost(shipClass, variant);
+          const cost = effectiveShipProductionCost(state, shipClass, variant);
           return `<button class="btn small" data-strategy-produce-class="${shipClass}" data-strategy-produce-variant="${variant}"${disabledAttr(!canQueueShipProduction(actionState, shipClass, variant) || actionLocked)}>${SHIP_CN[shipClass]}·${VARIANT_CN[variant]}<small>${resourceCost(cost)} · ${shipProductionTurns(shipClass, variant)}回合</small></button>`;
         })
       ).join('');

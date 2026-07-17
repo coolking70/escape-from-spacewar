@@ -5,6 +5,7 @@ import type {
   StrategicExtractionManifest,
   UniverseState
 } from './universeTypes';
+import { strategicEmergencyPressureProtected } from './strategicBlueprints';
 
 export interface StrategicExtractionPlan {
   manifest: StrategicExtractionManifest;
@@ -104,7 +105,7 @@ export function buildStrategicExtractionPlan(
   const pressureCandidates = evacuatedShipIds.filter((id) =>
     state.fleet.ships.find((ship) => ship.campaignShipId === id && isShipDeployable(ship))
   );
-  const hardened = state.faction.legacy.blueprints.includes('hardenedBulkheads');
+  const hardened = strategicEmergencyPressureProtected(state.faction.legacy.blueprints);
   const pressureLossShipIds = validation.valid && manifest.mode === 'emergency' && state.crisis.pressure >= 70 &&
     rearguardShipIds.length === 0 && !hardened && pressureCandidates.length > 1
     ? [pressureCandidates[0]]
