@@ -11,3 +11,4 @@ dist/
 static/index.html
 *.zip
 playwright-cli.json
+vite.config.ts.timestamp-*.mjs

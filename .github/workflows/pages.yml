@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/v0.7.1-playability
   pull_request:
     branches:
       - main

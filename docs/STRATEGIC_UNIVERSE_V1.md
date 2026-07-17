@@ -20,7 +20,8 @@
 > V1.0-E.1 在不升级存档结构的前提下完成无副作用迁移探测、上一合法状态备份、损坏主槽恢复，以及招募/真实战斗刷新恢复闭环；策略测试套件扩展至 97 例。
 > V1.0-E.2 在不升级存档结构的前提下补齐锁定原因、危险操作确认、重渲染焦点恢复、可访问语义与战略日志导出；jsdom 和真实 Chromium 均验证取消/确认不会错派 action，策略测试套件扩展至 100 例。
 > V1.0-E.3 将同一真实 Chromium 三星域流程固化为开发、标准生产分块包和单文件发布包三个门禁；CI 与 Pages 在发布前直接运行对应产物，避免开发服务器与部署制品分叉。
-> 当前实现与进度请以 `progress.md` 的 V1.0-E.3 小节为准。
+> V1.0-E.4 固化 `1.0.0-rc.1` 应用发布元数据、协议兼容边界、发布检查清单和已知限制；不升级 `1.0-alpha.13` 存档协议，不修改冻结的 core-v4。
+> 当前实现与进度请以 `progress.md` 的 V1.0-E.4 小节为准。
 
 ## Purpose
 
@@ -93,7 +94,7 @@ The current relationship is:
 - core-v4 battle: the shared real-time encounter used by garrisons, task forces and gate defense
 - battle results: deterministic bindings write persistent ship identity, component damage, destruction and commander consequences back into the strategic save
 
-## Explicit limitations after V1.0-D.4
+## Explicit limitations for V1.0 release candidate
 
 The release-candidate slice does not include:
 
