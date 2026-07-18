@@ -39,7 +39,7 @@ import {
   strategicTransportStatus,
   toPersistentFleet
 } from './strategy/universeRules';
-import { decodeUniverse, encodeUniverse, loadUniverse, saveUniverse } from './strategy/universePersistence';
+import { decodeUniverse, encodeUniverse, inspectUniverseSave, loadUniverse, saveUniverse } from './strategy/universePersistence';
 import type { UniverseAction, UniverseState } from './strategy/universeTypes';
 
 export class App {
@@ -169,7 +169,7 @@ export class App {
       onStrategicImport: (code) => this.importStrategicUniverse(code),
       hasStrategicSave: () => {
         try {
-          return !!loadUniverse();
+          return inspectUniverseSave().canContinue;
         } catch {
           return false;
         }
@@ -185,6 +185,8 @@ export class App {
     this.strategyPanel = new StrategicUniversePanel(strategyRoot, {
       onAction: (action) => this.strategicAction(action),
       onExport: () => this.exportStrategicUniverse(),
+      onExportLog: () => this.exportStrategicLog(),
+      onConfirm: (message) => confirm(message),
       onExit: () => this.showMenu()
     });
   }
@@ -207,6 +209,14 @@ export class App {
         finalTurn: this.universe.crisis.finalTurn,
         status: this.universe.status,
         pressure: this.universe.crisis.pressure,
+        pendingBattle: this.universe.pendingBattle
+          ? {
+              battleId: this.universe.pendingBattle.battleId,
+              systemId: this.universe.pendingBattle.systemId,
+              battleSeed: this.universe.pendingBattle.battleSeed,
+              source: this.universe.pendingBattle.source
+            }
+          : null,
         selectedSystem: this.universe.selectedSystemId,
         fleetSystem: this.universe.fleet.systemId,
         localEntities: this.universe.entities
@@ -466,6 +476,40 @@ export class App {
     const code = encodeUniverse(this.universe);
     navigator.clipboard?.writeText(code);
     prompt('Strategic Universe Code（已尝试复制）', code);
+  }
+
+  private exportStrategicLog(): void {
+    if (!this.universe) return;
+    const state = this.universe;
+    const payload = {
+      type: 'spacewar-strategic-log',
+      v: '1',
+      generatedAt: new Date().toISOString(),
+      expedition: {
+        seed: state.seed,
+        faction: state.faction.name,
+        status: state.status,
+        sectorIndex: state.sectorIndex,
+        targetSectorCount: state.targetSectorCount,
+        turn: state.turn
+      },
+      resources: state.faction.resources,
+      fleet: state.fleet.ships.map((ship) => ({
+        campaignShipId: ship.campaignShipId,
+        shipClass: ship.shipClass,
+        variant: ship.variant,
+        disabled: ship.disabled,
+        escaped: ship.escaped,
+        componentHp: ship.componentHp
+      })),
+      legacy: state.faction.legacy,
+      log: state.log
+    };
+    downloadFile(
+      `spacewar-strategic-log-${state.seed}-s${state.sectorIndex}-t${state.turn}.json`,
+      JSON.stringify(payload, null, 2),
+      'application/json'
+    );
   }
 
   private resolveCampaignBattle(): void {

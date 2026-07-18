@@ -24,5 +24,7 @@ jobs:
       - run: npm run test:campaign
       - run: npm run test:strategy
       - run: npm run test:browser
+      - run: npm run test:browser:production
       - run: npm run test:stress
       - run: npm run build:static
+      - run: npm run test:browser:static

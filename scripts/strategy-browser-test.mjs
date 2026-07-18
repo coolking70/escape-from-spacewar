@@ -1,29 +1,103 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { createServer, preview } from 'vite';
 
 const screenshotDir = process.env.BROWSER_SCREENSHOT_DIR;
 if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 
+const targetArg = process.argv.find((argument) => argument.startsWith('--target='));
+const browserTarget = targetArg?.slice('--target='.length) ?? 'development';
+assert.ok(['development', 'production', 'static'].includes(browserTarget), `unknown browser target: ${browserTarget}`);
 const externalUrl = process.env.BROWSER_TEST_URL;
-const expectSingleFile = process.env.BROWSER_EXPECT_SINGLE_FILE === '1';
-const server = externalUrl
-  ? null
-  : await createServer({
+const expectSingleFile = browserTarget === 'static' || process.env.BROWSER_EXPECT_SINGLE_FILE === '1';
+const servedTarget = externalUrl ? (expectSingleFile ? 'static' : 'production') : browserTarget;
+
+async function startStaticServer(rootDir, port) {
+  const absoluteRoot = path.resolve(rootDir);
+  const server = http.createServer((request, response) => {
+    const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://127.0.0.1').pathname);
+    const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(absoluteRoot, relativePath);
+    if (!filePath.startsWith(`${absoluteRoot}${path.sep}`) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      response.statusCode = 404;
+      response.end('Not found');
+      return;
+    }
+    const contentType = path.extname(filePath) === '.html'
+      ? 'text/html; charset=utf-8'
+      : path.extname(filePath) === '.js'
+        ? 'text/javascript; charset=utf-8'
+        : path.extname(filePath) === '.css'
+          ? 'text/css; charset=utf-8'
+          : 'application/octet-stream';
+    response.setHeader('Content-Type', contentType);
+    fs.createReadStream(filePath).pipe(response);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+  };
+}
+
+async function startBrowserTarget() {
+  if (externalUrl) return { url: externalUrl, close: async () => {} };
+  if (browserTarget === 'development') {
+    const viteServer = await createServer({
       logLevel: 'error',
-      server: {
-        host: '127.0.0.1',
-        port: 4173,
-      },
+      server: { host: '127.0.0.1', port: 4173, strictPort: true },
     });
+    await viteServer.listen();
+    return { url: viteServer.resolvedUrls?.local[0], close: () => viteServer.close() };
+  }
+  if (browserTarget === 'production') {
+    assert.ok(fs.existsSync(path.resolve('dist/index.html')), 'production browser target requires npm run build first');
+    const previewServer = await preview({
+      logLevel: 'error',
+      preview: { host: '127.0.0.1', port: 4174, strictPort: true },
+    });
+    return {
+      url: previewServer.resolvedUrls?.local[0],
+      close: () => new Promise((resolve, reject) => previewServer.httpServer.close((error) => error ? reject(error) : resolve()))
+    };
+  }
+  assert.ok(fs.existsSync(path.resolve('static/index.html')), 'static browser target requires npm run build:static first');
+  return startStaticServer('static', 4175);
+}
+
+async function clickWithConfirmation(locator, decision = 'accept') {
+  const dialogPromise = locator.page().waitForEvent('dialog');
+  const clickPromise = locator.click();
+  const dialog = await dialogPromise;
+  const message = dialog.message();
+  if (decision === 'dismiss') await dialog.dismiss();
+  else await dialog.accept();
+  await clickPromise;
+  return message;
+}
+
+async function clickExtraction(page, selector) {
+  const state = JSON.parse(await page.evaluate(() => window.render_game_to_text()));
+  const plan = state.extraction.plan;
+  if (plan.lostShipIds.length > 0 || plan.risk === 'critical') {
+    return clickWithConfirmation(page.locator(selector), 'accept');
+  }
+  await page.locator(selector).click();
+  return '';
+}
 
 let browser;
+let targetServer;
 
 try {
-  await server?.listen();
-  const url = externalUrl ?? server?.resolvedUrls?.local[0];
+  targetServer = await startBrowserTarget();
+  const url = targetServer.url;
   assert.ok(url, 'Vite did not expose a local test URL');
 
   browser = await chromium.launch({
@@ -48,6 +122,14 @@ try {
 
   const screen = page.locator('.strategic-screen');
   await screen.waitFor({ state: 'visible' });
+  const focusSystem = page.locator('[data-strategy-system]').first();
+  const focusSystemId = await focusSystem.getAttribute('data-strategy-system');
+  await focusSystem.click();
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.getAttribute('data-strategy-system')),
+    focusSystemId,
+    'strategic rerender must restore keyboard focus to the selected map control',
+  );
   const before = await screen.evaluate((element) => ({
     clientHeight: element.clientHeight,
     scrollHeight: element.scrollHeight,
@@ -238,6 +320,8 @@ try {
   await fittingPage.addInitScript(() => { Date.now = () => 2036; });
   await fittingPage.goto(url, { waitUntil: 'domcontentloaded' });
   await fittingPage.locator('#cm-strategy-new').click();
+  await fittingPage.locator('[data-strategy-survey]').last().click();
+  await fittingPage.locator('[data-strategy-extract]').click();
   await fittingPage.locator('[data-strategy-base]').click();
   const fittingInitialState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
   const fittingMainBaseId = fittingInitialState.network.mainBaseId;
@@ -259,14 +343,40 @@ try {
   assert.equal(fittedState.fleet.maxFuel, maxFuelBeforeFitting + 1, 'D.4 auxiliary tank must raise strategic max fuel by one');
   assert.equal(fittedState.resources.minerals, moduleResourcesBefore.minerals - 8, 'D.4 module UI must deduct authoritative minerals');
   assert.equal(fittedState.resources.energy, moduleResourcesBefore.energy - 4, 'D.4 module UI must deduct authoritative energy');
+  const surveyArray = fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"][data-strategy-fit-module="surveyArray"]`);
+  const cancelledReplacement = await clickWithConfirmation(surveyArray, 'dismiss');
+  assert.ok(cancelledReplacement.includes('不会返还资源'), 'E.2 module replacement confirmation must explain the irreversible cost');
+  assert.equal(
+    JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text())).fleet.fittings.find((fitting) => fitting.campaignShipId === fittingShipId)?.moduleId,
+    'auxiliaryTank',
+    'E.2 dismissing module replacement must leave the current fitting unchanged',
+  );
+  const acceptedReplacement = await clickWithConfirmation(surveyArray, 'accept');
+  assert.ok(acceptedReplacement.includes('测绘阵列'), 'E.2 accepted replacement must identify the target module');
+  assert.equal(
+    JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text())).fleet.fittings.find((fitting) => fitting.campaignShipId === fittingShipId)?.moduleId,
+    'surveyArray',
+    'E.2 accepting module replacement must update the exact stable-ID ship',
+  );
+  const [logDownload] = await Promise.all([
+    fittingPage.waitForEvent('download'),
+    fittingPage.locator('#strategy-export-log').click(),
+  ]);
+  assert.ok(logDownload.suggestedFilename().startsWith('spacewar-strategic-log-'), 'E.2 strategic log export must use a diagnostic filename');
+  const logPath = await logDownload.path();
+  assert.ok(logPath, 'E.2 strategic log export must produce a downloadable file');
+  const exportedLog = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+  assert.equal(exportedLog.type, 'spacewar-strategic-log', 'E.2 exported log must carry an explicit format discriminator');
+  assert.ok(Array.isArray(exportedLog.log) && exportedLog.log.length > 0, 'E.2 exported log must contain the strategic event history');
   await fittingPage.locator(`[data-strategy-fit-ship="${fittingShipId}"]`).first().scrollIntoViewIfNeeded();
-  if (screenshotDir) await fittingPage.screenshot({ path: path.join(screenshotDir, 'd4-strategic-fitting.png'), fullPage: true });
+  if (screenshotDir) await fittingPage.screenshot({ path: path.join(screenshotDir, 'e2-strategic-ux.png'), fullPage: true });
   await fittingPage.locator(`[data-strategy-remove-module="${fittingShipId}"]`).click();
   const removedState = JSON.parse(await fittingPage.evaluate(() => window.render_game_to_text()));
   assert.equal(removedState.fleet.fittings.some((fitting) => fitting.campaignShipId === fittingShipId), false, 'D.4 remove action must clear the exact fitting');
   assert.equal(removedState.fleet.maxFuel, maxFuelBeforeFitting, 'D.4 removing the tank must restore derived max fuel');
   assert.deepEqual(fittingErrors, [], `D.4 fitting browser loop must keep the console clean:\n${fittingErrors.join('\n')}`);
   console.log(`[PASS] D.4 strategic fitting browser loop: ship=${fittingShipId}, module=auxiliaryTank, maxFuel=+1`);
+  console.log('[PASS] E.2 strategic UX: replacement cancel/confirm=verified, log download=valid JSON, focus=restored');
   await fittingPage.close();
 
   const battlePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -280,9 +390,14 @@ try {
 
   await battlePage.goto(url, { waitUntil: 'networkidle' });
   await battlePage.locator('#cm-single').click();
-  if (!externalUrl) {
+  if (servedTarget !== 'static') {
     assert.equal(
-      loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts') || resource.includes('/src/render/shipPreview.ts')),
+      loadedResources.some((resource) =>
+        resource.includes('/src/render/threeScene.ts') ||
+        resource.includes('/src/render/shipPreview.ts') ||
+        resource.includes('/assets/threeScene-') ||
+        resource.includes('/assets/shipPreview-')
+      ),
       false,
       'setup screen must not eagerly load Three.js render entry modules',
     );
@@ -291,12 +406,12 @@ try {
   await battlePage.locator('#previewBtn').click();
   await battlePage.locator('#previewCanvas canvas').waitFor({ state: 'visible' });
   if (screenshotDir) await battlePage.screenshot({ path: path.join(screenshotDir, 'ship-preview.png') });
-  if (!externalUrl) {
+  if (servedTarget === 'development') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/src/render/shipPreview.ts')),
       'opening the ship preview must load its Three.js renderer on demand',
     );
-  } else if (!expectSingleFile) {
+  } else if (servedTarget === 'production') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/assets/shipPreview-')),
       'production build must fetch the ship preview chunk on demand',
@@ -307,12 +422,12 @@ try {
 
   await battlePage.locator('#startBtn').click();
   await battlePage.locator('#canvas-root canvas').waitFor({ state: 'visible' });
-  if (!externalUrl) {
+  if (servedTarget === 'development') {
     assert.ok(
       loadedResources.some((resource) => resource.includes('/src/render/threeScene.ts')),
       'starting a battle must load the battle renderer on demand',
     );
-  } else if (expectSingleFile) {
+  } else if (servedTarget === 'static') {
     assert.equal(
       loadedResources.some((resource) => resource.includes('/assets/')),
       false,
@@ -330,13 +445,75 @@ try {
   assert.deepEqual(battleErrors, [], `lazy renderer flows must keep the browser console clean:\n${battleErrors.join('\n')}`);
 
   console.log(
-    expectSingleFile
+    servedTarget === 'static'
       ? '[PASS] single-file static renderers: preview=loaded, battle=loaded, external assets=0'
-      : externalUrl
+      : servedTarget === 'production'
         ? '[PASS] production chunks: preview=lazy, battle=lazy'
         : '[PASS] lazy Three.js renderers: setup=eager-free, preview=loaded, battle=loaded',
   );
   await battlePage.close();
+
+  // E.1 独立浏览器闭环：招募决策与真实战斗 pending 均可跨刷新恢复；战斗中刷新按同 seed 确定性重开。
+  const recoveryContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const recoveryPage = await recoveryContext.newPage();
+  const recoveryErrors = [];
+  recoveryPage.on('console', (message) => {
+    if (message.type() === 'error') recoveryErrors.push(`console: ${message.text()}`);
+  });
+  recoveryPage.on('pageerror', (error) => recoveryErrors.push(`page: ${String(error)}`));
+  await recoveryPage.addInitScript(() => { Date.now = () => 2036; });
+  await recoveryPage.goto(url, { waitUntil: 'domcontentloaded' });
+  await recoveryPage.locator('#cm-strategy-new').click();
+  await recoveryPage.locator('[data-strategy-base]').click();
+  await recoveryPage.locator('#strategy-open-recruitment').click();
+  const recruitmentBeforeReload = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).commander.pendingRecruitment;
+  assert.equal(recruitmentBeforeReload.candidates.length, 2, 'E.1 recovery fixture must create a real pending recruitment');
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 saved pending recruitment must keep Continue enabled after reload');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recruitmentAfterReload = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).commander.pendingRecruitment;
+  assert.deepEqual(recruitmentAfterReload, recruitmentBeforeReload, 'E.1 pending recruitment must survive reload exactly');
+  await recoveryPage.locator('#strategy-recruit-decline').click();
+  for (let turn = 0; turn < 4; turn++) await recoveryPage.locator('#strategy-next-turn').click();
+  assert.equal(await recoveryPage.locator('#strategy-engage').isDisabled(), false, 'E.1 real enemy contact must be available before interruption test');
+  await recoveryPage.locator('#strategy-engage').click();
+  await recoveryPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+  const pendingBeforeReload = await recoveryPage.evaluate(() => {
+    const raw = localStorage.getItem('spacewar.strategic-universe.current.v1');
+    return raw ? JSON.parse(raw).pendingBattle : null;
+  });
+  assert.ok(pendingBeforeReload?.battleId, 'E.1 entering battle must persist the real pending battle before rendering');
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 interrupted battle must remain resumable from the menu');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recoveredPending = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).pendingBattle;
+  assert.equal(recoveredPending.battleId, pendingBeforeReload.battleId, 'E.1 interrupted battle must restore the exact battleId');
+  assert.ok((await recoveryPage.locator('#strategy-engage').innerText()).startsWith('继续'), 'E.1 restored map must expose explicit continue-battle action');
+  const lockedNext = recoveryPage.locator('#strategy-next-turn');
+  assert.equal(await lockedNext.getAttribute('aria-disabled'), 'true', 'E.2 pending battle lock must expose aria-disabled');
+  assert.ok((await lockedNext.getAttribute('title'))?.includes('完成当前战略战斗'), 'E.2 pending battle lock must explain how to unlock the action');
+  assert.equal(await recoveryPage.locator('#strategy-export-log').isDisabled(), false, 'E.2 log export must remain available during a pending battle');
+  if (screenshotDir) await recoveryPage.screenshot({ path: path.join(screenshotDir, 'e1-interrupted-battle-recovery.png'), fullPage: true });
+  await recoveryPage.locator('#strategy-engage').click();
+  await recoveryPage.locator('#battle-root').waitFor({ state: 'visible', timeout: 10000 });
+  await recoveryPage.locator('[data-speed="4"]').click();
+  await recoveryPage.locator('#strategy-root').waitFor({ state: 'visible', timeout: 20000 });
+  assert.equal(JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text())).pendingBattle, null, 'E.1 completed resumed battle must clear pending state');
+
+  // 损坏主槽但保留有效备份时，菜单仍允许继续并由正式 loadUniverse 恢复。
+  const backupBeforeCorruption = await recoveryPage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.backup.v1'));
+  assert.ok(backupBeforeCorruption, 'E.1 normal play must maintain a valid backup slot');
+  const corruptRaw = '{"version":"1.0-alpha.13","broken":';
+  await recoveryPage.evaluate((value) => localStorage.setItem('spacewar.strategic-universe.current.v1', value), corruptRaw);
+  await recoveryPage.reload({ waitUntil: 'domcontentloaded' });
+  assert.equal(await recoveryPage.locator('#cm-strategy-continue').isDisabled(), false, 'E.1 valid backup must keep Continue enabled when primary is corrupt');
+  await recoveryPage.locator('#cm-strategy-continue').click();
+  const recoveredFromBackup = JSON.parse(await recoveryPage.evaluate(() => window.render_game_to_text()));
+  assert.equal(recoveredFromBackup.screen, 'strategic-universe', 'E.1 backup recovery must return to the strategic screen');
+  assert.equal(await recoveryPage.evaluate(() => localStorage.getItem('spacewar.strategic-universe.corrupt.v1')), corruptRaw, 'E.1 backup recovery must retain corrupt primary text for diagnosis');
+  assert.deepEqual(recoveryErrors, [], `E.1 recovery browser loop must keep the console clean:\n${recoveryErrors.join('\n')}`);
+  console.log(`[PASS] E.1 browser recovery: recruitment=preserved, battle=${pendingBeforeReload.battleId}, corrupt-primary=backup-restored`);
+  await recoveryContext.close();
 
   // C.5 独立浏览器闭环：所有操作均点击正式 UI；六场战斗均进入现有 Three.js 场景并以 4x 实时完成。
   const releasePage = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -443,7 +620,7 @@ try {
       assert.ok(['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'].includes(recoveredBlueprintId), 'D.3 recovered blueprint ID must be legal');
       assert.equal(recovered.blueprints.active.includes(recoveredBlueprintId), false, 'D.3 newly recovered blueprint must not activate in the current sector');
       assert.ok((await blueprintPage.locator('.strategic-card').filter({ hasText: '舰队与跨域资产' }).innerText()).includes('待撤离后激活'), 'D.3 UI must mark recovered blueprints as pending activation');
-      await blueprintPage.locator('#strategy-extract-emergency').click();
+      await clickExtraction(blueprintPage, '#strategy-extract-emergency');
       const activated = JSON.parse(await blueprintPage.evaluate(() => window.render_game_to_text()));
       assert.equal(activated.sector, 3, 'D.3 blueprint branch must cross into the next sector');
       assert.ok(activated.blueprints.active.includes(recoveredBlueprintId), 'D.3 recovered blueprint must activate unchanged after crossing the gate');
@@ -466,7 +643,15 @@ try {
       assert.equal(await rearguardButton.count(), 1, 'D.2 first extraction must expose at least one legal per-ship rearguard assignment');
       const rearguardId = await rearguardButton.getAttribute('data-strategy-extraction-ship');
       assert.ok(rearguardId, 'D.2 rearguard button must bind a stable campaignShipId');
-      await rearguardButton.click();
+      const beforeCancelledRole = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text())).extraction.manifest;
+      const cancelledRoleMessage = await clickWithConfirmation(rearguardButton, 'dismiss');
+      assert.ok(cancelledRoleMessage.includes('留守断后'), 'E.2 rearguard confirmation must name the dangerous assignment');
+      assert.deepEqual(
+        JSON.parse(await releasePage.evaluate(() => window.render_game_to_text())).extraction.manifest,
+        beforeCancelledRole,
+        'E.2 dismissing rearguard confirmation must not change the extraction manifest',
+      );
+      await clickWithConfirmation(rearguardButton, 'accept');
       const planned = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
       const assignment = planned.extraction.manifest.assignments.find((entry) => entry.campaignShipId === rearguardId);
       assert.equal(assignment?.role, 'rearguard', 'D.2 browser action must persist the selected ship role');
@@ -478,7 +663,7 @@ try {
       const reset = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
       assert.equal(reset.extraction.manifest.assignments.every((entry) => entry.role !== 'rearguard'), true, 'reselecting emergency mode must restore its deterministic default manifest');
     }
-    await releasePage.locator('#strategy-extract-emergency').click();
+    await clickExtraction(releasePage, '#strategy-extract-emergency');
   }
 
   const victoryState = JSON.parse(await releasePage.evaluate(() => window.render_game_to_text()));
@@ -494,5 +679,5 @@ try {
   await releasePage.close();
 } finally {
   await browser?.close();
-  await server?.close();
+  await targetServer?.close();
 }

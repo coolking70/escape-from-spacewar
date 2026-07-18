@@ -1,4 +1,4 @@
-Original prompt: Continue V1.0-C in the current repository, beginning with strategic-screen browser regression coverage and then commander integration.
+Current objective: complete the V1.0-E release-candidate closeout in order, with an independent repair-and-retest gate for every slice.
 
 # Development Progress
 
@@ -8,7 +8,8 @@ Original prompt: Continue V1.0-C in the current repository, beginning with strat
 - Replay format remains `v0.5` with ruleset `spacewar-core-v4`.
 - V0.6 through V0.9 are retained on `main` as the compatible seven-layer route campaign.
 - Campaign Code remains `0.3`; Campaign Log remains `1.1`.
-- V1.0 development is isolated in PR #9 and remains Draft.
+- PR #9 and the later C/D slices are merged into `main`; the E-series release candidate is the current stacked branch pending final review.
+- Application release metadata is `1.0.0-rc.1`; Sector Expedition Code remains independently versioned at `1.0-alpha.13`.
 - GitHub Actions uses Node.js 24.
 - The strategic-sector screen owns a viewport-bounded vertical scroll area, so map, management, fleet and log sections remain reachable without enabling global page scrolling.
 
@@ -256,9 +257,9 @@ The V1.0-B.3 strategic suite (`runStrategicTests`, 57 cases, no `as unknown as` 
 - `npm run test:strategy` passes with 64 strategic cases after these invariant and test-authenticity corrections.
 - Full local verification passed: `npm run build`, `npm test`, `npm run test:det`, `npm run test:campaign`, `npm run test:strategy`, `npm run test:stress`, `npm run build:static` and `git diff --check`. The develop-web-game Playwright client also entered a fresh strategic expedition, produced a correct strategic-map screenshot/state (`turn=0`, matching selected/fleet system), and reported no console-error artifact.
 
-## Next milestone: V1.0-C
+## Historical V1.0-C plan (completed)
 
-The next development slice should extend the now-real persistent fleet and core-v4 strategic battle foundation:
+The completed V1.0-C sequence extended the real persistent-fleet and core-v4 strategic battle foundation with:
 
 1. connect V0.8 commanders, injuries, reserves and succession;
 2. support multiple temporary outposts and abstract transport links;
@@ -327,15 +328,15 @@ The next development slice should extend the now-real persistent fleet and core-
 - Defeat settlement text now uses the actual final strategic log reason instead of always claiming a missed deadline. `render_game_to_text` exposes sector/status/window/fleet/extraction fields needed to compare UI and runtime state without exposing hidden map topology.
 - Independent release verification passed after a clean `npm ci`: production build, 19/19 acceptance suites, deterministic and golden replays, campaign coverage, 81-case strategy coverage, development Chromium, production-chunk Chromium, single-file static Chromium, deterministic 50v50 stress, static build, zero npm audit findings and `git diff --check`. Every browser target completed all six mandatory battles and reached the third-sector victory settlement without console errors.
 
-V1.0-C feature scope is now closed. Next action: commit/push and PR release-candidate acceptance. Deferred unless separately approved: multiple player fleets, real-time strategic movement, ship production/fitting, diplomacy, markets and population simulation.
+V1.0-C feature scope closed at that milestone. V1.0-D later completed the intentionally narrow single-base production and strategic-only fitting slices; multiple player fleets, real-time strategic movement, diplomacy, markets and population simulation remain deferred unless separately approved.
 
-## Still out of scope for V1.0-C
+## Release-candidate limitations
 
 - Multiple independently controlled player fleets.
 - Population and worker micromanagement.
-- Permanent colonies or a long-lived empire map.
+- Permanent colonies or a long-lived empire map, including base upgrade trees.
 - Full diplomacy, markets or trade simulation.
-- Detailed ship production and equipment fitting.
+- Combat-affecting equipment or a module technology tree; D.4 fittings remain strategic-only.
 - Real-time strategic movement.
 
 ## Build security and rendering-load closeout
@@ -387,3 +388,36 @@ V1.0-C feature scope is now closed. Next action: commit/push and PR release-cand
 - Strategy coverage is now **95 cases**, including fit/replace/remove deductions, derived fuel/save round trips, survey and repair effects, extraction inheritance, loss cleanup, alpha.12 migration, malformed references, jsdom action dispatch, identical fitted/unfitted BattleState creation and genuine simulator writeback/code round trips.
 - Real Chromium independently builds the main-base shipyard, fits an Auxiliary Tank to an exact stable ship ID, verifies resource and max-fuel changes, removes it and confirms restoration. The canonical three-sector/six-battle release flow and the standard web-game client remain visually and console clean.
 - D.4 closes the planned D-series sequence without changing frozen core-v4 combat rules, balance, state semantics or golden replays. Multiple player fleets, combat-affecting equipment, module technology, base upgrade trees, diplomacy, markets, population and real-time movement remain future scope.
+
+### V1.0-E.1 save migration and interruption recovery
+
+- Sector Expedition Code remains `1.0-alpha.13`: E.1 adds no serialized gameplay field. A single side-effect-free resolver now powers current-save validation and every supported alpha.1–alpha.12 migration path.
+- Menu availability inspection no longer migrates or rewrites a save merely to decide whether Continue is enabled. Explicit load performs the migration and stores the current-format result.
+- Every legal save first preserves the previous valid state in a dedicated backup slot. If the primary slot is malformed or incompatible but the backup is valid, Continue remains available, load restores the backup, and the corrupt primary text is retained in a diagnostic slot. Clear removes all three slots.
+- Strategy coverage is now **97 cases**, including real jsdom localStorage behavior, first/second save semantics, side-effect-free legacy inspection, explicit alpha.12 migration, corrupt-primary recovery and diagnostic preservation.
+- Real Chromium reloads a pending recruitment unchanged, interrupts a rendered Three.js strategic battle, restores the exact persisted battle ID and completes its writeback, then corrupts the primary slot and continues through the valid backup. The canonical three-sector/six-battle flow remains green and console-clean.
+- The recovered pending-battle action now wraps within the system card at desktop and narrow widths instead of overflowing its panel. The standard web-game client screenshot was visually inspected.
+
+### V1.0-E.2 strategic release-candidate UX safeguards
+
+- Sector Expedition Code remains `1.0-alpha.13`; E.2 changes presentation and action confirmation only and adds no serialized gameplay field.
+- Disabled strategic actions now expose an explicit unlock reason through native `title`, `disabled` and `aria-disabled` attributes. Pending-decision banners use alert/live-region semantics, map controls have accessible names, and panel rerenders restore the focused stable control.
+- Replacing a paid per-ship module, assigning a ship to rearguard/abandon, or executing a plan with known losses/critical risk requires an explicit confirmation. Cancelling leaves the reducer and persisted state untouched.
+- The strategic toolbar exports a standalone JSON diagnostic log containing expedition identity, status, resources, stable-ID fleet/component state, inherited legacy and the complete strategic event history.
+- Strategy coverage is now **100 cases**. New jsdom cases verify cancel/confirm dispatch, loss confirmation content, lock reasons, live-region/map semantics, independent log export and focus restoration.
+- Real Chromium independently dismisses and accepts module replacement, verifies the exact fitting state, downloads and parses the JSON log, checks pending-battle lock reasons, accepts dangerous rearguard/extraction prompts, then completes the canonical three-sector/six-battle victory flow without console errors. E.2 and interrupted-battle screenshots were visually inspected.
+
+### V1.0-E.3 release artifact browser truth
+
+- The browser regression now has three explicit formal targets: development (`npm run test:browser`), the previously built standard chunked distribution (`npm run test:browser:production`), and the previously built standalone HTML (`npm run test:browser:static`). Each target owns its server lifecycle and fails clearly when its required artifact is absent.
+- All three targets execute the same recruitment, outpost/siege, shipyard, fitting, save recovery and canonical three-sector/six-battle victory flow. The production target asserts lazy preview/battle chunks; the standalone target asserts that opening both renderers causes no external `assets/` request.
+- Main CI now runs development and production Chromium after the standard build, then builds and runs the standalone Chromium target. The Pages workflow installs Chromium and runs the standalone target before uploading the exact `static/` artifact.
+- Independent E.3 artifact verification passed for both release formats: the standard production chunks remained lazy, the 955.5 KB standalone HTML remained self-contained, and both reached victory without console errors.
+
+### V1.0-E.4 formal release readiness
+
+- Application metadata is now `1.0.0-rc.1`; protocol identities remain Replay v0.5 / `spacewar-core-v4`, Campaign Code 0.3 / Campaign Log 1.1, and Sector Expedition Code `1.0-alpha.13` with deterministic alpha.2–alpha.12 migrations.
+- Historical status text no longer claims merged PR #9 is draft or presents completed V1.0-C work as the next milestone. The limitations list now acknowledges D.1 production and D.4 strategic fittings instead of claiming both are absent.
+- Pages deploys only from `main`; every pull request still builds and browser-verifies the standalone artifact without deploying it. Generated Vite timestamp modules are ignored as local tool artifacts.
+- `docs/RELEASE_CHECKLIST.md` is the release handoff source for artifact gates, compatibility, rollback and known limitations. The repository currently has no explicit open-source license; choosing one remains an owner decision and is not silently inferred by this release code change.
+- Independent E.4 verification passed from a clean install: zero audit findings, production build, acceptance, deterministic/golden replay, campaign, 100-case strategy, stable 50v50 stress hash, development/production/standalone Chromium, 955.5 KB self-contained build and diff hygiene. Every browser target completed the same three-sector/six-battle victory flow without console errors.

@@ -6,7 +6,7 @@
 
 - `core-v4` 单场 3D 太空战斗；
 - V0.6～V0.9 的七层航道兼容战役；
-- V1.0「单星域高速 SLG + 星门撤离」主方向（V1.0-D.4 已完成逐舰战略模块装配垂直切片）。
+- V1.0「单星域高速 SLG + 星门撤离」主方向（应用版本 `1.0.0-rc.1`，V1.0-E 发布候选收尾完成）。
 
 ## V1.0-A：单星域高速 SLG 重构
 
@@ -120,6 +120,8 @@ V1.0-A 没有修改 core-v4 舰船模板、默认平衡、AI 或黄金回放。
 - 保存当前星域、实体、固定驻军、移动特遣舰队、围攻、设施、建设/生产队列、危机、星门防御、真实舰队、逐舰战略模块与跨域继承状态
 - 旧 `1.0-alpha.1` 永久宇宙实验存档会重置迁移为新的第一星域
 
+应用发布版本与存档协议版本相互独立：当前应用是 `1.0.0-rc.1`，战略存档仍保持 `1.0-alpha.13`，E 系列没有伪造不必要的存档升级。正式发布步骤、兼容边界和已知限制见 [发布检查清单](docs/RELEASE_CHECKLIST.md)。
+
 ### Campaign Code
 
 - `type: "spacewar-campaign"`
@@ -150,11 +152,13 @@ npm run test:det
 npm run test:campaign
 npm run test:strategy
 npm run test:browser
+npm run test:browser:production
 npm run test:stress
 npm run build:static
+npm run test:browser:static
 ```
 
-`npm run test:strategy` 覆盖 95 项（无 `as unknown as` 伪造 BattleState），其中 C.5 正式矩阵对 65 个 seed 逐步执行远征码往返与六场真实 core-v4 战斗并全部取得三星域胜利；额外 1000-seed 发布探针同样无失败。`npm run test:browser` 使用真实 Chromium 验证星域界面的视口滚动、指挥官招募、真实航行、次级前哨建立、本地建设队列、移动敌军、主基地围攻、舰队回防、D.1 船坞生产、D.2 逐舰撤离、D.3 遗迹蓝图取得/跨域激活，以及 D.4 安全主基地船厂的逐舰装配/卸下；完整三星域 UI 流程仍完成六次 Three.js 战斗和胜利结算。也可通过 `BROWSER_TEST_URL` 验收已经启动的单文件静态站点：
+`npm run test:strategy` 覆盖 100 项（无 `as unknown as` 伪造 BattleState），其中 C.5 正式矩阵对 65 个 seed 逐步执行远征码往返与六场真实 core-v4 战斗并全部取得三星域胜利；额外 1000-seed 发布探针同样无失败。三个 Chromium 入口执行同一套完整 UI 流程：`test:browser` 验证开发服务器，`test:browser:production` 验证先前 `npm run build` 生成的标准分块产物，`test:browser:static` 验证先前 `npm run build:static` 生成的单文件站点。它们覆盖视口滚动、指挥官招募、真实航行、多据点/围攻/回防、船坞生产、逐舰撤离、蓝图、模块、刷新恢复、损坏存档备份、键盘焦点、危险操作确认和日志下载，并完成六次 Three.js 战斗与三星域胜利；生产包必须按需请求渲染 chunk，单文件包必须保持零外部 `assets` 请求。也可通过 `BROWSER_TEST_URL` 验收已经启动的发布站点：
 
 - 九星系确定性生成与图连通；
 - 星门、科研遗迹和敌方据点；
@@ -222,5 +226,13 @@ npm run build:static
 ## 当前边界
 
 V1.0-D.4 在冻结 core-v4 的边界内加入一个以 `campaignShipId` 绑定的战略模块槽。辅助燃料舱使舰队最大燃料 +1，远程测绘阵列使该可用舰参与测绘时科学 +2，舰载维修工坊降低该舰维修成本；装配只能在安全主基地船厂完成，资源在正式 reducer 中扣除，舰船损失会清理悬空装配，存活舰则跨星域继承。模块不会写入 ReplayConfig、BattleState、舰船定义或战斗数值。Sector Expedition Code 为 `1.0-alpha.13`，策略套件现为 95 项。
+
+V1.0-E.1 保持 Sector Expedition Code `1.0-alpha.13` 不变，并加固浏览器本地存档：主菜单使用无写入副作用的统一迁移探测；每次合法保存先保留上一份有效状态；主槽损坏或缺失时可从备份恢复，并保留损坏原文用于诊断。真实 Chromium 验证待处理招募、战斗界面刷新、相同 battleId 继续和损坏主槽恢复，策略套件现为 97 项。
+
+V1.0-E.2 同样不升级存档版本：战略面板为被锁定操作提供 `title`/`aria-disabled` 原因，行动锁横幅使用实时警报语义，重渲染恢复当前控件焦点；模块替换、断后/放弃任务和含已知损失的撤离在正式 UI 中要求确认，取消不会进入 reducer。工具栏可导出包含远征摘要、资源、逐舰组件状态和完整事件历史的 JSON 日志。jsdom 与真实 Chromium 均验证取消/确认、日志下载和焦点闭环，策略套件现为 100 项。
+
+V1.0-E.3 将发布真实性升级为正式门禁：CI 在开发 Chromium 闭环之外，直接验收 `dist` 生产分块包和 `static/index.html` 单文件包；Pages 工作流也必须先在 Chromium 中完成单文件三星域闭环，才会上传部署制品。三个目标共用同一脚本和断言，避免“开发服务器通过但发布包不可玩”的分叉。
+
+V1.0-E.4 将应用元数据定为 `1.0.0-rc.1`，清理历史 PR/里程碑描述和旧 Pages 分支触发器，并建立可复核的发布检查清单。E 系列仍保持 Replay v0.5、`spacewar-core-v4`、Campaign Code 0.3 和 Sector Expedition Code `1.0-alpha.13`；不借发布收尾修改战斗规则、平衡或黄金回放。
 
 后续仍不默认扩展多玩家舰队、基地升级树、模块科技树、实时战略移动、外交或市场，也不会借战略模块修改冻结的 core-v4 战斗规则和平衡。

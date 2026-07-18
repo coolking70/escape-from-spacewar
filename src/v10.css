@@ -13,6 +13,11 @@
   -webkit-overflow-scrolling: touch;
 }
 
+.strategic-screen button:focus-visible {
+  outline: 3px solid #7dd3fc;
+  outline-offset: 3px;
+}
+
 .strategy-banner {
   width: min(1280px, 100%);
   margin: 0 auto 12px;
@@ -297,6 +302,14 @@
 .strategic-card h2,
 .strategic-card h3 {
   margin-top: 0;
+}
+
+.strategic-system-panel > .btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  line-height: 1.35;
 }
 
 .strategy-location,

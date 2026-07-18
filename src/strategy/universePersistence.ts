@@ -33,7 +33,9 @@ import type {
   UniverseState
 } from './universeTypes';
 
-const STORAGE_KEY = 'spacewar.strategic-universe.current.v1';
+export const UNIVERSE_STORAGE_KEY = 'spacewar.strategic-universe.current.v1';
+export const UNIVERSE_BACKUP_KEY = 'spacewar.strategic-universe.backup.v1';
+export const UNIVERSE_CORRUPT_KEY = 'spacewar.strategic-universe.corrupt.v1';
 const FACILITIES = Object.keys(FACILITY_DEFINITIONS) as FacilityType[];
 const RESEARCH = Object.keys(RESEARCH_DEFINITIONS) as ResearchProjectId[];
 const BLUEPRINTS: PermanentBlueprintId[] = ['fieldLogistics', 'hardenedBulkheads', 'compactFoundry'];
@@ -46,6 +48,13 @@ interface UniverseEnvelope {
   type: 'spacewar-sector-expedition';
   v: SectorExpeditionVersion;
   state: UniverseState;
+}
+
+export interface UniverseSaveInspection {
+  status: 'missing' | 'ready' | 'recoverable' | 'invalid';
+  canContinue: boolean;
+  source?: 'primary' | 'backup';
+  message: string;
 }
 
 /** 一份 FleetEntry 的离散装箱容差：实际舰队成本与预算的差值应小于最便宜合法舰船成本（权威值，不散落魔法数字）。 */
@@ -944,103 +953,106 @@ export function decodeUniverse(code: string): UniverseState {
   return envelope.state;
 }
 
-export function saveUniverse(state: UniverseState): void {
-  if (!validateUniverseState(state)) throw new Error('无法保存无效的星域战略远征。');
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+/**
+ * 统一解析本地存档裸状态。该函数不读写 localStorage，因此主菜单探测、正式载入和测试
+ * 使用完全相同的迁移链，同时不会因“只是查看是否有存档”而提前改写玩家数据。
+ */
+function resolveStoredUniverse(raw: string | null): UniverseState | null {
+  if (!raw) return null;
+  const parsed = JSON.parse(raw);
+  if (validateUniverseState(parsed)) return parsed;
+  if (parsed?.version === '1.0-alpha.1') return migrateAlpha1(parsed);
+  if (parsed?.version === '1.0-alpha.2') return migrateAlpha2(parsed);
+  if (parsed?.version === '1.0-alpha.3') return migrateAlpha3(parsed);
+  if (parsed?.version === '1.0-alpha.4') return migrateAlpha4(parsed);
+  if (parsed?.version === '1.0-alpha.5') return migrateAlpha5(parsed);
+  if (parsed?.version === '1.0-alpha.6') return migrateAlpha6(parsed);
+  if (parsed?.version === '1.0-alpha.7') return migrateAlpha7(parsed);
+  if (parsed?.version === '1.0-alpha.8') return migrateAlpha8(parsed);
+  if (parsed?.version === '1.0-alpha.9') return migrateAlpha9(parsed);
+  if (parsed?.version === '1.0-alpha.10') return migrateAlpha10(parsed);
+  if (parsed?.version === '1.0-alpha.11') return migrateAlpha11(parsed);
+  if (parsed?.version === '1.0-alpha.12') return migrateAlpha12(parsed);
+  return null;
 }
 
-export function loadUniverse(): UniverseState | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
+function tryResolveStoredUniverse(raw: string | null): UniverseState | null {
   try {
-    const parsed = JSON.parse(raw);
-    if (validateUniverseState(parsed)) return parsed;
-    if (parsed && parsed.version === '1.0-alpha.2') {
-      const migrated = migrateAlpha2(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.4') {
-      const migrated = migrateAlpha4(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.5') {
-      const migrated = migrateAlpha5(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.6') {
-      const migrated = migrateAlpha6(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.7') {
-      const migrated = migrateAlpha7(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.8') {
-      const migrated = migrateAlpha8(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.9') {
-      const migrated = migrateAlpha9(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.10') {
-      const migrated = migrateAlpha10(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.11') {
-      const migrated = migrateAlpha11(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.12') {
-      const migrated = migrateAlpha12(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    if (parsed && parsed.version === '1.0-alpha.3') {
-      const migrated = migrateAlpha3(parsed);
-      if (migrated) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
-      }
-    }
-    const migrated = migrateAlpha1(parsed);
-    if (!migrated) throw new Error('结构无效');
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-    return migrated;
+    return resolveStoredUniverse(raw);
   } catch {
-    throw new Error('星域战略远征存档损坏或不兼容。');
+    return null;
   }
 }
 
+/** 无副作用检查主存档及最后有效备份，供主菜单决定“继续”按钮状态。 */
+export function inspectUniverseSave(): UniverseSaveInspection {
+  const primaryRaw = localStorage.getItem(UNIVERSE_STORAGE_KEY);
+  const primary = tryResolveStoredUniverse(primaryRaw);
+  if (primary) {
+    let storedVersion: unknown;
+    try {
+      storedVersion = JSON.parse(primaryRaw!).version;
+    } catch {
+      storedVersion = undefined;
+    }
+    return {
+      status: 'ready',
+      canContinue: true,
+      source: 'primary',
+      message: storedVersion === SECTOR_EXPEDITION_VERSION ? '战略远征存档可继续。' : '旧版战略远征存档可迁移并继续。'
+    };
+  }
+  const backup = tryResolveStoredUniverse(localStorage.getItem(UNIVERSE_BACKUP_KEY));
+  if (backup) {
+    return {
+      status: 'recoverable',
+      canContinue: true,
+      source: 'backup',
+      message: primaryRaw ? '主存档损坏，将从最后有效备份恢复。' : '主存档缺失，将从最后有效备份恢复。'
+    };
+  }
+  if (primaryRaw || localStorage.getItem(UNIVERSE_BACKUP_KEY)) {
+    return { status: 'invalid', canContinue: false, message: '战略远征存档损坏或不兼容。' };
+  }
+  return { status: 'missing', canContinue: false, message: '没有战略远征存档。' };
+}
+
+export function saveUniverse(state: UniverseState): void {
+  if (!validateUniverseState(state)) throw new Error('无法保存无效的星域战略远征。');
+  const serialized = JSON.stringify(state);
+  const previous = tryResolveStoredUniverse(localStorage.getItem(UNIVERSE_STORAGE_KEY));
+  // 先落备份再替换主存档。首次保存以当前合法状态初始化备份；后续保留上一份合法状态。
+  localStorage.setItem(UNIVERSE_BACKUP_KEY, previous ? JSON.stringify(previous) : serialized);
+  localStorage.setItem(UNIVERSE_STORAGE_KEY, serialized);
+}
+
+export function loadUniverse(): UniverseState | null {
+  const primaryRaw = localStorage.getItem(UNIVERSE_STORAGE_KEY);
+  const primary = tryResolveStoredUniverse(primaryRaw);
+  if (primary) {
+    const serialized = JSON.stringify(primary);
+    // 旧版本只在玩家明确载入时原位升级；无副作用探测不会执行这里。
+    if (primaryRaw !== serialized) {
+      localStorage.setItem(UNIVERSE_BACKUP_KEY, serialized);
+      localStorage.setItem(UNIVERSE_STORAGE_KEY, serialized);
+    }
+    return primary;
+  }
+
+  const backup = tryResolveStoredUniverse(localStorage.getItem(UNIVERSE_BACKUP_KEY));
+  if (backup) {
+    if (primaryRaw) localStorage.setItem(UNIVERSE_CORRUPT_KEY, primaryRaw);
+    const serialized = JSON.stringify(backup);
+    localStorage.setItem(UNIVERSE_STORAGE_KEY, serialized);
+    localStorage.setItem(UNIVERSE_BACKUP_KEY, serialized);
+    return backup;
+  }
+  if (!primaryRaw && !localStorage.getItem(UNIVERSE_BACKUP_KEY)) return null;
+  throw new Error('星域战略远征存档损坏或不兼容，且没有可用备份。');
+}
+
 export function clearUniverse(): void {
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(UNIVERSE_STORAGE_KEY);
+  localStorage.removeItem(UNIVERSE_BACKUP_KEY);
+  localStorage.removeItem(UNIVERSE_CORRUPT_KEY);
 }
